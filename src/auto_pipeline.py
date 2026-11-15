@@ -266,3 +266,4 @@ def run_autonomous_cycle(count: int = 1, live: bool = True, categories: List[str
         "products_processed": len(published_results),
         "results": published_results,
     }
+

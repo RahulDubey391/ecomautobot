@@ -17,7 +17,9 @@ class GeminiContentGenerator:
     FALLBACK_MODELS = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
-        "gemini-2.5-pro",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
     ]
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
@@ -27,7 +29,32 @@ class GeminiContentGenerator:
                 "Missing GEMINI_API_KEY. Set GEMINI_API_KEY in GitHub Actions Secrets, .env, or CREDS.txt."
             )
         preferred = model or get_gemini_model()
-        self.models = [preferred] + [m for m in self.FALLBACK_MODELS if m != preferred]
+        discovered = self._discover_models()
+        base_list = [preferred] + discovered + self.FALLBACK_MODELS
+        self.models: List[str] = []
+        for m in base_list:
+            if m and m not in self.models:
+                self.models.append(m)
+
+    def _discover_models(self) -> List[str]:
+        """Query the Gemini API for available flash/pro models supporting generateContent."""
+        try:
+            resp = requests.get(f"{self.API_BASE}?key={self.api_key}", timeout=15)
+            if not resp.ok:
+                return []
+            models_data = resp.json().get("models", [])
+            supported = []
+            for m in models_data:
+                methods = m.get("supportedGenerationMethods", [])
+                name = m.get("name", "").replace("models/", "")
+                if "generateContent" in methods and "gemini" in name and "vision" not in name and "tts" not in name and "image" not in name:
+                    supported.append(name)
+            # Prioritize flash models for speed & quota
+            flash_models = [m for m in supported if "flash" in m]
+            other_models = [m for m in supported if "flash" not in m]
+            return flash_models + other_models
+        except Exception:
+            return []
 
     def _call_gemini(
         self,
@@ -37,7 +64,7 @@ class GeminiContentGenerator:
         temperature: float = 0.7,
         max_output_tokens: int = 8192,
     ) -> str:
-        last_error: Optional[Exception] = None
+        last_error: Optional[str] = None
 
         for model_name in self.models:
             url = f"{self.API_BASE}/{model_name}:generateContent?key={self.api_key}"
@@ -54,27 +81,35 @@ class GeminiContentGenerator:
                     "parts": [{"text": system_instruction}]
                 }
 
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     resp = requests.post(url, json=payload, timeout=120)
-                    if resp.status_code in (429, 500, 502, 503, 504):
-                        time.sleep(4 * (attempt + 1))
-                        continue
                     if resp.status_code == 404:
-                        # Model name not available on this key/endpoint; try next model
+                        last_error = f"404 Not Found ({model_name}): {resp.text[:200]}"
                         break
-                    resp.raise_for_status()
+                    if resp.status_code == 429:
+                        last_error = f"429 Quota/RateLimit ({model_name}): {resp.text[:200]}"
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    if resp.status_code in (500, 502, 503, 504):
+                        last_error = f"{resp.status_code} Server Error ({model_name}): {resp.text[:200]}"
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    if not resp.ok:
+                        last_error = f"{resp.status_code} ({model_name}): {resp.text[:300]}"
+                        break
                     data = resp.json()
                     candidates = data.get("candidates", [])
                     if not candidates:
-                        raise GeminiGeneratorError(f"Empty candidates from {model_name}: {data}")
+                        last_error = f"Empty candidates ({model_name}): {data}"
+                        break
                     parts = candidates[0].get("content", {}).get("parts", [])
                     text = "".join(p.get("text", "") for p in parts).strip()
                     if text:
                         return text
                 except Exception as exc:
-                    last_error = exc
-                    time.sleep(2 * (attempt + 1))
+                    last_error = f"{model_name}: {exc}"
+                    time.sleep(2)
 
         raise GeminiGeneratorError(f"All Gemini models failed. Last error: {last_error}")
 
@@ -243,3 +278,4 @@ Requirements:
         raw = re.sub(r"^```(?:markdown|md)?\s*", "", raw.strip())
         raw = re.sub(r"\s*```$", "", raw.strip())
         return raw + "\n"
+
