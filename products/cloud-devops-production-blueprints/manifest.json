@@ -1,0 +1,43 @@
+{
+  "slug": "cloud-devops-production-blueprints",
+  "name": "The Cloud & DevOps Production Playbook: 50+ Docker, K8s, CI/CD Pipelines & IaC Blueprints",
+  "price_cents": 2400,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "cloud-devops-production-blueprints",
+  "custom_summary": "Production-tested infrastructure blueprints, multi-stage Dockerfiles, GitHub Actions CI/CD pipelines, and Terraform stacks to deploy scalable cloud systems in hours.",
+  "category": "software",
+  "tags": [
+    "devops",
+    "cloud architecture",
+    "docker",
+    "kubernetes",
+    "ci cd pipelines",
+    "terraform",
+    "infrastructure",
+    "developer tools",
+    "system design",
+    "linux sysadmin"
+  ],
+  "hashtags": [
+    "#Devops",
+    "#CloudArchitecture",
+    "#Docker",
+    "#Kubernetes",
+    "#CiCdPipelines",
+    "#Terraform",
+    "#Infrastructure",
+    "#DeveloperTools",
+    "#SystemDesign",
+    "#LinuxSysadmin"
+  ],
+  "gumroad_product_id": "S3YVBXH_bz9GclrTNKJFlg==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/cloud-devops-production-blueprints",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/c91e880427551d06624355d38d306052/original/cloud-devops-production-blueprints-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/uhbmy4f0hb5ozrvbq9rns5j9uygl"
+}

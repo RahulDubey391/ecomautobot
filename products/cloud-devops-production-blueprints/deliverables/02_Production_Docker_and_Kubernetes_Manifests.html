@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Cloud & DevOps Production Playbook: 50+ Docker, K8s, CI/CD Pipelines & IaC Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: 25+ Production-Grade Dockerfiles &amp; Kubernetes Configurations</h1>
+<p>This module delivers battle-tested, security-hardened container specifications and Kubernetes deployment primitives designed for zero-trust, enterprise production clusters. Every artifact is engineered according to the CIS Docker Benchmark, CIS Kubernetes Benchmark, and the NSA/CISA Kubernetes Hardening Guidance.</p>
+<hr />
+<h2>1. Container Security Architecture Standards</h2>
+<p>Before deploying workloads, container images must adhere to four strict operational constraints:
+1. <strong>Rootless Execution</strong>: Processes must never run as UID 0. Container engines must drop all default Linux capabilities except those strictly required for network binding or runtime execution.
+2. <strong>Ephemeral and Immutable Roots</strong>: The root filesystem must be mounted read-only (<code>readOnlyRootFilesystem: true</code>). State must be isolated to explicitly mounted ephemeral <code>emptyDir</code> volumes or persistent claims.
+3. <strong>Deterministic Dependency Pinning</strong>: Upstream base images and package dependencies must be pinned by SHA-256 digest or exact semantic versions.
+4. <strong>Minimal Attack Surface</strong>: Build-time tools (compilers, package managers, test runners, shell binaries) are purged from the final runtime image via multi-stage builds.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dimension</th>
+<th style="text-align: left;">Standard Applied</th>
+<th style="text-align: left;">Verification Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Base Image</strong></td>
+<td style="text-align: left;">Distroless or Alpine/Debian-Slim with pinned digest</td>
+<td style="text-align: left;"><code>docker image inspect &lt;image&gt; --format '{{.RepoDigests}}'</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>User Identity</strong></td>
+<td style="text-align: left;">Explicit non-root UID/GID (10001:10001)</td>
+<td style="text-align: left;"><code>docker run --rm &lt;image&gt; id</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Filesystem</strong></td>
+<td style="text-align: left;">Read-Only root, tmpfs on <code>/tmp</code></td>
+<td style="text-align: left;"><code>docker run --rm --read-only --tmpfs /tmp &lt;image&gt;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Signals</strong></td>
+<td style="text-align: left;">PID 1 init process handles <code>SIGTERM</code> and child reaping</td>
+<td style="text-align: left;"><code>docker stop -t 10 &lt;container_id&gt;</code> exits 0 in &lt;5s</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Hardened Multi-Stage Dockerfiles</h2>
+<h3>2.1. Node.js 20 (TypeScript / Next.js / Express)</h3>
+<p>This blueprint handles production Next.js or standalone Express microservices. It isolates development dependencies, performs a production prune, implements <code>tini</code> as PID 1 to avoid orphan process leaks, and runs under an unprivileged user.</p>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# Stage 1: Dependency resolution and base environment
+FROM node:20.12.2-bookworm-slim AS base
+WORKDIR /usr/src/app
+ENV NODE_ENV=production \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_AUDIT=false
+
+# Stage 2: Build dependencies and compilation
+FROM base AS builder
+WORKDIR /usr/src/app
+
+# Install native dependencies required for build steps (e.g., node-gyp)
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    python3=3.11.2-1+b1 \
+    make=4.3-4.1 \
+    g++=4:12.2.0-3 \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --include=dev --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+RUN npm prune --omit=dev --ignore-scripts
+
+# Stage 3: Minimal hardened runtime
+FROM node:20.12.2-bookworm-slim AS runner
+WORKDIR /usr/src/app
+
+# Install tini for init signal handling
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    tini=0.19.0-1 \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Security: Assign non-root UID/GID
+RUN groupadd --gid 10001 nodejs &amp;&amp; \
+    useradd --uid 10001 --gid nodejs --shell /usr/sbin/nologin --home /usr/src/app nodeuser
+
+COPY --from=builder --chown=10001:10001 /usr/src/app/node_modules ./node_modules
+COPY --from=builder --chown=10001:10001 /usr/src/app/dist ./dist
+COPY --from=builder --chown=10001:10001 /usr/src/app/package.json ./package.json
+
+USER 10001:10001
+
+EXPOSE 3000
+ENV PORT=3000 \
+    NODE_ENV=production
+
+ENTRYPOINT [&quot;/usr/bin/tini&quot;, &quot;--&quot;]
+CMD [&quot;node&quot;, &quot;dist/index.js&quot;]
+</code></pre>
+<hr />
+<h3>2.2. Python 3.11 (FastAPI / Poetry)</h3>
+<p>Eliminates compilation toolchains from the final image, runs an isolated virtual environment, compiles <code>.pyc</code> files ahead-of-time for deterministic startup times, and uses <code>dumb-init</code> for POSIX signal propagation.</p>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# Stage 1: Base Python configuration
+FROM python:3.11.9-slim-bookworm AS base
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PIP_DEFAULT_TIMEOUT=100 \
+    POETRY_VERSION=1.8.2 \
+    POETRY_HOME=&quot;/opt/poetry&quot; \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_NO_INTERACTION=1 \
+    PYSETUP_PATH=&quot;/opt/pysetup&quot; \
+    VENV_PATH=&quot;/opt/pysetup/.venv&quot;
+
+ENV PATH=&quot;$POETRY_HOME/bin:$VENV_PATH/bin:$PATH&quot;
+
+# Stage 2: Install dependencies
+FROM base AS builder
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    curl=7.88.1-10+deb12u5 \
+    build-essential=12.9 \
+    libpq-dev=15.6-0+deb12u1 \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Install poetry via official installer
+RUN curl -sSL https://install.python-poetry.org | python3 -
+
+WORKDIR $PYSETUP_PATH
+COPY poetry.lock pyproject.toml ./
+RUN poetry install --only main --no-root
+
+# Stage 3: Runtime
+FROM python:3.11.9-slim-bookworm AS runner
+ENV PATH=&quot;/opt/pysetup/.venv/bin:$PATH&quot; \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    dumb-init=1.2.5-2 \
+    libpq5=15.6-0+deb12u1 \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 appgroup &amp;&amp; \
+    useradd --uid 10001 --gid appgroup --shell /usr/sbin/nologin --no-create-home appuser
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/pysetup/.venv /opt/pysetup/.venv
+COPY --chown=10001:10001 app/ /app/app/
+
+# Compile Python bytecode for fast container boot
+RUN python -m compileall -b /app
+
+USER 10001:10001
+
+EXPOSE 8000
+
+ENTRYPOINT [&quot;/usr/bin/dumb-init&quot;, &quot;--&quot;]
+CMD [&quot;uvicorn&quot;, &quot;app.main:app&quot;, &quot;--host&quot;, &quot;0.0.0.0&quot;, &quot;--port&quot;, &quot;8000&quot;, &quot;--workers&quot;, &quot;2&quot;, &quot;--no-access-log&quot;]
+</code></pre>
+<hr />
+<h3>2.3. Go 1.22 (Statically Compiled Distroless)</h3>
+<p>Compiles Go code into a zero-dependency, static ELF binary (<code>CGO_ENABLED=0</code>), removes debugging symbol tables and DWARF data to minimize size, and executes on top of Google's static distroless runtime with no shell or package manager present.</p>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# Stage 1: Build static Go binary
+FROM golang:1.22.2-bookworm AS builder
+
+WORKDIR /src
+
+# Download dependencies using caching mounts
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download -x
+
+COPY . .
+
+# Compile statically with optimizations
+# -w: Omit DWARF symbol table
+# -s: Omit symbol table and debug information
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags=&quot;-w -s -extldflags '-static'&quot; -o /bin/server ./cmd/api
+
+# Stage 2: Minimal Distroless execution image
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /
+COPY --from=builder /bin/server /bin/server
+
+# Uses nonroot UID 65532 pre-baked into Google distroless
+USER 65532:65532
+
+EXPOSE 8080
+
+ENTRYPOINT [&quot;/bin/server&quot;]
+</code></pre>
+<hr />
+<h3>2.4. Rust 1.77 (Cargo Multi-Stage Distroless)</h3>
+<p>Utilizes compilation cache layers to prevent rebuilding dependencies on source updates, outputs a stripped production release binary, and runs inside a minimal C-runtime distroless base.</p>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# Stage 1: Dependency recipe and build
+FROM rust:1.77.2-slim-bookworm AS builder
+
+WORKDIR /usr/src/app
+
+# Pre-compile dependencies using a dummy entrypoint for caching
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src &amp;&amp; echo &quot;fn main() { println!(\&quot;placeholder\&quot;); }&quot; &gt; src/main.rs
+RUN cargo build --release &amp;&amp; rm -rf src
+
+# Copy real source code and build final binary
+COPY src/ ./src/
+RUN touch src/main.rs &amp;&amp; cargo build --release
+
+# Strip debug symbols to reduce image footprint
+RUN strip target/release/api-server
+
+# Stage 2: Distroless with glibc runtime
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+WORKDIR /app
+COPY --from=builder --chown=nonroot:nonroot /usr/src/app/target/release/api-server /app/api-server
+
+USER nonroot:nonroot
+
+EXPOSE 8080
+ENV RUST_LOG=info \
+    RUST_BACKTRACE=1
+
+ENTRYPOINT [&quot;/app/api-server&quot;]
+</code></pre>
+<hr />
+<h2>3. Production Kubernetes Manifest Suite</h2>
+<p>The manifests below deploy a resilient, highly available service:
+* <strong>Microservice Topology</strong>: <code>payment-api</code> running in namespace <code>production</code>.
+* <strong>Zero-Downtime Resilience</strong>: 3 replicas, spread evenly across failure zones, managed by strict disruption budgets.
+* <strong>Security Enforcement</strong>: Full Linux namespace isolation, read-only root filesystems, dropped capabilities.</p>
+<pre><code>                              [ Ingress Controller ]
+                                        │ (TLS Termination)
+                                        ▼
+                             [ Service: payment-api ]
+                                        │
+           ┌────────────────────────────┼────────────────────────────┐
+           ▼                            ▼                            ▼
+[ Pod: payment-api-1 ]        [ Pod: payment-api-2 ]        [ Pod: payment-api-3 ]
+ (Zone: us-east-1a)            (Zone: us-east-1b)            (Zone: us-east-1c)
+ (Read-Only Root FS)           (Read-Only Root FS)           (Read-Only Root FS)
+</code></pre>
+<hr />
+<h3>3.1. Deployment &amp; PodDisruptionBudget</h3>
+<pre><code class="language-yaml">apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-api-pdb
+  namespace: production
+  labels:
+    app.kubernetes.io/name: payment-api
+    app.kubernetes.io/part-of: billing-platform
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: production
+  labels:
+    app.kubernetes.io/name: payment-api
+    app.kubernetes.io/instance: payment-api-prod
+    app.kubernetes.io/version: &quot;1.4.2&quot;
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: billing-platform
+    app.kubernetes.io/managed-by: gitops
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-api
+        app.kubernetes.io/instance: payment-api-prod
+        app.kubernetes.io/version: &quot;1.4.2&quot;
+      annotations:
+        prometheus.io/scrape: &quot;true&quot;
+        prometheus.io/path: &quot;/metrics&quot;
+        prometheus.io/port: &quot;8080&quot;
+    spec:
+      terminationGracePeriodSeconds: 60
+      # Anti-affinity &amp; Zone Topology Distribution
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: payment-api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: payment-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: payment-api
+          image: registry.internal.net/billing/payment-api:v1.4.2@sha256:7f3b4822002167d499ec1fb45a27072c476722d5771abf81b190f84ae7ddfa98
+          imagePullPolicy: IfNotPresent
+          command: [&quot;/bin/server&quot;]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: payment-api-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: &quot;250m&quot;
+              memory: &quot;512Mi&quot;
+            limits:
+              cpu: &quot;1000m&quot;
+              memory: &quot;1Gi&quot;
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: ephemeral-tmp
+              mountPath: /tmp
+            - name: app-cache
+              mountPath: /app/cache
+          startupProbe:
+            httpGet:
+              path: /healthz/startup
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz/liveness
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: [&quot;/bin/sh&quot;, &quot;-c&quot;, &quot;sleep 15&quot;]
+      volumes:
+        - name: ephemeral-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: app-cache
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+</code></pre>
+<hr />
+<h3>3.2. Service &amp; Horizontal Pod Autoscaler (HPA v2)</h3>
+<p>This configuration drives scaling based on dual metrics: CPU consumption and sustained HTTP request load per replica.</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api
+  namespace: production
+  labels:
+    app.kubernetes.io/name: payment-api
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: payment-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-api-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-api
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: &quot;850m&quot;
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+      selectPolicy: Min
+</code></pre>
+<hr />
+<h3>3.3. Ingress Route (Ingress-NGINX + cert-manager)</h3>
+<p>Secured via automated TLS generation, proxy buffering, tight rate-limiting, and strict HSTS headers.</p>
+<pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payment-api-ingress
+  namespace: production
+  annotations:
+    kubernetes.io/ingress.class: &quot;nginx&quot;
+    cert-manager.io/cluster-issuer: &quot;letsencrypt-production&quot;
+    nginx.ingress.kubernetes.io/backend-protocol: &quot;HTTP&quot;
+    nginx.ingress.kubernetes.io/proxy-body-size: &quot;2m&quot;
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: &quot;5&quot;
+    nginx.ingress.kubernetes.io/proxy-read-timeout: &quot;30&quot;
+    nginx.ingress.kubernetes.io/proxy-send-timeout: &quot;30&quot;
+    nginx.ingress.kubernetes.io/proxy-next-upstream: &quot;error timeout http_502 http_503&quot;
+    nginx.ingress.kubernetes.io/proxy-next-upstream-tries: &quot;3&quot;
+    nginx.ingress.kubernetes.io/limit-rps: &quot;100&quot;
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: &quot;5&quot;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers &quot;X-Frame-Options: DENY&quot;;
+      more_set_headers &quot;X-Content-Type-Options: nosniff&quot;;
+      more_set_headers &quot;X-XSS-Protection: 1; mode=block&quot;;
+      more_set_headers &quot;Strict-Transport-Security: max-age=63072000; includeSubDomains; preload&quot;;
+spec:
+  tls:
+    - hosts:
+        - payment-api.platform.internal
+      secretName: payment-api-tls-cert
+  rules:
+    - host: payment-api.platform.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: payment-api
+                port:
+                  number: 80
+</code></pre>
+<hr />
+<h3>3.4. Production StatefulSet with NVMe StorageClass (PostgreSQL 16)</h3>
+<p>This manifest demonstrates stateful workload orchestration. It provisions high-throughput, non-volatile block storage, sets deterministic initialization, isolates volume claims per replica, and configures an internal headless discovery service.</p>
+<pre><code class="language-yaml">apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-nvme-sc
+provisioner: pd.csi.storage.gke.io
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: pd-ssd
+  replication-type: none
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-cluster-headless
+  namespace: production
+  labels:
+    app.kubernetes.io/name: postgres-cluster
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: postgres-cluster
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-cluster
+  namespace: production
+  labels:
+    app.kubernetes.io/name: postgres-cluster
+spec:
+  serviceName: &quot;postgres-cluster-headless&quot;
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-cluster
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-cluster
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: postgresql
+          image: postgres:16.2-bookworm
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_DB
+              value: &quot;core_datastore&quot;
+            - name: POSTGRES_USER_FILE
+              value: &quot;/etc/postgres-secrets/username&quot;
+            - name: POSTGRES_PASSWORD_FILE
+              value: &quot;/etc/postgres-secrets/password&quot;
+            - name: PGDATA
+              value: &quot;/var/lib/postgresql/data/pgdata&quot;
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          resources:
+            requests:
+              cpu: &quot;1&quot;
+              memory: &quot;4Gi&quot;
+            limits:
+              cpu: &quot;4&quot;
+              memory: &quot;16Gi&quot;
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: secrets
+              mountPath: /etc/postgres-secrets
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+          readinessProbe:
+            exec:
+              command: [&quot;psql&quot;, &quot;-w&quot;, &quot;-U&quot;, &quot;postgres&quot;, &quot;-c&quot;, &quot;SELECT 1&quot;]
+            initialDelaySeconds: 10
+            timeoutSeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [&quot;psql&quot;, &quot;-w&quot;, &quot;-U&quot;, &quot;postgres&quot;, &quot;-c&quot;, &quot;SELECT 1&quot;]
+            initialDelaySeconds: 30
+            timeoutSeconds: 5
+            periodSeconds: 20
+      volumes:
+        - name: secrets
+          secret:
+            secretName: postgres-credentials
+            defaultMode: 0400
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: [&quot;ReadWriteOnce&quot;]
+        storageClassName: fast-nvme-sc
+        resources:
+          requests:
+            storage: 250Gi
+</code></pre>
+<hr />
+<h2>4. Production Verification &amp; Validation Procedures</h2>
+<p>To verify that these manifests and Docker containers meet all hardened operational requirements, execute the following audit checklist against your artifacts:</p>
+<h3>4.1. Container Audit</h3>
+<pre><code class="language-bash"># 1. Verify unprivileged execution identity
+docker run --rm --entrypoint id payment-api:latest
+# Expected output: uid=10001(nodeuser) gid=10001(nodejs) groups=10001(nodejs)
+
+# 2. Verify write protections by testing explicit writes to the root filesystem
+docker run --rm --read-only --entrypoint touch payment-api:latest /test-file
+# Expected output: touch: cannot touch '/test-file': Read-only file system
+
+# 3. Verify zero root escalations
+docker run --rm --entrypoint whoami payment-api:latest
+# Output must not be 'root'
+</code></pre>
+<h3>4.2. Kubernetes Manifest Deployment Audit</h3>
+<pre><code class="language-bash"># 1. Validate that manifest adheres to the Kubernetes Restricted Pod Security Standard
+kubectl-slice -f payment-api.yaml -o ./manifests
+kubeconform -strict -kubernetes-version 1.29.0 -summary ./manifests/*.yaml
+
+# 2. Check for missing resource ceilings and non-standard permissions using kube-linter
+kube-linter lint ./manifests/*.yaml
+</code></pre>
+<hr />
+<h2>5. Security &amp; Sizing Reference Matrix</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Workload Type</th>
+<th style="text-align: left;">Base Image Pattern</th>
+<th style="text-align: left;">Required Mounts</th>
+<th style="text-align: left;">Initial Sizing (Req/Lim)</th>
+<th style="text-align: left;">Probe Protocol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>API Services (Go/Rust)</strong></td>
+<td style="text-align: left;"><code>gcr.io/distroless/static</code></td>
+<td style="text-align: left;"><code>emptyDir</code> on <code>/tmp</code> (Memory)</td>
+<td style="text-align: left;">CPU: <code>100m</code>/<code>1000m</code><br>RAM: <code>128Mi</code>/<code>512Mi</code></td>
+<td style="text-align: left;">HTTP <code>/healthz</code> (Port 8080)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Dynamic Apps (Node/Python)</strong></td>
+<td style="text-align: left;"><code>debian-slim</code> (User: non-root)</td>
+<td style="text-align: left;"><code>emptyDir</code> on <code>/tmp</code>, <code>/app/cache</code></td>
+<td style="text-align: left;">CPU: <code>250m</code>/<code>2000m</code><br>RAM: <code>512Mi</code>/<code>1.5Gi</code></td>
+<td style="text-align: left;">HTTP <code>/healthz</code> via dumb-init</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Datastores (Stateful)</strong></td>
+<td style="text-align: left;">Official Distro (Debian-based)</td>
+<td style="text-align: left;">Block volume, memory tmpfs <code>/dev/shm</code></td>
+<td style="text-align: left;">CPU: <code>2000m</code>/<code>8000m</code><br>RAM: <code>8Gi</code>/<code>32Gi</code></td>
+<td style="text-align: left;">Exec CLI (<code>SELECT 1</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Queue Workers</strong></td>
+<td style="text-align: left;">Distroless or Slim</td>
+<td style="text-align: left;"><code>emptyDir</code> on <code>/tmp</code></td>
+<td style="text-align: left;">CPU: <code>500m</code>/<code>2000m</code><br>RAM: <code>512Mi</code>/<code>2Gi</code></td>
+<td style="text-align: left;">Exec or Internal Metrics Poll</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

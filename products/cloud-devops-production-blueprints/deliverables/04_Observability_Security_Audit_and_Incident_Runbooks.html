@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Cloud & DevOps Production Playbook: 50+ Docker, K8s, CI/CD Pipelines & IaC Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Observability Stacks, Hardening Checklists &amp; Incident Runbooks</h1>
+<h2>1. Production Observability Stack Architecture</h2>
+<p>This observability architecture deploys an end-to-end OpenTelemetry (OTel) Collector DaemonSet that intercepts application traces, infrastructure metrics, and container stdout logs. It pipelines these telemetry streams directly to Prometheus, Grafana Tempo, and Grafana Loki.</p>
+<pre><code>+---------------------------------------------------------------------------------------+
+|                                    Kubernetes Node                                    |
+|                                                                                       |
+|  +--------------------+   +--------------------+   +-------------------------------+  |
+|  | Application Pod A  |   | Application Pod B  |   | /var/log/pods/*               |  |
+|  | (OTel SDK Traces)  |   | (Prometheus /metrics)  | (Kubelet Log Sinks)           |  |
+|  +---------+----------+   +---------+----------+   +---------------+---------------+  |
+|            | OTLP/gRPC :4317        | HTTP :8080 Scraping          | Symlink Scraping |
+|            +-------------------+    |    +-------------------------+                  |
+|                                |    |    |                                            |
+|                                v    v    v                                            |
+|                  +-----------------------------+                                      |
+|                  | OpenTelemetry Collector     |                                      |
+|                  | (DaemonSet Instance)        |                                      |
+|                  +--------------+--------------+                                      |
++---------------------------------|-----------------------------------------------------+
+                                  |
+            +---------------------+---------------------+
+            | Remote Write OTLP   | Remote Write HTTP   | Push API / gRPC
+            v                     v                     v
++---------------------+ +---------------------+ +---------------------+
+| Grafana Tempo       | | Prometheus Server   | | Grafana Loki        |
+| (Distributed Traces)| | (TSDB Metrics)      | | (Aggregated Logs)   |
++---------------------+ +---------------------+ +---------------------+
+</code></pre>
+<h3>1.1 OpenTelemetry Collector DaemonSet Configuration</h3>
+<p>The following configuration deploys the OpenTelemetry Collector as a DaemonSet to ensure node-local data collection with minimal network overhead.</p>
+<p>Save this manifest as <code>otel-collector-daemonset.yaml</code>:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otel-collector
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'kubernetes-pods'
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  action: keep
+                  regex: true
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+                  action: replace
+                  target_label: __metrics_path__
+                  regex: (.+)
+                - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                  action: replace
+                  regex: ([^:]+)(?::\d+)?;(\d+)
+                  replacement: $1:$2
+                  target_label: __address__
+                - action: labelmap
+                  regex: __meta_kubernetes_pod_label_(.+)
+                - source_labels: [__meta_kubernetes_namespace]
+                  action: replace
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  action: replace
+                  target_label: pod
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude:
+          - /var/log/pods/monitoring_*/*/*.log
+        start_at: end
+        include_file_path: true
+        include_file_name: false
+        operators:
+          - type: container
+            id: container-parser
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+      batch:
+        send_batch_size: 8192
+        timeout: 200ms
+        send_batch_max_size: 10240
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 2s
+        override: false
+      k8sattributes:
+        auth_type: &quot;serviceAccount&quot;
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.namespace.name
+            - k8s.node.name
+            - star.status.phase
+
+    exporters:
+      prometheus:
+        endpoint: &quot;0.0.0.0:8889&quot;
+        namespace: &quot;production&quot;
+        send_timestamps: true
+      otlp/tempo:
+        endpoint: &quot;tempo-distributor.monitoring.svc.cluster.local:4317&quot;
+        tls:
+          insecure: true
+      otlphttp/loki:
+        endpoint: &quot;http://loki-gateway.monitoring.svc.cluster.local/otlp&quot;
+        tls:
+          insecure: true
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [filelog]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlphttp/loki]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+      annotations:
+        prometheus.io/scrape: &quot;true&quot;
+        prometheus.io/port: &quot;8889&quot;
+        prometheus.io/path: &quot;/metrics&quot;
+    spec:
+      serviceAccountName: otel-collector
+      terminationGracePeriodSeconds: 30
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - &quot;/otelcol-contrib&quot;
+            - &quot;--config=/conf/otel-collector-config.yaml&quot;
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              hostPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              hostPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8889
+              protocol: TCP
+            - name: healthz
+              containerPort: 13133
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            runAsNonRoot: false
+            runAsUser: 0
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: [&quot;&quot;]
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+    verbs: [&quot;get&quot;, &quot;list&quot;, &quot;watch&quot;]
+  - apiGroups: [&quot;apps&quot;]
+    resources:
+      - daemonsets
+      - statefulsets
+      - deployments
+      - replicasets
+    verbs: [&quot;get&quot;, &quot;list&quot;, &quot;watch&quot;]
+  - apiGroups: [&quot;extensions&quot;]
+    resources: [&quot;*&quot;]
+    verbs: [&quot;get&quot;, &quot;list&quot;, &quot;watch&quot;]
+  - nonResourceURLs: [&quot;/metrics&quot;]
+    verbs: [&quot;get&quot;]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: monitoring
+</code></pre>
+<h3>1.2 Enterprise Prometheus Alerting Rules</h3>
+<p>Save these production alert rules as <code>prometheus-alerts-production.yaml</code>. They detect resource exhaustion, control-plane anomalies, service instability, and ingress latency regressions.</p>
+<pre><code class="language-yaml">apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: enterprise-platform-alerts
+  namespace: monitoring
+  labels:
+    role: alert-rules
+    prometheus: k8s
+spec:
+  groups:
+    - name: node.rules
+      rules:
+        - alert: HostMemoryUnderSeverePressure
+          expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 &lt; 10
+          for: 3m
+          labels:
+            severity: critical
+            tier: infrastructure
+          annotations:
+            summary: &quot;Host memory critically low on {{ $labels.instance }}&quot;
+            description: &quot;Node {{ $labels.instance }} has less than 10% available memory (Current: {{ $value | printf \&quot;%.2f\&quot; }}%). OOM kills imminent.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/host-memory-exhaustion&quot;
+
+        - alert: HostDiskWillFillIn6Hours
+          expr: (predict_linear(node_filesystem_free_bytes{fstype!~&quot;tmpfs|overlay&quot;}[1h], 6 * 3600) &lt; 0) and (node_filesystem_free_bytes{fstype!~&quot;tmpfs|overlay&quot;} / node_filesystem_size_bytes{fstype!~&quot;tmpfs|overlay&quot;} &lt; 0.15)
+          for: 15m
+          labels:
+            severity: warning
+            tier: infrastructure
+          annotations:
+            summary: &quot;Filesystem on {{ $labels.instance }} projected to fill within 6 hours&quot;
+            description: &quot;Mountpoint {{ $labels.mountpoint }} on {{ $labels.instance }} is filling rapidly and has &lt; 15% free space remaining.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/disk-filling&quot;
+
+    - name: workload.rules
+      rules:
+        - alert: KubernetesPodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[5m]) * 60 &gt; 2
+          for: 2m
+          labels:
+            severity: critical
+            tier: applications
+          annotations:
+            summary: &quot;Pod {{ $labels.pod }} is crash looping&quot;
+            description: &quot;Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} (container: {{ $labels.container }}) has restarted &gt; 2 times in the last 5 minutes.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/pod-crashloop&quot;
+
+        - alert: ContainerOOMKilled
+          expr: (kube_pod_container_status_terminated_reason{reason=&quot;OOMKilled&quot;} == 1) or (increase(node_vmstat_oom_kill[5m]) &gt; 0)
+          for: 0m
+          labels:
+            severity: critical
+            tier: applications
+          annotations:
+            summary: &quot;Container or Host hit Out-Of-Memory condition&quot;
+            description: &quot;Namespace: {{ $labels.namespace }}, Pod: {{ $labels.pod }} was killed due to Out-Of-Memory limits.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/container-oomkilled&quot;
+
+    - name: api-ingress.rules
+      rules:
+        - alert: IngressHigh5xxErrorRate
+          expr: (sum(rate(nginx_ingress_controller_requests{status=~&quot;5.*&quot;}[5m])) / sum(rate(nginx_ingress_controller_requests[5m]))) * 100 &gt; 5
+          for: 2m
+          labels:
+            severity: critical
+            tier: networking
+          annotations:
+            summary: &quot;High HTTP 5xx error rate on Ingress&quot;
+            description: &quot;Ingress 5XX failure rate exceeds 5% across the last 5 minutes. Current rate: {{ $value | printf \&quot;%.2f\&quot; }}%.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/ingress-5xx-spike&quot;
+
+        - alert: ApiP99LatencyBreach
+          expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{route!~&quot;/healthz|/ready|/metrics&quot;}[5m])) by (le, route)) &gt; 1.2
+          for: 3m
+          labels:
+            severity: warning
+            tier: applications
+          annotations:
+            summary: &quot;API route p99 latency exceeds 1.2 seconds&quot;
+            description: &quot;Route {{ $labels.route }} p99 response duration is {{ $value | printf \&quot;%.3f\&quot; }}s for more than 3 minutes.&quot;
+            runbook_url: &quot;https://wiki.internal.net/ops/runbooks/latency-degradation&quot;
+</code></pre>
+<h3>1.3 Declarative Grafana Provisioning (RED Metrics)</h3>
+<p>Configure automated datasource creation and dashboard provisioning to avoid manual UI manipulation.</p>
+<p>Save this manifest as <code>grafana-datasources-provisioning.yaml</code>:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+  labels:
+    grafana_datasource: &quot;1&quot;
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-k8s.monitoring.svc.cluster.local:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: &quot;15s&quot;
+          httpMethod: &quot;POST&quot;
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo-query-frontend.monitoring.svc.cluster.local:3100
+        isDefault: false
+        editable: false
+        jsonData:
+          tracesToLogs:
+            datasourceUid: 'loki'
+            tags: ['job', 'instance', 'pod', 'namespace']
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki-gateway.monitoring.svc.cluster.local:80
+        isDefault: false
+        editable: false
+        jsonData:
+          maxLines: 5000
+          derivedFields:
+            - matcherRegex: &quot;traceID=(\\w+)&quot;
+              name: TraceID
+              url: '$${__trace.id}'
+              datasourceUid: 'Tempo'
+</code></pre>
+<p>Save this RED (Rate, Errors, Duration) metrics dashboard definition as <code>grafana-dashboard-red.json</code>:</p>
+<pre><code class="language-json">{
+  &quot;annotations&quot;: { &quot;list&quot;: [] },
+  &quot;editable&quot;: false,
+  &quot;fiscalYearStartMonth&quot;: 0,
+  &quot;graphTooltip&quot;: 1,
+  &quot;id&quot;: null,
+  &quot;links&quot;: [],
+  &quot;liveNow&quot;: false,
+  &quot;panels&quot;: [
+    {
+      &quot;collapsed&quot;: false,
+      &quot;gridPos&quot;: { &quot;h&quot;: 8, &quot;w&quot;: 8, &quot;x&quot;: 0, &quot;y&quot;: 0 },
+      &quot;id&quot;: 1,
+      &quot;title&quot;: &quot;Rate: Requests Per Second&quot;,
+      &quot;type&quot;: &quot;timeseries&quot;,
+      &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+      &quot;targets&quot;: [
+        {
+          &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+          &quot;expr&quot;: &quot;sum(rate(http_requests_total{namespace=~\&quot;$namespace\&quot;}[$__rate_interval])) by (service)&quot;,
+          &quot;legendFormat&quot;: &quot;{{service}} (RPS)&quot;
+        }
+      ],
+      &quot;fieldConfig&quot;: {
+        &quot;defaults&quot;: {
+          &quot;custom&quot;: { &quot;drawStyle&quot;: &quot;line&quot;, &quot;lineInterpolation&quot;: &quot;smooth&quot; },
+          &quot;unit&quot;: &quot;reqps&quot;
+        }
+      }
+    },
+    {
+      &quot;collapsed&quot;: false,
+      &quot;gridPos&quot;: { &quot;h&quot;: 8, &quot;w&quot;: 8, &quot;x&quot;: 8, &quot;y&quot;: 0 },
+      &quot;id&quot;: 2,
+      &quot;title&quot;: &quot;Errors: 5xx Return Rate&quot;,
+      &quot;type&quot;: &quot;timeseries&quot;,
+      &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+      &quot;targets&quot;: [
+        {
+          &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+          &quot;expr&quot;: &quot;sum(rate(http_requests_total{status=~\&quot;5.*\&quot;, namespace=~\&quot;$namespace\&quot;}[$__rate_interval])) by (service) / sum(rate(http_requests_total{namespace=~\&quot;$namespace\&quot;}[$__rate_interval])) by (service) * 100&quot;,
+          &quot;legendFormat&quot;: &quot;{{service}} Error %&quot;
+        }
+      ],
+      &quot;fieldConfig&quot;: {
+        &quot;defaults&quot;: {
+          &quot;custom&quot;: { &quot;drawStyle&quot;: &quot;line&quot;, &quot;lineInterpolation&quot;: &quot;smooth&quot; },
+          &quot;unit&quot;: &quot;percent&quot;,
+          &quot;thresholds&quot;: {
+            &quot;mode&quot;: &quot;absolute&quot;,
+            &quot;steps&quot;: [
+              { &quot;color&quot;: &quot;green&quot;, &quot;value&quot;: null },
+              { &quot;color&quot;: &quot;yellow&quot;, &quot;value&quot;: 1 },
+              { &quot;color&quot;: &quot;red&quot;, &quot;value&quot;: 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      &quot;collapsed&quot;: false,
+      &quot;gridPos&quot;: { &quot;h&quot;: 8, &quot;w&quot;: 8, &quot;x&quot;: 16, &quot;y&quot;: 0 },
+      &quot;id&quot;: 3,
+      &quot;title&quot;: &quot;Duration: p99 Transaction Latency&quot;,
+      &quot;type&quot;: &quot;timeseries&quot;,
+      &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+      &quot;targets&quot;: [
+        {
+          &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+          &quot;expr&quot;: &quot;histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=~\&quot;$namespace\&quot;}[$__rate_interval])) by (le, service))&quot;,
+          &quot;legendFormat&quot;: &quot;{{service}} p99&quot;
+        }
+      ],
+      &quot;fieldConfig&quot;: {
+        &quot;defaults&quot;: {
+          &quot;custom&quot;: { &quot;drawStyle&quot;: &quot;line&quot;, &quot;lineInterpolation&quot;: &quot;smooth&quot; },
+          &quot;unit&quot;: &quot;s&quot;
+        }
+      }
+    }
+  ],
+  &quot;refresh&quot;: &quot;10s&quot;,
+  &quot;schemaVersion&quot;: 38,
+  &quot;style&quot;: &quot;dark&quot;,
+  &quot;tags&quot;: [&quot;production&quot;, &quot;red-metrics&quot;],
+  &quot;time&quot;: { &quot;from&quot;: &quot;now-1h&quot;, &quot;to&quot;: &quot;now&quot; },
+  &quot;timepicker&quot;: { &quot;refresh_intervals&quot;: [&quot;5s&quot;, &quot;10s&quot;, &quot;30s&quot;, &quot;1m&quot;] },
+  &quot;timezone&quot;: &quot;utc&quot;,
+  &quot;title&quot;: &quot;Production Service Golden Signals (RED)&quot;,
+  &quot;uid&quot;: &quot;golden-signals-red&quot;,
+  &quot;variables&quot;: {
+    &quot;list&quot;: [
+      {
+        &quot;current&quot;: { &quot;text&quot;: &quot;production&quot;, &quot;value&quot;: &quot;production&quot; },
+        &quot;datasource&quot;: { &quot;type&quot;: &quot;prometheus&quot;, &quot;uid&quot;: &quot;Prometheus&quot; },
+        &quot;definition&quot;: &quot;label_values(http_requests_total, namespace)&quot;,
+        &quot;hide&quot;: 0,
+        &quot;includeAll&quot;: false,
+        &quot;name&quot;: &quot;namespace&quot;,
+        &quot;query&quot;: &quot;label_values(http_requests_total, namespace)&quot;,
+        &quot;refresh&quot;: 1,
+        &quot;type&quot;: &quot;query&quot;
+      }
+    ]
+  }
+}
+</code></pre>
+<hr />
+<h2>2. Kubernetes CIS Benchmark &amp; Security Hardening Audit Rubric</h2>
+<p>The following rubric provides explicit verification mechanics, commands, and actionable remediations mapped to the CIS Kubernetes Benchmark.</p>
+<h3>2.1 Audit Rubric Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Control ID</th>
+<th style="text-align: left;">Benchmark Item</th>
+<th style="text-align: left;">Automated Audit Command</th>
+<th style="text-align: left;">Expected Compliant Output</th>
+<th style="text-align: left;">Immediate Remediation Execution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>CIS-1.2.1</strong></td>
+<td style="text-align: left;">Ensure Anonymous Requests to Kube-API are Disabled</td>
+<td style="text-align: left;"><code>kubectl get nodes -v=0 &amp;&gt;/dev/null &amp;&amp; curl -sk https://&lt;APISERVER_IP&gt;:6443/api | jq .</code></td>
+<td style="text-align: left;">Return HTTP <code>401 Unauthorized</code> or empty anonymous access block.</td>
+<td style="text-align: left;">Append <code>--anonymous-auth=false</code> to <code>/etc/kubernetes/manifests/kube-apiserver.yaml</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CIS-1.2.20</strong></td>
+<td style="text-align: left;">Ensure Node-Restriction is Enabled</td>
+<td style="text-align: left;"><code>grep -E '--enable-admission-plugins=.*NodeRestriction' /etc/kubernetes/manifests/kube-apiserver.yaml</code></td>
+<td style="text-align: left;">Output matches <code>--enable-admission-plugins=...,NodeRestriction,...</code></td>
+<td style="text-align: left;">Add <code>NodeRestriction</code> to the comma-separated <code>--enable-admission-plugins</code> list.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CIS-4.2.6</strong></td>
+<td style="text-align: left;">Protect Containers from Running with <code>root</code> Execution UID</td>
+<td style="text-align: left;"><code>kubectl get pods --all-namespaces -o json \| jq -r '.items[] \| select(.spec.securityContext.runAsNonRoot != true and (.spec.containers[].securityContext.runAsNonRoot != true)) \| .metadata.namespace + "/" + .metadata.name'</code></td>
+<td style="text-align: left;">Empty response (no pods returned).</td>
+<td style="text-align: left;">Inject <code>securityContext.runAsNonRoot: true</code> and <code>runAsUser: 10001</code> in Pod templates.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CIS-4.2.1</strong></td>
+<td style="text-align: left;">Restrict HostPath Volume Mounts</td>
+<td style="text-align: left;"><code>kubectl get pods --all-namespaces -o json \| jq -r '.items[] \| select(.spec.volumes[]?.hostPath != null) \| .metadata.namespace + "/" + .metadata.name'</code></td>
+<td style="text-align: left;">Empty response (except for system DaemonSets e.g., CNI).</td>
+<td style="text-align: left;">Remove <code>hostPath</code> declarations; replace with <code>PersistentVolumeClaim</code> or <code>emptyDir</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CIS-5.1.3</strong></td>
+<td style="text-align: left;">Minimize Wildcard Permissions in ClusterRoles</td>
+<td style="text-align: left;"><code>kubectl get clusterroles -o json \| jq -r '.items[] \| select(.rules[]? \| select((.verbs[]? == "*") or (.resources[]? == "*"))) \| .metadata.name'</code></td>
+<td style="text-align: left;">Only default system roles (<code>cluster-admin</code>, <code>admin</code>).</td>
+<td style="text-align: left;">Rewrite ClusterRole RBAC rules explicitly; strip <code>*</code> verbs and targets.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CIS-5.7.1</strong></td>
+<td style="text-align: left;">Default Deny Network Policies on Namespaces</td>
+<td style="text-align: left;"><code>for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do count=$(kubectl get netpol -n $ns --no-headers 2&gt;/dev/null | wc -l); if [ $count -eq 0 ]; then echo "Missing NetPol: $ns"; fi; done</code></td>
+<td style="text-align: left;">All production/tenant namespaces have active NetworkPolicies.</td>
+<td style="text-align: left;">Apply default-deny <code>NetworkPolicy</code> to isolated namespaces.</td>
+</tr>
+</tbody>
+</table>
+<h3>2.2 Namespace Hardening: Pod Security Admission (PSA)</h3>
+<p>Enforce the Kubernetes Pod Security Standard <code>restricted</code> profile on all production namespaces by applying declarative metadata labels.</p>
+<p>Save this manifest as <code>namespace-security-hardening.yaml</code>:</p>
+<pre><code class="language-yaml">apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: security-compliance-test-pod
+  namespace: production
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: hardened-test
+      image: cgr.dev/chainguard/static:latest
+      command: [&quot;/bin/sleep&quot;, &quot;3600&quot;]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
+</code></pre>
+<h3>2.3 Zero-Trust Default-Deny NetworkPolicy</h3>
+<p>Apply this policy to isolate target pods. It drops all egress and ingress traffic unless explicitly allowed.</p>
+<p>Save this manifest as <code>zero-trust-default-deny.yaml</code>:</p>
+<pre><code class="language-yaml">apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-system-dns-and-internal-ingress
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: core-services
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Allow DNS Resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow DB egress within secure-data namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: databases
+      ports:
+        - protocol: TCP
+          port: 5432
+</code></pre>
+<hr />
+<h2>3. Automated Zero-Downtime TLS/SSL Management</h2>
+<p>This section establishes automated certificate lifecycle management using <code>cert-manager</code> with Let's Encrypt, securing ingresses via Cloudflare DNS-01 and HTTP-01 automated fallback hooks.</p>
+<h3>3.1 Cert-Manager Production Setup and ClusterIssuer</h3>
+<p>Apply the Cloudflare API Token as a secure Kubernetes secret.</p>
+<pre><code class="language-bash">kubectl create secret generic cloudflare-api-token-secret \
+  --namespace cert-manager \
+  --from-literal=api-token=&quot;v-X91b8A_dE9EXAMPLETOKENqL283jXl_d89234&quot;
+</code></pre>
+<p>Save this ClusterIssuer configuration as <code>letsencrypt-production-issuer.yaml</code>:</p>
+<p>```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-production
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: security-operations@internal.net
+    privateKeySecretRef:
+      name: letsencrypt-production-account-key
+    solvers:
+      # Primary Solver: DNS-01 for Wildcards and Apex Domains
+      - selector:
+          dnsZones:
+            - "internal.net"
+            - "production-domain.com"
+        dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token-secret
+              key: api-token
+      # Fallback Solver: HTTP-01 for public HTTP routing endpoints
+      - selector:
+          matchLabels:
+            use-http01-solver: "true"
+        http01:
+          ingress:
+            class: nginx</p>
+</body>
+</html>

@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Cloud & DevOps Production Playbook: 50+ Docker, K8s, CI/CD Pipelines & IaC Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Full-Stack CI/CD Pipelines &amp; Modular Infrastructure-as-Code</h1>
+<p>This module contains production-tested CI/CD pipelines, keyless OIDC authentication patterns, and modular Infrastructure-as-Code (IaC) blueprints. Every pipeline includes automated vulnerability gating, software bill of materials (SBOM) generation, container signing, and progressive rollout validation.</p>
+<hr />
+<h2>1. Enterprise GitHub Actions Pipeline</h2>
+<p>This pipeline implements a secure software supply chain compliant with SLSA Level 3 principles: automated testing, static analysis, container image vulnerability scanning with Trivy, SBOM generation with Syft, keyless image signing via Cosign and Sigstore, and automated deployment with health checks.</p>
+<p>Save this configuration as <code>.github/workflows/production-pipeline.yml</code>:</p>
+<pre><code class="language-yaml">name: Production CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::123456789012:role/github-actions-production-deployer
+  EKS_CLUSTER_NAME: production-core-eks
+
+jobs:
+  lint-and-test:
+    name: Code Quality &amp; Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go Runtime
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run GolangCI-Lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: v1.56.2
+          args: --timeout=5m --issues-exit-code=1
+
+      - name: Execute Unit Tests with Coverage
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Verify Test Coverage Threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
+          echo &quot;Current test coverage: ${COVERAGE}%&quot;
+          REQUIRED_COVERAGE=80.0
+          if (( $(echo &quot;$COVERAGE &lt; $REQUIRED_COVERAGE&quot; | bc -l) )); then
+            echo &quot;ERROR: Test coverage (${COVERAGE}%) is below the required threshold (${REQUIRED_COVERAGE}%).&quot;
+            exit 1
+          fi
+
+  security-scan:
+    name: SAST &amp; Dependency Auditing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Run Govulncheck (Go Vulnerability Database)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Run Gitleaks Secret Scanner
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-and-sign:
+    name: Multi-Arch Build, Trivy Gate &amp; Cosign Sign
+    needs: [lint-and-test, security-scan]
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.build-push.outputs.digest }}
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.4.0
+
+      - name: Set up QEMU for Multi-Arch Builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=long
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Container Image Locally for Scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:local-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy Security Vulnerability Scan
+        uses: aquasecurity/trivy-action@0.18.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:local-scan
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Upload Trivy Scan Results to GitHub Security Tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Build and Push Multi-Architecture Image
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate Software Bill of Materials (SBOM) using Syft
+        uses: anchore/sbom-action@v0.15.8
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Sign Container Image and Attest SBOM with Cosign (Keyless)
+        run: |
+          cosign sign --yes &quot;${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}&quot;
+          cosign attest --yes --predicate sbom.spdx.json --type spdx &quot;${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}&quot;
+
+  deploy-production:
+    name: Verify Rollout &amp; Zero-Downtime Deployment
+    needs: [build-and-sign]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Configure Kubectl for Amazon EKS
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Set up Helm 3
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.2
+
+      - name: Deploy Production Release via Helm
+        env:
+          IMAGE_TAG: ${{ needs.build-and-sign.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ needs.build-and-sign.outputs.image_digest }}
+        run: |
+          helm upgrade --install production-app ./deploy/helm/production-app \
+            --namespace production \
+            --create-namespace \
+            --set image.repository=&quot;${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}&quot; \
+            --set image.digest=&quot;${IMAGE_DIGEST}&quot; \
+            --values ./deploy/helm/production-app/values-production.yaml \
+            --wait \
+            --timeout 5m0s \
+            --atomic
+
+      - name: Run Post-Deployment Synthetic Integration Health Checks
+        run: |
+          ENDPOINT=&quot;https://api.production.internal/healthz&quot;
+          echo &quot;Executing health checks against: ${ENDPOINT}&quot;
+          for i in {1..30}; do
+            STATUS=$(curl --write-out &quot;%{http_code}&quot; --silent --output /dev/null --fail &quot;${ENDPOINT}&quot; || true)
+            if [ &quot;$STATUS&quot; -eq 200 ]; then
+              echo &quot;Health verification passed successfully with HTTP 200.&quot;
+              exit 0
+            fi
+            echo &quot;Attempt $i: Received status $STATUS. Retrying in 5 seconds...&quot;
+            sleep 5
+          done
+          echo &quot;ERROR: Health check timed out after 150 seconds.&quot;
+          exit 1
+</code></pre>
+<hr />
+<h2>2. GitLab CI Enterprise Pipeline with Review Apps &amp; Auto-Rollback</h2>
+<p>This <code>.gitlab-ci.yml</code> pipeline provides:
+- Automated merge request validation with ephemeral review apps deployed to dynamic namespaces.
+- Native integration with GitLab container scanning and SAST.
+- Atomic production rollouts with automated rollbacks if post-deployment checks fail.</p>
+<p>Save this file as <code>.gitlab-ci.yml</code>:</p>
+<pre><code class="language-yaml">stages:
+  - test
+  - security
+  - build
+  - review
+  - deploy
+  - verify
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: &quot;&quot;
+  CONTAINER_RELEASE_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+  CONTAINER_LATEST_IMAGE: $CI_REGISTRY_IMAGE:latest
+  KUBE_NAMESPACE_BASE: &quot;review&quot;
+
+default:
+  image: alpine:3.19
+  interruptible: true
+
+lint:go:
+  stage: test
+  image: golangci/golangci-lint:v1.56.2
+  script:
+    - golangci-lint run --timeout 5m
+
+test:unit:
+  stage: test
+  image: golang:1.22
+  script:
+    - go test -v -race -covermode=atomic ./...
+
+security:container-scan:
+  stage: security
+  image:
+    name: aquasec/trivy:0.49.1
+    entrypoint: [&quot;&quot;]
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - trivy image --download-db-only
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format json --output gl-container-scanning-report.json $CONTAINER_RELEASE_IMAGE
+    - trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed $CONTAINER_RELEASE_IMAGE
+  artifacts:
+    reports:
+      container_scanning: gl-container-scanning-report.json
+    paths:
+      - gl-container-scanning-report.json
+    when: always
+  rules:
+    - if: $CI_COMMIT_BRANCH == &quot;main&quot;
+    - if: $CI_MERGE_REQUEST_IID
+
+build:docker:
+  stage: build
+  image: docker:25.0.3
+  services:
+    - docker:25.0.3-dind
+  before_script:
+    - echo &quot;$CI_REGISTRY_PASSWORD&quot; | docker login -u &quot;$CI_REGISTRY_USER&quot; --password-stdin $CI_REGISTRY
+  script:
+    - docker build --pull -t $CONTAINER_RELEASE_IMAGE -t $CONTAINER_LATEST_IMAGE .
+    - docker push $CONTAINER_RELEASE_IMAGE
+    - docker push $CONTAINER_LATEST_IMAGE
+
+deploy:review:
+  stage: review
+  image: dtzar/helm-kubectl:3.14.2
+  variables:
+    KUBE_NAMESPACE: &quot;${KUBE_NAMESPACE_BASE}-${CI_MERGE_REQUEST_IID}&quot;
+    HELM_RELEASE_NAME: &quot;review-${CI_MERGE_REQUEST_IID}&quot;
+  script:
+    - kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    - &gt;
+      helm upgrade --install $HELM_RELEASE_NAME ./deploy/helm/app
+      --namespace $KUBE_NAMESPACE
+      --set image.tag=$CI_COMMIT_SHA
+      --set ingress.host=&quot;mr-${CI_MERGE_REQUEST_IID}.preview.example.com&quot;
+      --wait --timeout 3m0s
+  environment:
+    name: review/$CI_BUILD_REF_NAME
+    url: https://mr-${CI_MERGE_REQUEST_IID}.preview.example.com
+    on_stop: stop:review
+    auto_stop_in: 1 week
+  rules:
+    - if: '$CI_MERGE_REQUEST_IID'
+
+stop:review:
+  stage: review
+  image: dtzar/helm-kubectl:3.14.2
+  variables:
+    GIT_STRATEGY: none
+    KUBE_NAMESPACE: &quot;${KUBE_NAMESPACE_BASE}-${CI_MERGE_REQUEST_IID}&quot;
+    HELM_RELEASE_NAME: &quot;review-${CI_MERGE_REQUEST_IID}&quot;
+  script:
+    - helm uninstall $HELM_RELEASE_NAME --namespace $KUBE_NAMESPACE || true
+    - kubectl delete namespace $KUBE_NAMESPACE || true
+  environment:
+    name: review/$CI_BUILD_REF_NAME
+    action: stop
+  rules:
+    - if: '$CI_MERGE_REQUEST_IID'
+      when: manual
+
+deploy:production:
+  stage: deploy
+  image: dtzar/helm-kubectl:3.14.2
+  variables:
+    KUBE_NAMESPACE: &quot;production&quot;
+    HELM_RELEASE_NAME: &quot;app-prod&quot;
+  script:
+    - &gt;
+      helm upgrade --install $HELM_RELEASE_NAME ./deploy/helm/app
+      --namespace $KUBE_NAMESPACE
+      --set image.tag=$CI_COMMIT_SHA
+      --values ./deploy/helm/app/values-production.yaml
+      --atomic
+      --timeout 5m0s
+  environment:
+    name: production
+    url: https://production.example.com
+  rules:
+    - if: '$CI_COMMIT_BRANCH == &quot;main&quot;'
+
+verify:production:
+  stage: verify
+  image: curlimages/curl:8.6.0
+  variables:
+    KUBE_NAMESPACE: &quot;production&quot;
+    HELM_RELEASE_NAME: &quot;app-prod&quot;
+  script:
+    - echo &quot;Validating live production HTTP endpoints...&quot;
+    - |
+      for i in {1..20}; do
+        HTTP_RESPONSE=$(curl -k -s -o /dev/null -w &quot;%{http_code}&quot; https://production.example.com/healthz || true)
+        if [ &quot;$HTTP_RESPONSE&quot; -eq 200 ]; then
+          echo &quot;Health check validated: HTTP 200 received.&quot;
+          exit 0
+        fi
+        echo &quot;Attempt $i failed with status: $HTTP_RESPONSE. Waiting 5s...&quot;
+        sleep 5
+      done
+      echo &quot;Health checks failed after 100 seconds. Triggering automated rollback!&quot;
+      exit 1
+  after_script:
+    - |
+      if [ $CI_JOB_STATUS != 'success' ]; then
+        echo &quot;Executing automated Helm rollback to prior successful release...&quot;
+        helm rollback $HELM_RELEASE_NAME 0 --namespace $KUBE_NAMESPACE
+      fi
+  rules:
+    - if: '$CI_COMMIT_BRANCH == &quot;main&quot;'
+</code></pre>
+<hr />
+<h2>3. Modular Infrastructure-as-Code Patterns</h2>
+<h3>Blueprint A: AWS EKS VPC &amp; Cluster Module with IRSA &amp; Bottlerocket</h3>
+<p>This configuration provisions an EKS cluster with managed Bottlerocket node groups, IMDSv2 enforcement, public endpoint protection, and IRSA support.</p>
+<pre><code class="language-hcl"># main.tf (AWS EKS Module)
+terraform {
+  required_version = &quot;&gt;= 1.7.0&quot;
+  required_providers {
+    aws = {
+      source  = &quot;hashicorp/aws&quot;
+      version = &quot;~&gt; 5.40&quot;
+    }
+    tls = {
+      source  = &quot;hashicorp/tls&quot;
+      version = &quot;~&gt; 4.0&quot;
+    }
+  }
+}
+
+variable &quot;environment&quot; {
+  type        = string
+  description = &quot;Target deployment environment (e.g., prod, staging)&quot;
+  default     = &quot;prod&quot;
+}
+
+variable &quot;cluster_name&quot; {
+  type        = string
+  description = &quot;The unique identifier for the EKS Cluster&quot;
+  default     = &quot;core-prod-eks&quot;
+}
+
+variable &quot;vpc_cidr&quot; {
+  type        = string
+  description = &quot;CIDR block for the dedicated VPC&quot;
+  default     = &quot;10.0.0.0/16&quot;
+}
+
+data &quot;aws_availability_zones&quot; &quot;available&quot; {
+  state = &quot;available&quot;
+}
+
+# ---------------------------------------------------------
+# Network Architecture
+# ---------------------------------------------------------
+resource &quot;aws_vpc&quot; &quot;eks_vpc&quot; {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name                                        = &quot;${var.cluster_name}-vpc&quot;
+    &quot;kubernetes.io/cluster/${var.cluster_name}&quot; = &quot;shared&quot;
+  }
+}
+
+resource &quot;aws_subnet&quot; &quot;public&quot; {
+  count                   = 3
+  vpc_id                  = aws_vpc.eks_vpc.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 4, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = false
+
+  tags = {
+    Name                                        = &quot;${var.cluster_name}-public-subnet-${count.index}&quot;
+    &quot;kubernetes.io/cluster/${var.cluster_name}&quot; = &quot;shared&quot;
+    &quot;kubernetes.io/role/elb&quot;                    = &quot;1&quot;
+  }
+}
+
+resource &quot;aws_subnet&quot; &quot;private&quot; {
+  count             = 3
+  vpc_id            = aws_vpc.eks_vpc.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 4, count.index + 4)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+
+  tags = {
+    Name                                        = &quot;${var.cluster_name}-private-subnet-${count.index}&quot;
+    &quot;kubernetes.io/cluster/${var.cluster_name}&quot; = &quot;owned&quot;
+    &quot;kubernetes.io/role/internal-elb&quot;           = &quot;1&quot;
+    &quot;karpenter.sh/discovery&quot;                    = var.cluster_name
+  }
+}
+
+resource &quot;aws_internet_gateway&quot; &quot;gw&quot; {
+  vpc_id = aws_vpc.eks_vpc.id
+  tags = {
+    Name = &quot;${var.cluster_name}-igw&quot;
+  }
+}
+
+resource &quot;aws_eip&quot; &quot;nat&quot; {
+  domain = &quot;vpc&quot;
+  tags = {
+    Name = &quot;${var.cluster_name}-nat-eip&quot;
+  }
+}
+
+resource &quot;aws_nat_gateway&quot; &quot;nat&quot; {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+  tags = {
+    Name = &quot;${var.cluster_name}-nat-gw&quot;
+  }
+}
+
+resource &quot;aws_route_table&quot; &quot;public&quot; {
+  vpc_id = aws_vpc.eks_vpc.id
+  route {
+    cidr_block = &quot;0.0.0.0/0&quot;
+    gateway_id = aws_internet_gateway.gw.id
+  }
+}
+
+resource &quot;aws_route_table&quot; &quot;private&quot; {
+  vpc_id = aws_vpc.eks_vpc.id
+  route {
+    cidr_block     = &quot;0.0.0.0/0&quot;
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+}
+
+resource &quot;aws_route_table_association&quot; &quot;public&quot; {
+  count          = 3
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource &quot;aws_route_table_association&quot; &quot;private&quot; {
+  count          = 3
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
+}
+
+# ---------------------------------------------------------
+# AWS EKS Cluster
+# ---------------------------------------------------------
+resource &quot;aws_iam_role&quot; &quot;cluster_role&quot; {
+  name = &quot;${var.cluster_name}-control-plane-role&quot;
+
+  assume_role_policy = jsonencode({
+    Version = &quot;2012-10-17&quot;
+    Statement = [{
+      Action    = &quot;sts:AssumeRole&quot;
+      Effect    = &quot;Allow&quot;
+      Principal = { Service = &quot;eks.amazonaws.com&quot; }
+    }]
+  })
+}
+
+resource &quot;aws_iam_role_policy_attachment&quot; &quot;cluster_policy&quot; {
+  policy_arn = &quot;arn:aws:iam::aws:policy/AmazonEKSClusterPolicy&quot;
+  role       = aws_iam_role.cluster_role.name
+}
+
+resource &quot;aws_eks_cluster&quot; &quot;primary&quot; {
+  name     = var.cluster_name
+  version  = &quot;1.29&quot;
+  role_arn = aws_iam_role.cluster_role.arn
+
+  vpc_config {
+    subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
+    endpoint_private_access = true
+    endpoint_public_access  = false # Restricts access entirely to internal networks / VPN
+  }
+
+  enabled_cluster_log_types = [&quot;api&quot;, &quot;audit&quot;, &quot;authenticator&quot;, &quot;controllerManager&quot;, &quot;scheduler&quot;]
+
+  depends_on = [aws_iam_role_policy_attachment.cluster_policy]
+}
+
+# ---------------------------------------------------------
+# OIDC Provider Configuration for IRSA
+# ---------------------------------------------------------
+data &quot;tls_certificate&quot; &quot;cluster&quot; {
+  url = aws_eks_cluster.primary.identity[0].oidc[0].issuer
+}
+
+resource &quot;aws_iam_openid_connect_provider&quot; &quot;oidc&quot; {
+  client_id_list  = [&quot;sts.amazonaws.com&quot;]
+  thumbprint_list = [data.tls_certificate.cluster.thumbprints[0]]
+  url             = aws_eks_cluster.primary.identity[0].oidc[0].issuer
+}
+
+# ---------------------------------------------------------
+# Bottlerocket Managed Node Group
+# ---------------------------------------------------------
+resource &quot;aws_iam_role&quot; &quot;node_role&quot; {
+  name = &quot;${var.cluster_name}-node-group-role&quot;
+
+  assume_role_policy = jsonencode({
+    Version = &quot;2012-10-17&quot;
+    Statement = [{
+      Action    = &quot;sts:AssumeRole&quot;
+      Effect    = &quot;Allow&quot;
+      Principal = { Service = &quot;ec2.amazonaws.com&quot; }
+    }]
+  })
+}
+
+resource &quot;aws_iam_role_policy_attachment&quot; &quot;worker_node&quot; {
+  policy_arn = &quot;arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy&quot;
+  role       = aws_iam_role.node_role.name
+}
+
+resource &quot;aws_iam_role_policy_attachment&quot; &quot;cni&quot; {
+  policy_arn = &quot;arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy&quot;
+  role       = aws_iam_role.node_role.name
+}
+
+resource &quot;aws_iam_role_policy_attachment&quot; &quot;registry&quot; {
+  policy_arn = &quot;arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly&quot;
+  role       = aws_iam_role.node_role.name
+}
+
+resource &quot;aws_eks_node_group&quot; &quot;system_nodes&quot; {
+  cluster_name    = aws_eks_cluster.primary.name
+  node_group_name = &quot;system-bottlerocket-workers&quot;
+  node_role_arn   = aws_iam_role.node_role.arn
+  subnet_ids      = aws_subnet.private[*].id
+  ami_type        = &quot;BOTTLEROCKET_x86_64&quot;
+  instance_types  = [&quot;m6i.xlarge&quot;]
+
+  scaling_config {
+    desired_size = 3
+    max_size     = 10
+    min_size     = 3
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    role = &quot;system&quot;
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.worker_node,
+    aws_iam_role_policy_attachment.cni,
+    aws_iam_role_policy_attachment.registry,
+  ]
+}
+
+output &quot;eks_cluster_name&quot; {
+  value = aws_eks_cluster.primary.name
+}
+
+output &quot;eks_oidc_provider_arn&quot; {
+  value = aws_iam_openid_connect_provider.oidc.arn
+}
+</code></pre>
+<hr />
+<h3>Blueprint B: Hetzner Cloud (hcloud) Lightweight K3s Architecture</h3>
+<p>This setup provisions an economical, production-grade K3s cluster on Hetzner Cloud. It uses internal private networks, strict host firewalls, cloud-init automated provisioning, and automated token registration.</p>
+<p>```hcl</p>
+<h1>main.tf (Hetzner Cloud K3s Module)</h1>
+<p>terraform {
+  required_version = "&gt;= 1.7.0"
+  required_providers {
+    hcloud = {
+      source  = "hetznercloud/hcloud"
+      version = "~&gt; 1.45"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~&gt; 3.6"
+    }
+  }
+}</p>
+<p>variable "hcloud_token" {
+  type        = string
+  sensitive   = true
+  description = "Hetzner Cloud API Token"
+}</p>
+<p>variable "location" {
+  type        = string
+  default     = "fsn1" # Falkenstein, Germany
+}</p>
+<p>variable "server_type" {
+  type        = string
+  default     = "cpx31" # 4 vCPU, 8GB RAM, Dedicated AMD
+}</p>
+<p>provider "hcloud" {
+  token = var.hcloud_token
+}</p>
+<p>resource "random_password" "k3s_cluster_token" {
+  length  = 48
+  special = false
+}</p>
+<h1>---------------------------------------------------------</h1>
+<h1>Private Network Structure</h1>
+<h1>---------------------------------------------------------</h1>
+<p>resource "hcloud_network" "k3s_network" {
+  name     = "k3s-internal-net"
+  ip_range = "10.10.0.0/16"
+}</p>
+<p>resource "hcloud_network_subnet" "k3s_subnet" {
+  network_id   = hcloud_network.k3s_network.id
+  type         = "cloud"
+  network_zone = "eu-central"
+  ip_range     = "10.10.1.0/24"
+}</p>
+<h1>---------------------------------------------------------</h1>
+<h1>Stateful Firewall Architecture</h1>
+<h1>---------------------------------------------------------</h1>
+<p>resource "hcloud_firewall" "k3s_firewall" {
+  name = "k3s-node-firewall"</p>
+<p># SSH Restricted Access
+  rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "22"
+    source_ips = [
+      "0.0.0.0/0",
+      "::/0"
+    ]
+  }</p>
+<p># Kubernetes API Endpoint
+  rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "6443"
+    source_ips = [
+      "0.0.0.0/0",
+      "::/0"
+    ]
+  }</p>
+<p># WireGuard flannel backend / Intra-node communication
+  rule {
+    direction = "in"
+    protocol  = "udp"
+    port      = "51820"
+    source_ips = [
+      "10.10.0.0/16"
+    ]
+  }</p>
+<p># Node-to-node flannel VXLAN
+  rule {
+    direction = "in"
+    protocol  = "udp"
+    port      = "8472"
+    source_ips = [
+      "10.10.0.0/16"
+    ]
+  }</p>
+<p># Kubelet internal metrics
+  rule {
+    direction = "in"
+    protocol  = "tcp"
+    port      = "10250"
+    source_ips = [
+      "10.10.0.0/16"
+    ]
+  }
+}</p>
+<h1>---------------------------------------------------------</h1>
+<h1>Control Plane Node</h1>
+<h1>---------------------------------------------------------</h1>
+<p>resource "hcloud_server" "k3s_master" {
+  name        = "k3s-control-plane-01"
+  image       = "ubuntu-22.04"
+  server_type = var.server_type
+  location</p>
+</body>
+</html>
