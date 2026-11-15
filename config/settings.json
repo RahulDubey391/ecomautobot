@@ -1,0 +1,50 @@
+{
+  "discover_categories": {
+    "software": {
+      "label": "Software Development & AI Tools",
+      "url": "https://gumroad.com/software-and-tech",
+      "keywords": ["AI prompts", "Notion template", "automation script", "Python boilerplate", "SaaS starter"]
+    },
+    "business": {
+      "label": "Business & Money",
+      "url": "https://gumroad.com/business-and-money",
+      "keywords": ["freelance", "solopreneur", "cold email", "marketing playbook", "lead generation"]
+    },
+    "design": {
+      "label": "Design & Creative",
+      "url": "https://gumroad.com/design",
+      "keywords": ["UI kit", "Figma components", "mockup bundle", "icon pack", "canva templates"]
+    },
+    "education": {
+      "label": "Education & Productivity",
+      "url": "https://gumroad.com/education",
+      "keywords": ["second brain", "study planner", "cheat sheet", "system design", "interview prep"]
+    }
+  },
+  "pricing_tiers": {
+    "lead_magnet": {
+      "price_cents": 0,
+      "suggested_price_cents": 500,
+      "customizable_price": true
+    },
+    "impulse_pack": {
+      "price_cents": 1200,
+      "suggested_price_cents": 1900,
+      "customizable_price": true
+    },
+    "flagship_bundle": {
+      "price_cents": 2900,
+      "suggested_price_cents": 3900,
+      "customizable_price": false
+    }
+  },
+  "default_product_type": "digital",
+  "supported_native_types": [
+    "digital",
+    "ebook",
+    "course",
+    "bundle",
+    "membership"
+  ]
+}
+

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>50+ Plug-and-Play AI Agent Workflows & SOPs for Solopreneurs</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Bonus Module: 5 No-Code AI Automation Blueprints (Make, n8n &amp; Zapier)</h1>
+<p>Use these 5 modular node architectures to turn the manual prompts in this pack into <strong>fully autonomous background pipelines</strong> using <strong>Make.com</strong>, <strong>n8n</strong>, or <strong>Zapier</strong>.</p>
+<hr />
+<h2>Blueprint 1: Autonomous Content Multiplier Pipeline</h2>
+<ul>
+<li><strong>Trigger:</strong> New item marked <code>"Published"</code> in Notion / Google Docs / RSS Feed.</li>
+<li><strong>Node 1 (Formatter):</strong> Strip HTML tags and extract raw article text + canonical URL.</li>
+<li><strong>Node 2 (LLM Agent - Workflow #11):</strong> Pass text to Claude / OpenAI API with JSON Schema output (<code>x_thread[]</code>, <code>linkedin_post</code>, <code>short_video_script</code>, <code>newsletter_blurb</code>).</li>
+<li><strong>Node 3 (Router):</strong> Save generated drafts directly into your Social Queue database and send a Slack/Telegram notification with 1-click approval links.</li>
+</ul>
+<hr />
+<h2>Blueprint 2: Inbound Lead Enrichment &amp; Personalized Draft Generator</h2>
+<ul>
+<li><strong>Trigger:</strong> New form submission (Typeform / Tally / Website Contact Form) or new Gumroad customer webhook.</li>
+<li><strong>Node 1 (Enrichment):</strong> Fetch company domain metadata and public bio.</li>
+<li><strong>Node 2 (LLM Agent - Workflow #21):</strong> Classify buyer segment (<code>Creator</code>, <code>Developer</code>, <code>Agency</code>) and draft a tailored welcome/onboarding reply.</li>
+<li><strong>Node 3 (Action):</strong> Create a draft in Gmail and log the enriched lead in your CRM.</li>
+</ul>
+<hr />
+<h2>Blueprint 3: Voice Note / Meeting -&gt; Instant SOP &amp; Task Creator</h2>
+<ul>
+<li><strong>Trigger:</strong> New audio file or meeting transcript uploaded to Google Drive / Dropbox / Fireflies.</li>
+<li><strong>Node 1 (Transcription):</strong> Whisper / Deepgram speech-to-text (if raw audio).</li>
+<li><strong>Node 2 (LLM Agent - Workflow #31 &amp; #34):</strong> Extract structured JSON containing <code>executive_summary</code>, <code>action_items[]</code>, and <code>markdown_sop</code>.</li>
+<li><strong>Node 3 (Action):</strong> Create a formatted SOP page in Notion and push action items to Linear/Todoist.</li>
+</ul>
+<hr />
+<h2>Blueprint 4: Weekly Competitor &amp; Niche Pulse Digest</h2>
+<ul>
+<li><strong>Trigger:</strong> Scheduled Cron (Every Monday at 08:00 AM).</li>
+<li><strong>Node 1 (Scraper/RSS):</strong> Fetch top posts from 3 target subreddits, Product Hunt, and Gumroad category feeds.</li>
+<li><strong>Node 2 (LLM Agent - Workflow #1):</strong> Synthesize top trending topics, emerging user complaints, and 3 content/product angles for the week.</li>
+<li><strong>Node 3 (Action):</strong> Email the formatted executive briefing directly to your inbox.</li>
+</ul>
+<hr />
+<h2>Blueprint 5: Automated Gumroad Post-Purchase Onboarding &amp; Review Engine</h2>
+<ul>
+<li><strong>Trigger:</strong> Gumroad <code>sale</code> Ping / Webhook.</li>
+<li><strong>Node 1 (Filter):</strong> Check whether the purchase was a Free Lead Magnet (<code>price == 0</code>) or Paid Flagship (<code>price &gt; 0</code>).</li>
+<li><strong>Node 2 (Delay + Email):</strong></li>
+<li><strong>Day 0:</strong> Send quick-start tip for Module 1.</li>
+<li><strong>Day 3:</strong> Ask how the templates are working and provide a direct link to leave a Gumroad rating.</li>
+<li><strong>Day 5 (Lead Magnet buyers only):</strong> Share a deep-dive case study and invite them to upgrade to the Flagship Vault.</li>
+</ul>
+</body>
+</html>

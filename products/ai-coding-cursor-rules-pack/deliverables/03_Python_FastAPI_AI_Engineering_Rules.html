@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Ultimate AI Coding & Agent Rules Vault</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Python 3.12+, FastAPI &amp; AI/LLM Engineering Rules</h1>
+<p>Copy this template into <code>.cursor/rules/python-fastapi-ai.mdc</code>, <code>CLAUDE.md</code>, or <code>.windsurfrules</code> for Python backend and AI projects.</p>
+<pre><code class="language-markdown">---
+description: Production rules for Python 3.12+, FastAPI, Pydantic v2, Async SQLAlchemy, and LLM/Agent pipelines
+globs: [&quot;**/*.py&quot;]
+---
+
+# Python 3.12+, FastAPI &amp; AI Engineering Rules
+
+## 1. Modern Python &amp; Typing Standards
+- Target **Python 3.12+** syntax: use builtin generic types (`list[str]`, `dict[str, Any]`), union syntax (`str | None`), and `pathlib.Path` instead of `os.path`.
+- Annotate all function arguments and return values.
+- Use **Pydantic v2** idioms exclusively:
+  - Use `model_validate()`, `model_dump()`, `ConfigDict(from_attributes=True)`, and `@field_validator` / `@model_validator`.
+  - Never use deprecated Pydantic v1 methods (`.dict()`, `.parse_obj()`, `@validator`, `class Config:`).
+
+## 2. FastAPI Architecture (Router -&gt; Service -&gt; Repository)
+- **Thin Routers:** FastAPI route handlers (`src/api/routes/`) must only parse requests, invoke a domain service, and return a typed `response_model`. Never write raw SQL or complex business logic inside route functions.
+- **Async Event Loop Safety:** Never call blocking I/O (`requests.get`, `time.sleep`, synchronous disk/DB drivers) inside an `async def` endpoint. Use `httpx.AsyncClient`, `asyncio.sleep`, or standard `def` endpoints when calling synchronous libraries.
+- **Dependency Injection:** Pass database sessions, auth principals, and external clients via `Annotated[Service, Depends(get_service)]` so endpoints remain 100% unit-testable via `app.dependency_overrides`.
+
+## 3. AI / LLM &amp; Agent Pipeline Engineering
+- **Structured Outputs:** Always enforce schema-constrained generation (JSON Schema / Pydantic structured outputs) when extracting data or routing agent decisions. Never rely on fragile regex parsing of free-form LLM prose when structured outputs are supported.
+- **Resilience &amp; Observability:**
+  - Configure explicit timeouts (`timeout=30.0`) and exponential backoff retries for rate limits (`429`) and transient `5xx` errors on every external model API call.
+  - Log token usage, latency, model version, and trace IDs for every LLM invocation without logging raw user API keys or PII.
+- **Prompt Separation:** Store complex system prompts and few-shot templates in versioned module constants or dedicated prompt files rather than deeply nested inline strings.
+
+## 4. Testing with Pytest
+- Write deterministic tests using `pytest` and `pytest-asyncio`.
+- Mock external HTTP and LLM API calls at the boundary using `respx` or dependency overrides—never make live billable API calls in unit tests.
+- Cover happy path, boundary validation errors (`422`), unauthorized access (`401`/`403`), and upstream timeout recovery.
+</code></pre>
+</body>
+</html>

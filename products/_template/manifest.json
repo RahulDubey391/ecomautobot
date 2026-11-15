@@ -1,0 +1,21 @@
+{
+  "slug": "_template",
+  "name": "Template Digital Product",
+  "price_cents": 1200,
+  "suggested_price_cents": 1900,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "template-digital-product",
+  "custom_summary": "A concise summary of what the buyer receives.",
+  "category": "software",
+  "tags": [
+    "ai prompts",
+    "productivity",
+    "templates"
+  ],
+  "gumroad_product_id": null,
+  "gumroad_short_url": null,
+  "published": false
+}
+

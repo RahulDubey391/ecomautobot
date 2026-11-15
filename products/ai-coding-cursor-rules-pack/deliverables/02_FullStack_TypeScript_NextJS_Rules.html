@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Ultimate AI Coding & Agent Rules Vault</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Full-Stack TypeScript, React 19 &amp; Next.js App Router Rules</h1>
+<p>Copy this template into <code>.cursor/rules/typescript-nextjs.mdc</code>, <code>CLAUDE.md</code>, or <code>.windsurfrules</code> for TypeScript/Next.js projects.</p>
+<pre><code class="language-markdown">---
+description: Production rules for TypeScript, React 19, Next.js App Router, Tailwind CSS, and Prisma/Drizzle
+globs: [&quot;**/*.ts&quot;, &quot;**/*.tsx&quot;]
+---
+
+# Full-Stack TypeScript &amp; Next.js Engineering Rules
+
+## 1. TypeScript Strictness
+- Always write strict TypeScript. `any` is strictly forbidden; use `unknown` with narrow type guards or Zod schemas at runtime boundaries.
+- Prefer `interface` for public object contracts and `type` for unions, intersections, and utility types.
+- Derive types from runtime schemas (`type UserInput = z.infer&lt;typeof UserInputSchema&gt;`) rather than duplicating interfaces manually.
+
+## 2. Next.js App Router &amp; Server/Client Boundaries
+- **Server Components by Default:** Every component in `app/` is a React Server Component (RSC) unless it directly uses browser APIs, event listeners (`onClick`, `onChange`), or React state/effects (`useState`, `useEffect`).
+- **Leaf-Level `&quot;use client&quot;`:** Push `&quot;use client&quot;` boundaries as far down the component tree as possible. Never mark an entire page or layout as `&quot;use client&quot;` just to support one interactive button or modal.
+- **Data Fetching &amp; Mutations:**
+  - Fetch data directly in Server Components using `async/await` through a dedicated data-access layer (`src/server/queries/`).
+  - Validate every Server Action and Route Handler input with **Zod** before touching the database.
+  - Always verify authentication and resource authorization inside every Server Action (`auth()` check at the top of the function, never relying solely on middleware).
+
+## 3. State Management &amp; React Best Practices
+- Avoid `useEffect` for derived state. Compute derived values during render or with `useMemo` when computationally expensive.
+- Use URL search parameters (`useSearchParams` / `nuqs`) as the single source of truth for filterable tables, pagination, Tabs, and shareable UI state.
+- Ensure every async action exposes explicit `loading`, `error`, and `empty` states in the UI.
+
+## 4. Database &amp; ORM Hygiene (Prisma / Drizzle)
+- Never execute N+1 queries inside loops. Use `include`/`select` joins or batch `inArray` queries.
+- Wrap multi-step database writes in an explicit transaction (`db.$transaction` or `db.transaction`).
+- Always select only the columns required by the view; never return raw password hashes, internal tokens, or unredacted PII to client components.
+
+## 5. Styling &amp; Accessibility (Tailwind CSS + Shadcn UI)
+- Use semantic HTML (`&lt;main&gt;`, `&lt;nav&gt;`, `&lt;section&gt;`, `&lt;button&gt;`, `&lt;dialog&gt;`) and ensure all interactive elements are keyboard-navigable with visible `:focus-visible` rings.
+- Combine conditional classes cleanly using `cn()` (`clsx` + `twMerge`). Avoid inline `style={{ ... }}` unless computing dynamic coordinates.
+</code></pre>
+</body>
+</html>

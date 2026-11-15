@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Ultimate AI Coding & Agent Rules Vault</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: The Master AI Coding &amp; Agent Architecture Playbook</h1>
+<h2>1. Why Default AI Coding Assistants Fail at Scale</h2>
+<p>Out of the box, LLM coding environments optimize for <strong>plausible-looking completion</strong> rather than <strong>architectural integrity</strong>. Without explicit guardrails, coding agents routinely exhibit five failure modes:</p>
+<ol>
+<li><strong>Context Drift:</strong> Forgetting your repository's folder structure, error-handling pattern, or ORM conventions halfway through a feature.</li>
+<li><strong>Destructive Edits:</strong> Deleting existing comments, edge-case guards, or unrelated functions while fixing a bug.</li>
+<li><strong>Hallucinated Signatures:</strong> Mixing v1 and v2 library APIs (e.g., Pydantic v1 <code>@validator</code> vs. v2 <code>@field_validator</code>, or Next.js Pages Router vs. App Router).</li>
+<li><strong>Premature Implementation:</strong> Writing 400 lines of code before clarifying ambiguous requirements or checking existing helper utilities.</li>
+<li><strong>Unverified Output:</strong> Declaring a task "complete" without running typechecks, linters, or unit tests.</li>
+</ol>
+<hr />
+<h2>2. The Universal File Placement Matrix</h2>
+<p>Copy the rules from Modules 2 and 3 into the file path corresponding to your editor:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">AI Coding Tool</th>
+<th style="text-align: left;">File Path in Repository Root</th>
+<th style="text-align: left;">Scoping Mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Cursor</strong></td>
+<td style="text-align: left;"><code>.cursor/rules/00-core.mdc</code> (or <code>.cursorrules</code>)</td>
+<td style="text-align: left;">Glob-based frontmatter (<code>globs: ["**/*.ts", "**/*.tsx"]</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Claude Code</strong></td>
+<td style="text-align: left;"><code>CLAUDE.md</code></td>
+<td style="text-align: left;">Hierarchical (root <code>CLAUDE.md</code> + subdirectory <code>CLAUDE.md</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Windsurf</strong></td>
+<td style="text-align: left;"><code>.windsurfrules</code></td>
+<td style="text-align: left;">Workspace root instructions</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>GitHub Copilot</strong></td>
+<td style="text-align: left;"><code>.github/copilot-instructions.md</code></td>
+<td style="text-align: left;">Repository-wide system prompt</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. The Core Behavioral Kernel (Drop-In Base Template)</h2>
+<p>Paste this foundational block at the top of your <code>CLAUDE.md</code> or <code>.cursorrules</code> file in any project:</p>
+<pre><code class="language-markdown"># Core Engineering Operating System
+
+## 1. Execution Protocol (Plan -&gt; Verify -&gt; Implement -&gt; Test)
+- **Read Before Writing:** Never propose edits to a file you have not read in full during the current session.
+- **Reuse First:** Before creating any new utility, hook, schema, or helper, search the codebase for existing implementations.
+- **Minimal Diff Principle:** Change the minimum number of lines required to solve the problem. Never reformat unrelated code or strip existing comments.
+- **Explicit Uncertainty:** If a requirement has two conflicting interpretations, state the tradeoff in 3 bullet points and ask before writing code.
+
+## 2. Code Quality &amp; Modularity Invariants
+- **No Silent Failures:** Never swallow exceptions with bare `catch {}` or `except Exception: pass`. Log structured context or re-raise domain-specific errors.
+- **Strict Typing:** Never use `any` (TypeScript) or untyped dicts (Python) at module boundaries. Define explicit interfaces, Zod schemas, or Pydantic models.
+- **File Size Ceiling:** Keep individual source files under 300 lines. When a module exceeds 300 lines, extract cohesive sub-modules.
+- **Self-Verification:** After every code change, run the project's typechecker and test suite covering the modified path before reporting completion.
+</code></pre>
+<hr />
+<h2>4. Persistent Project Memory (<code>MEMORY.md</code> Pattern)</h2>
+<p>For multi-week projects, create a <code>docs/AGENT_CONTEXT.md</code> file and add this rule to your agent config:</p>
+<pre><code class="language-markdown">## Session Continuity Protocol
+1. At the start of every task, read `docs/AGENT_CONTEXT.md` to understand current architecture, active migrations, and known constraints.
+2. When introducing a new dependency, environment variable, or database migration, append a 2-line entry to `docs/AGENT_CONTEXT.md`.
+</code></pre>
+</body>
+</html>

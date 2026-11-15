@@ -1,0 +1,245 @@
+import json
+import re
+import time
+from typing import Any, Dict, List, Optional
+import requests
+from .config import get_gemini_api_key, get_gemini_model
+
+
+class GeminiGeneratorError(Exception):
+    """Raised when Gemini API generation fails."""
+
+
+class GeminiContentGenerator:
+    """Autonomous Gemini-powered digital product ideator, copywriter, and deliverable author."""
+
+    API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+    FALLBACK_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-pro",
+    ]
+
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key or get_gemini_api_key()
+        if not self.api_key:
+            raise GeminiGeneratorError(
+                "Missing GEMINI_API_KEY. Set GEMINI_API_KEY in GitHub Actions Secrets, .env, or CREDS.txt."
+            )
+        preferred = model or get_gemini_model()
+        self.models = [preferred] + [m for m in self.FALLBACK_MODELS if m != preferred]
+
+    def _call_gemini(
+        self,
+        prompt: str,
+        system_instruction: str = "",
+        response_mime_type: str = "text/plain",
+        temperature: float = 0.7,
+        max_output_tokens: int = 8192,
+    ) -> str:
+        last_error: Optional[Exception] = None
+
+        for model_name in self.models:
+            url = f"{self.API_BASE}/{model_name}:generateContent?key={self.api_key}"
+            payload: Dict[str, Any] = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_output_tokens,
+                    "responseMimeType": response_mime_type,
+                },
+            }
+            if system_instruction:
+                payload["systemInstruction"] = {
+                    "parts": [{"text": system_instruction}]
+                }
+
+            for attempt in range(3):
+                try:
+                    resp = requests.post(url, json=payload, timeout=120)
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        time.sleep(4 * (attempt + 1))
+                        continue
+                    if resp.status_code == 404:
+                        # Model name not available on this key/endpoint; try next model
+                        break
+                    resp.raise_for_status()
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        raise GeminiGeneratorError(f"Empty candidates from {model_name}: {data}")
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(p.get("text", "") for p in parts).strip()
+                    if text:
+                        return text
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(2 * (attempt + 1))
+
+        raise GeminiGeneratorError(f"All Gemini models failed. Last error: {last_error}")
+
+    @staticmethod
+    def _parse_json_response(raw_text: str) -> Any:
+        cleaned = raw_text.strip()
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", cleaned)
+            if match:
+                return json.loads(match.group(1))
+            raise
+
+    def ideate_trending_products(
+        self,
+        trend_reports: List[Dict[str, Any]],
+        existing_slugs_and_names: List[str],
+        count: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """Analyze live Gumroad Discover trend signals and return `count` high-converting product blueprints."""
+        system_instruction = (
+            "You are an elite digital product strategist and top 0.1% Gumroad creator. "
+            "Your job is to analyze live Gumroad Discover market signals and design irresistible, "
+            "high-converting digital products (prompt vaults, AI coding rule packs, Notion/SOP playbooks, "
+            "automation blueprints, UI/copywriting swipe files, developer cheat sheets) that attract maximum "
+            "organic Gumroad Discover traffic, social clicks, and instant impulse sales."
+        )
+
+        prompt = f"""Analyze the following live Gumroad Discover trend reports and our existing catalog.
+Design {count} brand-new, high-demand digital product(s) that do NOT overlap with or duplicate our existing products.
+
+EXISTING PRODUCTS (DO NOT DUPLICATE THESE TOPICS OR SLUGS):
+{json.dumps(existing_slugs_and_names, indent=2)}
+
+LIVE GUMROAD DISCOVER SIGNALS:
+{json.dumps(trend_reports, indent=2)[:12000]}
+
+Return a JSON array of {count} product blueprint object(s). Each object MUST strictly follow this JSON structure:
+[
+  {{
+    "slug": "url-friendly-kebab-case-slug-max-45-chars",
+    "name": "High-Converting Product Title (Clear, Specific, High Value)",
+    "price_cents": 1900,
+    "category": "software",
+    "custom_summary": "1-sentence punchy value proposition shown directly under the price on Gumroad.",
+    "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+    "hashtags": ["#Tag1", "#Tag2", "#Tag3", "#Tag4", "#Tag5", "#Tag6", "#Tag7", "#Tag8", "#Tag9", "#Tag10", "#Tag11", "#Tag12"],
+    "visual_theme": {{
+      "accent_hex": "#6366f1",
+      "secondary_hex": "#06b6d4",
+      "badge_text": "COMPLETE PLAYBOOK & TEMPLATES",
+      "short_hook": "4-6 Word Bold Thumbnail Headline",
+      "feature_pills": [
+        "Copy-Paste Prompts & Workflows",
+        "Production-Ready Templates",
+        "Step-by-Step Implementation Guide"
+      ]
+    }},
+    "modules": [
+      {{
+        "filename": "01_Master_Architecture_and_Playbook.md",
+        "title": "Module 1: Complete Architecture & Core Playbook",
+        "description": "Detailed explanation of frameworks, mental models, and step-by-step setup."
+      }},
+      {{
+        "filename": "02_Copy_Paste_Templates_and_Prompts.md",
+        "title": "Module 2: Ready-to-Use Templates, Prompts & Configurations",
+        "description": "20+ copy-paste templates, exact prompts, or rule files."
+      }},
+      {{
+        "filename": "03_Advanced_Workflows_and_Automations.md",
+        "title": "Module 3: Advanced Workflows, Real-World Case Studies & Blueprints",
+        "description": "End-to-end execution blueprints and automation pipelines."
+      }},
+      {{
+        "filename": "04_Checklists_Troubleshooting_and_Swipe_File.md",
+        "title": "Module 4: Master Checklists, Audit Rubrics & Reference Swipe File",
+        "description": "Actionable checklists, verification rubrics, and quick-reference tables."
+      }}
+    ]
+  }}
+]
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            temperature=0.75,
+        )
+        parsed = self._parse_json_response(raw)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        return parsed[:count]
+
+    def generate_sales_copy(self, blueprint: Dict[str, Any]) -> str:
+        """Generate high-converting Markdown sales copy (`sales_copy.md`) for the Gumroad storefront."""
+        system_instruction = (
+            "You are a world-class direct-response copywriter for technical and creator digital products. "
+            "Write clean, persuasive, high-converting Gumroad sales page copy in Markdown. "
+            "Do NOT wrap the entire response in ```markdown code fences."
+        )
+        prompt = f"""Write the complete Gumroad storefront `sales_copy.md` for this digital product:
+
+Product Name: {blueprint['name']}
+Summary Hook: {blueprint['custom_summary']}
+Price: ${blueprint.get('price_cents', 1900) / 100:.2f}
+Category: {blueprint.get('category', 'software')}
+Modules Included:
+{json.dumps(blueprint.get('modules', []), indent=2)}
+
+Structure the Markdown sales copy with:
+1. `# {blueprint['name']}`
+2. A bold 1-sentence transformation hook right at the top.
+3. 2 short paragraphs agitating the problem of starting from scratch vs. having a battle-tested system.
+4. `---` divider
+5. `### What's Inside the Pack` — detailed bulleted breakdown of each of the 4 modules and specific tangible takeaways.
+6. `---` divider
+7. `### Who This Is Built For` — 3 to 4 specific buyer personas and how it saves them 20+ hours.
+8. `---` divider
+9. `### Instant Access & Formats Included` — highlight the Styled HTML Handbook, Raw Markdown Templates, and Complete Release `.zip` Archive.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="text/plain",
+            temperature=0.65,
+        )
+        raw = re.sub(r"^```(?:markdown|md)?\s*", "", raw.strip())
+        raw = re.sub(r"\s*```$", "", raw.strip())
+        return raw + "\n"
+
+    def generate_deliverable_module(
+        self,
+        blueprint: Dict[str, Any],
+        module_spec: Dict[str, Any],
+    ) -> str:
+        """Generate a deep, comprehensive, production-grade Markdown deliverable guide for a module."""
+        system_instruction = (
+            "You are a senior practitioner and technical author creating a paid digital product deliverable. "
+            "Never write shallow summaries or '[insert here]' placeholders. Write complete, exhaustive, "
+            "copy-pasteable templates, concrete code/prompt blocks, tables, and step-by-step instructions "
+            "that immediately justify the customer's purchase."
+        )
+        prompt = f"""Write the complete, exhaustive Markdown deliverable file `{module_spec['filename']}` for the paid digital product **{blueprint['name']}**.
+
+Module Title: {module_spec['title']}
+Module Focus: {module_spec['description']}
+Overall Product Summary: {blueprint['custom_summary']}
+
+Requirements:
+- Must be 1,000 to 2,000+ words of dense, immediately actionable content.
+- Include concrete copy-paste code blocks, system prompts, checklists, configuration templates, and Markdown tables.
+- Use zero placeholders or generic filler — every template or prompt must be 100% complete and ready to use in production.
+- Do NOT wrap the entire document in outer ```markdown fences; start directly with `# {module_spec['title']}`.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="text/plain",
+            temperature=0.6,
+            max_output_tokens=8192,
+        )
+        raw = re.sub(r"^```(?:markdown|md)?\s*", "", raw.strip())
+        raw = re.sub(r"\s*```$", "", raw.strip())
+        return raw + "\n"

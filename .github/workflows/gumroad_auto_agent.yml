@@ -1,0 +1,91 @@
+name: Gumroad Autonomous Content Agent
+
+on:
+  # Runs automatically 2 times a day:
+  # 03:30 UTC (9:00 AM IST) and 15:30 UTC (9:00 PM IST)
+  schedule:
+    - cron: "30 3,15 * * *"
+
+  # Allows manual 1-click execution from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      products_count:
+        description: "Number of trending digital products to generate & publish"
+        required: false
+        default: "1"
+        type: string
+      categories:
+        description: "Comma-separated Gumroad categories to scan (software,business,design,education)"
+        required: false
+        default: "software,business,design,education"
+        type: string
+      publish_live:
+        description: "Publish product live immediately on Gumroad"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gumroad-auto-agent
+  cancel-in-progress: false
+
+jobs:
+  create-and-publish-trending-product:
+    name: Discover Trends, Generate Product & Publish to Gumroad
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install System Fonts & Python Dependencies
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y fonts-dejavu-core fonts-liberation
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Gumroad Credentials
+        env:
+          GUMROAD_ACCESS_TOKEN: ${{ secrets.GUMROAD_ACCESS_TOKEN }}
+        run: |
+          python -m src.cli verify
+
+      - name: Run Autonomous Trend Discovery, Creation, Media & Publishing Pipeline
+        env:
+          GUMROAD_ACCESS_TOKEN: ${{ secrets.GUMROAD_ACCESS_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          GUMROAD_AUTO_PUBLISH: "true"
+        run: |
+          COUNT="${{ inputs.products_count || '1' }}"
+          CATS="${{ inputs.categories || 'software,business,design,education' }}"
+          LIVE_FLAG="--live"
+          if [ "${{ inputs.publish_live }}" = "false" ]; then
+            LIVE_FLAG=""
+          fi
+          python -m src.cli auto-run --count "$COUNT" --categories "$CATS" $LIVE_FLAG
+
+      - name: Commit & Push Generated Product Catalog to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add products/
+          if git diff --staged --quiet; then
+            echo "No new product files to commit."
+          else
+            git commit -m "chore(products): auto-generate and publish trending Gumroad product [skip ci]"
+            git pull --rebase origin main || true
+            git push origin HEAD:main
+          fi

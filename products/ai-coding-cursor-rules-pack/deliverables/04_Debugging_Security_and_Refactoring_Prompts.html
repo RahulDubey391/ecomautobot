@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Ultimate AI Coding & Agent Rules Vault</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: 25 Surgical Prompts for Debugging, Security &amp; Refactoring</h1>
+<p>Use these structured prompts inside Cursor Composer, Claude Code, or Windsurf whenever you hit a complex bug, security review, or refactoring milestone.</p>
+<hr />
+<h2>Part A: Root-Cause Debugging Prompts</h2>
+<h3>1. The 3-Hypothesis Root-Cause Debugger</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Do NOT write a fix yet. Analyze the error traceback and inspect the relevant call chain. List the 3 most likely root-cause hypotheses ranked by probability. For each hypothesis, cite the exact file and line numbers, explain the mechanism of failure, and specify one quick diagnostic check or log statement to confirm or rule it out."</p>
+</blockquote>
+<h3>2. Race Condition &amp; Async State Hunter</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Trace the execution order of all concurrent/async operations in <code>&lt;file_or_function&gt;</code>. Identify any shared mutable state, unawaited promises/tasks, stale closures, or non-atomic read-modify-write sequences that could fail under concurrent requests. Show the exact interleaving timeline that triggers the bug, then propose an atomic fix."</p>
+</blockquote>
+<h3>3. Minimal Reproduction Test Generator</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Before modifying any production code, write a minimal failing unit/integration test in <code>&lt;test_file&gt;</code> that deterministically reproduces this bug. Run the test to confirm it fails for the expected reason, then implement the minimal fix and verify the test passes."</p>
+</blockquote>
+<h3>4. Production Memory Leak &amp; Performance Profiler</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Inspect <code>&lt;module&gt;</code> for unbounded in-memory caches, unclosed file/socket/DB handles, event listeners that are never detached, or O(N^2) loops over collections. Rank each issue by severity under 100x load and refactor with bounded structures or streaming."</p>
+</blockquote>
+<h3>5. Git Regression Bisect Analyst</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Compare the current implementation of <code>&lt;feature&gt;</code> against its contract. Identify which edge case or state transition was broken by recent edits, and restore the invariant without reverting unrelated improvements."</p>
+</blockquote>
+<hr />
+<h2>Part B: Security &amp; Hardening Prompts (OWASP &amp; Auth)</h2>
+<h3>6. Authentication &amp; Authorization Boundary Audit</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Audit all endpoints and server actions in <code>&lt;directory&gt;</code>. Verify that every route: (1) authenticates the caller, (2) checks ownership/tenant isolation (preventing IDOR where User A passes User B's resource ID), and (3) validates all payload fields against strict schemas. Output a table of endpoints and flag any missing checks."</p>
+</blockquote>
+<h3>7. Injection &amp; Unvalidated Input Sweep</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Scan the codebase for any raw SQL string interpolation, shell command execution (<code>subprocess</code>, <code>exec</code>, <code>eval</code>), unescaped HTML rendering (<code>dangerouslySetInnerHTML</code>), or path traversal risks (<code>open(user_input)</code>). Replace each finding with parameterized queries, safe APIs, or strict allowlists."</p>
+</blockquote>
+<h3>8. Secrets &amp; Sensitive Data Leak Check</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Check all config loaders, logger statements, error responses, and client-serialized payloads. Ensure no API keys, tokens, stack traces, or internal PII are ever logged in plaintext or returned in HTTP error bodies."</p>
+</blockquote>
+<h3>9. Rate Limiting, Idempotency &amp; Webhook Security</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Review <code>&lt;webhook_or_payment_handler&gt;</code>. Ensure cryptographic signature verification uses constant-time comparison, replay attacks are blocked via timestamp + event ID deduplication, and database updates are idempotent if the webhook is delivered twice."</p>
+</blockquote>
+<h3>10. Dependency &amp; Supply-Chain Surface Reduction</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Review our dependencies in <code>package.json</code> / <code>requirements.txt</code>. Identify any heavy, unmaintained, or single-function libraries that can be safely replaced with native standard-library APIs in under 30 lines of code."</p>
+</blockquote>
+<hr />
+<h2>Part C: Zero-Regression Refactoring &amp; Architecture Prompts</h2>
+<h3>11. Legacy God-File Decomposition Plan</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Analyze <code>&lt;large_file&gt;</code> and design a step-by-step extraction plan to split it into cohesive modules under 250 lines each without breaking any existing imports. List each new file, its single responsibility, its public exports, and the exact order of extraction."</p>
+</blockquote>
+<h3>12. Characterization Test Harness Builder</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Before refactoring <code>&lt;function_or_class&gt;</code>, write a comprehensive suite of characterization tests capturing its current behavior across normal inputs, boundary values, null/empty inputs, and error conditions. Confirm 100% pass rate before changing a single line of implementation."</p>
+</blockquote>
+<h3>13. Database Migration Zero-Downtime Reviewer</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Review this schema migration for zero-downtime compatibility (expand-and-contract pattern). Flag any table-locking operations, non-nullable column additions without defaults, or column renames that would break currently running application instances during rolling deployment."</p>
+</blockquote>
+<h3>14. API Contract &amp; Error Standardization</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Standardize all error responses across <code>&lt;api_directory&gt;</code> so every failure returns a consistent JSON envelope (<code>code</code>, <code>message</code>, <code>details</code>, <code>request_id</code>) with accurate HTTP status codes, while preserving existing success response shapes."</p>
+</blockquote>
+<h3>15. Dead Code &amp; Orphaned Export Pruner</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Scan <code>&lt;directory&gt;</code> for unused functions, unreferenced types, commented-out code blocks, and feature flags that are permanently enabled. Verify via workspace-wide search that nothing references them dynamically, then remove them cleanly."</p>
+</blockquote>
+<hr />
+<h2>Part D: High-Velocity Feature Delivery Prompts</h2>
+<h3>16. Vertical Slice Spec-First Builder</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"We need to build <code>&lt;feature_name&gt;</code>. First, write a 1-page technical spec covering: (1) Data model changes, (2) API/Server Action signature &amp; validation schema, (3) UI states (loading, empty, error, success), and (4) Edge cases. Wait for my approval before implementing."</p>
+</blockquote>
+<h3>17. Edge-Case Matrix Generator</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Review the implementation of <code>&lt;feature&gt;</code>. Generate a checklist of 10 realistic production edge cases (network drop mid-request, double-click submission, empty state, unicode/special characters, timezone boundary, expired session) and harden the code against any unhandled ones."</p>
+</blockquote>
+<h3>18. Optimistic UI &amp; Rollback Implementer</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Enhance <code>&lt;mutation_component&gt;</code> with instant optimistic UI updates so the interface responds in 0ms, while cleanly rolling back the local state and showing an actionable toast notification if the server request fails."</p>
+</blockquote>
+<h3>19. CLI &amp; Developer Experience (DX) Polish</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Add clear <code>--help</code> documentation, input validation with actionable error messages, structured JSON output mode, and non-zero exit codes on failure to <code>&lt;cli_script&gt;</code>."</p>
+</blockquote>
+<h3>20. Pre-PR Self-Review Checklist</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Run <code>git diff</code> on all uncommitted changes. Review the diff as a strict Principal Engineer: check for leftover debug logs, hardcoded values, missing types, unhandled errors, or untested branches. Fix any issues found and summarize the clean diff."</p>
+</blockquote>
+<hr />
+<h2>Part E: Multi-Agent &amp; Prompt Engineering Prompts</h2>
+<h3>21. Subagent Task Decomposition Prompt</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Break this epic into independent, non-overlapping work packages that can be executed in parallel without merge conflicts. For each package, define the exact files it owns, its input/output interface contract, and its verification command."</p>
+</blockquote>
+<h3>22. LLM Structured Output Schema Hardener</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Review this Pydantic/JSON schema used for LLM structured outputs. Add concise <code>Field(description=...)</code> docstrings, constrain free-text strings to <code>Literal</code> enums where appropriate, and flatten deeply nested objects to maximize model adherence."</p>
+</blockquote>
+<h3>23. RAG Retrieval &amp; Chunking Optimizer</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Analyze our document chunking and retrieval pipeline. Propose concrete improvements to chunk boundaries, metadata filtering, hybrid lexical+vector scoring, and context window packing to eliminate retrieval misses."</p>
+</blockquote>
+<h3>24. Prompt Evaluation &amp; Regression Dataset Builder</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Create a JSONL evaluation dataset of 15 representative test cases (including adversarial, ambiguous, and boundary inputs) along with deterministic assertion functions to score our prompt/agent pipeline after every edit."</p>
+</blockquote>
+<h3>25. Documentation &amp; Architecture Diagram Generator</h3>
+<blockquote>
+<p><strong>Prompt:</strong>
+"Inspect the codebase and generate an up-to-date <code>ARCHITECTURE.md</code> featuring a Mermaid sequence diagram of the core request flow, a directory map, environment variable reference table, and 3-step local quickstart."</p>
+</blockquote>
+</body>
+</html>
