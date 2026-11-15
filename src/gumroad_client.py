@@ -263,7 +263,9 @@ class GumroadClient:
         if category:
             data.append(("category", category))
         for tag in tags or []:
-            data.append(("tags[]", tag))
+            clean_tag = str(tag).strip()[:19].strip()
+            if clean_tag:
+                data.append(("tags[]", clean_tag))
         for url in file_urls or []:
             data.append(("files[][url]", url))
 
@@ -277,7 +279,9 @@ class GumroadClient:
                 continue
             if key == "tags" and isinstance(value, list):
                 for tag in value:
-                    data.append(("tags[]", tag))
+                    clean_tag = str(tag).strip()[:19].strip()
+                    if clean_tag:
+                        data.append(("tags[]", clean_tag))
             elif isinstance(value, bool):
                 data.append((key, "true" if value else "false"))
             else:

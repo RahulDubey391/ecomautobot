@@ -10,7 +10,7 @@ NICHE_TAG_CLUSTERS: Dict[str, Dict[str, List[str]]] = {
             "claude code",
             "prompt engineering",
             "developer tools",
-            "software engineering",
+            "software dev",
             "programming",
         ],
         "hashtags": [
@@ -78,6 +78,20 @@ NICHE_TAG_CLUSTERS: Dict[str, Dict[str, List[str]]] = {
 }
 
 
+def _sanitize_gumroad_tag(tag: str) -> str:
+    """Ensure a Gumroad Discover tag is clean and strictly under 20 characters (<= 19 chars)."""
+    clean = re.sub(r"[^a-zA-Z0-9 -]+", "", tag).strip().lower()
+    clean = re.sub(r"\s+", " ", clean)
+    if len(clean) <= 19:
+        return clean
+    # Try dropping trailing words to stay <= 19 chars
+    words = clean.split(" ")
+    while len(words) > 1 and len(" ".join(words)) > 19:
+        words.pop()
+    shortened = " ".join(words)
+    return shortened[:19].strip()
+
+
 def generate_tags_and_hashtags(
     name: str,
     slug: str,
@@ -87,20 +101,26 @@ def generate_tags_and_hashtags(
     """Return (gumroad_discover_tags, reach_hashtags) tailored to the product."""
     corpus = f"{name} {slug} {summary}".lower()
 
-    discover_tags: List[str] = list(existing_tags or [])
+    raw_tags: List[str] = list(existing_tags or [])
     hashtags: List[str] = []
 
     for cluster in NICHE_TAG_CLUSTERS.values():
         if any(kw in corpus for kw in cluster["keywords"]):
             for t in cluster["gumroad_tags"]:
-                if t.lower() not in [x.lower() for x in discover_tags]:
-                    discover_tags.append(t)
+                if t.lower() not in [x.lower() for x in raw_tags]:
+                    raw_tags.append(t)
             for h in cluster["hashtags"]:
                 if h.lower() not in [x.lower() for x in hashtags]:
                     hashtags.append(h)
 
+    discover_tags: List[str] = []
+    for t in raw_tags:
+        short_t = _sanitize_gumroad_tag(t)
+        if short_t and len(short_t) >= 2 and short_t not in discover_tags:
+            discover_tags.append(short_t)
+
     # Convert any custom discover_tags into CamelCase / clean hashtags as well
-    for tag in discover_tags:
+    for tag in raw_tags:
         words = re.findall(r"[a-zA-Z0-9]+", tag)
         if words:
             candidate = "#" + "".join(w.capitalize() for w in words)

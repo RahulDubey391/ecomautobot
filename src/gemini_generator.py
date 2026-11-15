@@ -158,7 +158,7 @@ Return a JSON array of {count} product blueprint object(s). Each object MUST str
     "price_cents": 1900,
     "category": "software",
     "custom_summary": "1-sentence punchy value proposition shown directly under the price on Gumroad.",
-    "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+    "tags": ["short tag 1", "short tag 2", "max 18 chars each", "ai prompts", "automation", "productivity", "saas", "templates", "workflows", "indie hacker"],
     "hashtags": ["#Tag1", "#Tag2", "#Tag3", "#Tag4", "#Tag5", "#Tag6", "#Tag7", "#Tag8", "#Tag9", "#Tag10", "#Tag11", "#Tag12"],
     "visual_theme": {{
       "accent_hex": "#6366f1",
