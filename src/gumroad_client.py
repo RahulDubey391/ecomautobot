@@ -1,10 +1,13 @@
 import math
+import os
+import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 import requests
-from .config import get_gumroad_token, get_gumroad_oauth_credentials, get_default_currency
+from .config import BASE_DIR, get_gumroad_token, get_gumroad_oauth_credentials, get_default_currency
 
 
 class GumroadAPIError(Exception):
@@ -33,16 +36,66 @@ class GumroadClient:
             )
 
     @staticmethod
+    def _stage_via_github_raw(path: Path) -> Optional[str]:
+        """When running in GitHub Actions, commit & push the asset and return its raw.githubusercontent.com URL."""
+        if os.getenv("GITHUB_ACTIONS") != "true":
+            return None
+        repo = os.getenv("GITHUB_REPOSITORY", "").strip()
+        if not repo:
+            return None
+        branch = os.getenv("GITHUB_REF_NAME", "main").strip() or "main"
+
+        try:
+            rel_path = path.resolve().relative_to(BASE_DIR.resolve()).as_posix()
+        except ValueError:
+            return None
+
+        try:
+            subprocess.run(["git", "-C", str(BASE_DIR), "config", "user.name", "github-actions[bot]"], check=False)
+            subprocess.run(
+                ["git", "-C", str(BASE_DIR), "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
+                check=False,
+            )
+            subprocess.run(["git", "-C", str(BASE_DIR), "add", rel_path], check=True)
+            diff_res = subprocess.run(["git", "-C", str(BASE_DIR), "diff", "--staged", "--quiet"])
+            if diff_res.returncode != 0:
+                subprocess.run(
+                    ["git", "-C", str(BASE_DIR), "commit", "-m", f"chore(assets): stage {path.name} for Gumroad [skip ci]"],
+                    check=True,
+                )
+                subprocess.run(["git", "-C", str(BASE_DIR), "pull", "--rebase", "origin", branch], check=False)
+                subprocess.run(["git", "-C", str(BASE_DIR), "push", "origin", f"HEAD:{branch}"], check=True)
+
+            raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{rel_path}"
+            # Wait briefly for raw.githubusercontent.com CDN propagation
+            for _ in range(5):
+                check = requests.head(raw_url, timeout=10)
+                if check.status_code == 200:
+                    return raw_url
+                time.sleep(2)
+            return raw_url
+        except Exception:
+            return None
+
+    @staticmethod
     def stage_local_file_for_ingestion(file_path: str | Path) -> str:
         """Stage a local cover or thumbnail image to a public HTTPS URL so Gumroad's media endpoints can ingest it."""
         path = Path(file_path)
         if not path.exists():
             raise GumroadAPIError(f"Local file not found: {path}")
+
+        # 1. In GitHub Actions, stage directly via GitHub Raw Content (immune to third-party IP blocks)
+        github_raw_url = GumroadClient._stage_via_github_raw(path)
+        if github_raw_url:
+            return github_raw_url
+
+        # 2. Local fallback: stage via catbox.moe
         with open(path, "rb") as f:
             resp = requests.post(
                 "https://catbox.moe/user/api.php",
                 data={"reqtype": "fileupload"},
                 files={"fileToUpload": (path.name, f)},
+                headers={"User-Agent": "Mozilla/5.0"},
                 timeout=60,
             )
         resp.raise_for_status()
