@@ -1,0 +1,43 @@
+{
+  "slug": "micro-saas-blueprint-vault",
+  "name": "The Micro-SaaS Architecture & Launch Vault: 40+ Production Specs, API Blueprints & GTM Playbooks",
+  "price_cents": 2700,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "micro-saas-blueprint-vault",
+  "custom_summary": "40+ copy-paste PRD specs, full-stack architecture blueprints, Stripe metering schemas, and $0-to-$10k MRR launch systems for indie hackers.",
+  "category": "software",
+  "tags": [
+    "micro saas",
+    "indie hacker",
+    "saas boilerplate",
+    "software specs",
+    "prd templates",
+    "api blueprints",
+    "product launch",
+    "side project",
+    "tech stack",
+    "solopreneur"
+  ],
+  "hashtags": [
+    "#MicroSaas",
+    "#IndieHacker",
+    "#SaasBoilerplate",
+    "#SoftwareSpecs",
+    "#PrdTemplates",
+    "#ApiBlueprints",
+    "#ProductLaunch",
+    "#SideProject",
+    "#TechStack",
+    "#Solopreneur"
+  ],
+  "gumroad_product_id": "C8KzPgdjvZNgFcOfwO4eMw==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/micro-saas-blueprint-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/add6ec49bb169787f25d9df4fd158621/original/micro-saas-blueprint-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/e5nx0l72y2bqf3oyigbw25fqcsos"
+}

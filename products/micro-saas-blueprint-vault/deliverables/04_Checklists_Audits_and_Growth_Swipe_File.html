@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Micro-SaaS Architecture & Launch Vault: 40+ Production Specs, API Blueprints & GTM Playbooks</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Pre-Flight Launch Checklists, Unit Economics &amp; Churn Defense Playbook</h1>
+<hr />
+<h2>1. 65-Point Pre-Launch Production Hardening Checklist</h2>
+<p>Execute every check prior to routing production traffic. Do not skip items under the assumption that early stage implies low risk; technical debt incurred during provisioning compounds immediately upon public indexing.</p>
+<h3>Infrastructure, DNS &amp; SSL (Items 1–13)</h3>
+<ul>
+<li>[ ] <strong>1. Apex to <code>www</code> (or inverse) Canonical Redirect:</strong> Configure strict 301 redirects at the edge (Cloudflare Page Rules or Vercel Edge Middleware) to prevent dual-indexing and cookie fragmentation.</li>
+<li>[ ] <strong>2. Wildcard TLS Provisioning:</strong> Deploy automated Let's Encrypt or Cloudflare Universal SSL certificates with auto-renewal enabled at least 30 days prior to expiration.</li>
+<li>[ ] <strong>3. Strict-Transport-Security (HSTS):</strong> Send header <code>Strict-Transport-Security: max-age=63072000; includeSubDomains; preload</code> on all secure endpoints.</li>
+<li>[ ] <strong>4. Content Security Policy (CSP):</strong> Implement strict CSP headers blocking unauthorized inline scripts and unauthorized API domain queries:
+  <code>http
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://js.stripe.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.stripe.com https://*.supabase.co; frame-src https://js.stripe.com;</code></li>
+<li>[ ] <strong>5. Clickjacking Defense:</strong> Set <code>X-Frame-Options: DENY</code> or use CSP <code>frame-ancestors 'none'</code> on all authenticated surfaces.</li>
+<li>[ ] <strong>6. MIME Sniffing Defense:</strong> Set <code>X-Content-Type-Options: nosniff</code> globally.</li>
+<li>[ ] <strong>7. Referrer Policy:</strong> Send <code>Referrer-Policy: strict-origin-when-cross-origin</code> to prevent credential and query-param leaks in outgoing request headers.</li>
+<li>[ ] <strong>8. Edge Rate Limiting:</strong> Enforce a baseline edge throttle (e.g., Cloudflare WAF or <code>@upstash/ratelimit</code>) set to 100 requests per minute per IP on public API endpoints and 5 requests per minute on <code>/auth/*</code>.</li>
+<li>[ ] <strong>9. Origin IP Masking:</strong> Ensure DNS records routing through Cloudflare/Fastly are proxied (orange-clouded); verify the origin web server refuses all traffic not originating from edge proxy CIDR blocks.</li>
+<li>[ ] <strong>10. Dead Route Pruning:</strong> Audit your router/Next.js/Remix app directory to verify no experimental test endpoints (e.g., <code>/api/test-db</code>, <code>/debug</code>) are exposed to the public build.</li>
+<li>[ ] <strong>11. DNS TTL Calibration:</strong> Lower DNS record TTLs (A/AAAA/CNAME) to 300 seconds (5 minutes) 48 hours prior to launch to allow rapid IP remediation if infrastructure migration is needed.</li>
+<li>[ ] <strong>12. Compression Layer:</strong> Confirm gzip and Brotli (br) compression are active for responses with MIME types <code>text/*</code>, <code>application/javascript</code>, and <code>application/json</code>.</li>
+<li>[ ] <strong>13. Cold Boot Profiling:</strong> Measure Serverless/Edge Function cold-boot duration. Keep cold boot p95 below 900ms by optimizing external module imports and lazy-loading heavy SDKs.</li>
+</ul>
+<h3>Authentication, Authorization &amp; Security (Items 14–26)</h3>
+<ul>
+<li>[ ] <strong>14. Cross-Site Scripting (XSS) Session Scrubbing:</strong> Store JWTs and session tokens exclusively in <code>httpOnly</code>, <code>Secure</code>, <code>SameSite=Lax</code> cookies. Never write access tokens to <code>localStorage</code> or <code>sessionStorage</code>.</li>
+<li>[ ] <strong>15. Cross-Site Request Forgery (CSRF) Defenses:</strong> Protect state-changing mutating routes (POST, PUT, PATCH, DELETE) with anti-CSRF double-submit cookies or standard custom headers (<code>X-Requested-With</code>) verified on the server.</li>
+<li>[ ] <strong>16. Row-Level Security (RLS) Enforcement:</strong> For Postgres/Supabase deployments, verify RLS is explicitly turned ON for every single production table:
+  <code>sql
+  ALTER TABLE public.workspaces ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;</code></li>
+<li>[ ] <strong>17. Multi-Tenant Leak Check:</strong> Run automated cross-tenant integration tests. Assert that user $A$ with workspace $W_1$ receives a <code>404 Not Found</code> (preferred over <code>403 Forbidden</code> to prevent object enumeration) when fetching <code>/api/v1/workspaces/W_2/documents</code>.</li>
+<li>[ ] <strong>18. Magic Link Anti-Scanner Protection:</strong> Require users to click a secondary "Confirm Login" button on landing from email magic links, preventing enterprise email scanners (Proofpoint, Barracuda) from prematurely consuming single-use tokens.</li>
+<li>[ ] <strong>19. OAuth Redirect URL Whitelisting:</strong> Audit Google, GitHub, and Twitter developer consoles. Ensure allowed callback URLs use exact domain matching with no unvalidated wildcards (e.g., <code>https://app.yourdomain.com/api/auth/callback/google</code> only).</li>
+<li>[ ] <strong>20. Password Hashing Specification:</strong> If managing native passwords, enforce Argon2id (memory cost 64MB, time cost 3 iterations) or bcrypt with minimum 12 salt rounds.</li>
+<li>[ ] <strong>21. Password Reset Token Invalidation:</strong> Invalidate all active user sessions instantly upon a successful password reset event.</li>
+<li>[ ] <strong>22. Privilege Escalation Prevention:</strong> Assert that role assignment fields (e.g., <code>role: "admin"</code>) are completely omitted from client-updatable profile schemas (Zod/Valibot payload schemas).</li>
+<li>[ ] <strong>23. Audit Trail Logging:</strong> Write irreversible logs recording user administrative actions: logins, member invitations, credential mutations, and API key generations.</li>
+<li>[ ] <strong>24. API Key Rotation Engine:</strong> Hash client API keys with SHA-256 before storage; display unmasked keys exactly once upon creation to the end-user.</li>
+<li>[ ] <strong>25. Re-authentication on Sensitive Actions:</strong> Require fresh credential entry or webauthn confirmation prior to billing modifications, team deletion, or API token generation.</li>
+<li>[ ] <strong>26. Account Deletion Workflow:</strong> Deploy a working GDPR/CCPA-compliant self-service deletion workflow that scrubs user data from all downstream SaaS dependencies (e.g., CRM, analytics, logs) within 30 days.</li>
+</ul>
+<h3>Database, Migrations &amp; State (Items 27–39)</h3>
+<ul>
+<li>[ ] <strong>27. Schema Version Control Migration Gate:</strong> Integrate Prisma/Drizzle/Kysely migrations into CI/CD deployment pipelines. Enforce that build scripts fail if unapplied migrations exist.</li>
+<li>[ ] <strong>28. Connection Pool Throttling:</strong> Place an external transaction-mode connection pooler (PgBouncer or Supabase Supavisor) between serverless compute and Postgres to avoid socket exhaustion.</li>
+<li>[ ] <strong>29. Database Query Indexing:</strong> Run <code>EXPLAIN ANALYZE</code> on every query feeding core dashboard views. Verify no sequential scans occur on tables exceeding 5,000 rows. Add composite indexes on <code>(tenant_id, created_at DESC)</code>.</li>
+<li>[ ] <strong>30. Foreign Key Constraints:</strong> Ensure relational tables enforce cascade logic (<code>ON DELETE CASCADE</code> or <code>ON DELETE SET NULL</code>) to prevent orphaned rows from crashing join queries.</li>
+<li>[ ] <strong>31. Soft-Delete Scoping:</strong> If soft-deletes are implemented via a <code>deleted_at</code> timestamp, ensure all unique constraints include <code>WHERE deleted_at IS NULL</code> via partial indexes to allow reuse of unique names/slugs.</li>
+<li>[ ] <strong>32. Prepared Statement Caching:</strong> Configure ORM engines to use prepared statements to protect against SQL injection and optimize query-plan reuse.</li>
+<li>[ ] <strong>33. Point-in-Time Recovery (PITR):</strong> Turn on continuous WAL archiving allowing recovery to any minute in the past 7 days minimum.</li>
+<li>[ ] <strong>34. Backup Restoration Dry Run:</strong> Perform an actual restoration from backup to an isolated staging instance. Measure Time-to-Restore (TTR).</li>
+<li>[ ] <strong>35. Production Seed Verification:</strong> Ensure local mocking/seed scripts (<code>seed.ts</code>) cannot execute against production databases by conditioning executions on <code>NODE_ENV === 'development'</code>.</li>
+<li>[ ] <strong>36. Unbounded Query Clamping:</strong> Enforce hard pagination limits on all API list queries. Explicitly reject or clamp requests where <code>limit &gt; 100</code>.</li>
+<li>[ ] <strong>37. Distributed Locking:</strong> Implement Redis distributed locks (Redlock) or Postgres advisory locks around non-idempotent operations like seat-upgrades or credits-depletion routines.</li>
+<li>[ ] <strong>38. Timezone Normalization:</strong> Enforce UTC for all database engines, server environments, and database timestamp columns (<code>TIMESTAMPTZ</code> in Postgres). Never store localized strings.</li>
+<li>[ ] <strong>39. Deadlock Timeout Setting:</strong> Set explicit session query timeouts (<code>statement_timeout = '15s'</code>) to kill rogue queries before they exhaust database worker capacity.</li>
+</ul>
+<h3>Stripe Billing, Metering &amp; Webhooks (Items 40–52)</h3>
+<ul>
+<li>[ ] <strong>40. Webhook Raw Body Preservation:</strong> Capture the raw request payload buffer untouched by JSON parsers for Stripe signature validation:
+  <code>typescript
+  const sig = req.headers['stripe-signature'];
+  const event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);</code></li>
+<li>[ ] <strong>41. Webhook Idempotency Handling:</strong> Store incoming Stripe Event IDs (<code>event.id</code>) inside an <code>idempotency_keys</code> table. Reject duplicates immediately with an HTTP 200 return to prevent double-provisioning.</li>
+<li>[ ] <strong>42. Webhook Event Replay Resistance:</strong> Reject incoming webhook payloads with timestamps (<code>event.created</code>) exceeding 5 minutes from system time.</li>
+<li>[ ] <strong>43. Failed Payment Grace Period:</strong> Implement distinct status logic distinguishing between <code>past_due</code> and <code>unpaid</code>. Do not immediately delete customer data or lock access on a single failure; enter a 7-day grace period.</li>
+<li>[ ] <strong>44. Tier Limit Enforcement:</strong> Check customer limits on the backend API layer prior to handling core actions (e.g., check available credits or team seats on every object creation attempt, not just in UI logic).</li>
+<li>[ ] <strong>45. Automated Proration Handling:</strong> Configure Stripe Subscription updates with <code>proration_behavior: 'always_invoice'</code> or <code>'create_prorations'</code> depending on whether mid-cycle adjustments require instant charge settlement.</li>
+<li>[ ] <strong>46. Stripe Customer Portal Synchronization:</strong> Route users to the hosted Stripe Billing Customer Portal for credit card updates, invoicing history, and cancellation flows to avoid building custom billing interfaces.</li>
+<li>[ ] <strong>47. Customer ID Double-Mapping Check:</strong> Link the Stripe Customer ID to your internal Workspace or User ID upon creation, with a unique constraint on <code>stripe_customer_id</code> in the database.</li>
+<li>[ ] <strong>48. Invoice Finalization Webhook Hooking:</strong> Subscribe to <code>invoice.paid</code>, <code>invoice.payment_failed</code>, and <code>customer.subscription.deleted</code>. Test all three paths using the Stripe CLI:
+  <code>bash
+  stripe trigger invoice.payment_failed</code></li>
+<li>[ ] <strong>49. Zero-Dollar Checkout Routing:</strong> If offering trials without a credit card, bypass Stripe API creation entirely until feature limits are hit or the trial expiration triggers. Avoid creating empty/orphaned Stripe customers.</li>
+<li>[ ] <strong>50. Tax Automation Integration:</strong> Enable Stripe Tax within test mode and confirm correct sales tax/VAT line items attach to checkout sessions based on test customer addresses.</li>
+<li>[ ] <strong>51. Dunning Retry Rules:</strong> Configure Smart Retries inside the Stripe Dashboard (Billing &gt; Retry schedule) utilizing machine learning optimization over a custom 2-week window.</li>
+<li>[ ] <strong>52. Currency Normalization:</strong> Ensure internal ledger balances and checkout pricing are modeled in minimal base units (cents, e.g., <code>$29.00</code> is stored as integer <code>2900</code>).</li>
+</ul>
+<h3>Observability, Logging &amp; Legal/GDPR (Items 53–65)</h3>
+<ul>
+<li>[ ] <strong>53. Structured Logging Architecture:</strong> Ensure all server stdout outputs are structured JSON containing <code>timestamp</code>, <code>level</code>, <code>trace_id</code>, <code>user_id</code>, and <code>message</code>.</li>
+<li>[ ] <strong>54. Sentry/Error Tracking Configuration:</strong> Initialize client and server Sentry (or equivalent) instances. Set production <code>tracesSampleRate</code> appropriately (e.g., <code>0.1</code> for high-traffic apps, <code>1.0</code> for early stage).</li>
+<li>[ ] <strong>55. PII Masking in Logs:</strong> Strip passwords, credit card numbers, authorization headers, and session tokens from reaching log aggregators (e.g., Datadog, Axiom, Betterstack).</li>
+<li>[ ] <strong>56. Uptime Heartbeat Monitoring:</strong> Set up external health-check monitors (Better Uptime, Pingdom) querying an endpoint (<code>/api/health</code>) that explicitly executes a trivial query against the database and cache.</li>
+<li>[ ] <strong>57. Production Source Maps Security:</strong> Upload source maps to private error monitoring servers during the build step, and verify they are omitted from the public deployment assets.</li>
+<li>[ ] <strong>58. Terms of Service &amp; Privacy Policy:</strong> Place clear links to active, customized Terms of Service and Privacy Policy pages inside the sign-up flow footer. Include definitions of data processors used.</li>
+<li>[ ] <strong>59. Cookie Consent Implementation:</strong> For EU traffic, implement an explicit opt-in mechanism prior to loading non-essential analytics tracking scripts (e.g., Google Analytics, Meta Pixel).</li>
+<li>[ ] <strong>60. Sub-Processor Registry:</strong> Provide a public or accessible index of all sub-processors (AWS, Cloudflare, Supabase, Stripe, Postmark, Sentry).</li>
+<li>[ ] <strong>61. Automated System Alerts:</strong> Configure alerting channels (PagerDuty or high-priority Slack/Discord webhooks) triggered by: 5xx error spikes (&gt;2% over 5m), edge latencies &gt; 2000ms, and webhook failure events.</li>
+<li>[ ] <strong>62. OpenGraph &amp; Meta Tag Verification:</strong> Validate social sharing previews using the Facebook Sharing Debugger and Twitter Card Validator. Ensure <code>og:image</code> dimensions are 1200x630px and served over HTTPS.</li>
+<li>[ ] <strong>63. Robots.txt and Sitemap.xml:</strong> Deploy a dynamic <code>sitemap.xml</code> containing clean canonical URLs. Ensure <code>robots.txt</code> disallows private routes:
+  <code>txt
+  User-agent: *
+  Disallow: /api/
+  Disallow: /dashboard/
+  Disallow: /settings/
+  Allow: /
+  Sitemap: https://yourdomain.com/sitemap.xml</code></li>
+<li>[ ] <strong>64. Transactional Email Deliverability:</strong> Verify DKIM, SPF, and DMARC DNS records for your transactional email provider (Postmark, Resend). Send a test email to <code>check-auth@verifier.port25.com</code> or Mail-Tester; achieve a 10/10 score.</li>
+<li>[ ] <strong>65. Panic Button Killswitch:</strong> Deploy an environment variable-driven maintenance mode flag (<code>MAINTENANCE_MODE=true</code>) capable of rendering a static service restoration message edge-wide while rejecting new mutating write operations.</li>
+</ul>
+<hr />
+<h2>2. The Production Dunning Sequence (Stripe Webhook Driven)</h2>
+<p>Failed payments represent immediate, unforced churn. Deploy this technical handling architecture alongside the battle-tested copy sequence to automatically reclaim 40%–60% of failed subscription renewals.</p>
+<h3>System Architecture &amp; Trigger Logic</h3>
+<pre><code>   Stripe Event: invoice.payment_failed
+                    |
+                    v
+    [Next.js / Express Webhook Handler]
+                    |
+        +-----------+-----------+
+        | Verify Signature      |
+        | Extract: customer_id  |
+        | Extract: attempt_count|
+        +-----------+-----------+
+                    |
+      Save state to DB: subscriptions.status = 'past_due'
+                    |
+      Dispatch to Email Engine (Postmark / Resend)
+                    |
+        +-----------+-----------+
+        | attempt_count === 1  --&gt; Trigger Email 1 (Day 0)
+        | attempt_count === 2  --&gt; Trigger Email 2 (Day 3)
+        | attempt_count === 3  --&gt; Trigger Email 3 (Day 7)
+        | attempt_count === 4  --&gt; Trigger Email 4 (Day 14 - Lockout)
+        +-----------------------+
+</code></pre>
+<h4>Node.js Production Webhook Integration</h4>
+<pre><code class="language-typescript">import { Request, Response } from 'express';
+import Stripe from 'stripe';
+import { sendDunningEmail } from './mailer';
+import { db } from './db';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2023-10-16',
+});
+
+export async function handleStripeWebhook(req: Request, res: Response) {
+  const sig = req.headers['stripe-signature'] as string;
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body, // Must be raw Buffer
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    );
+  } catch (err: any) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'invoice.payment_failed') {
+    const invoice = event.data.object as Stripe.Invoice;
+    const customerId = invoice.customer as string;
+    const attemptCount = invoice.attempt_count;
+
+    // Fetch user context from database via Stripe customer ID
+    const user = await db.user.findUnique({
+      where: { stripeCustomerId: customerId },
+    });
+
+    if (user) {
+      // Generate single-click authenticated Stripe billing portal session
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: `${process.env.APP_URL}/dashboard/billing`,
+      });
+
+      await sendDunningEmail({
+        to: user.email,
+        name: user.firstName,
+        attemptCount: attemptCount,
+        updateUrl: portalSession.url,
+        invoiceAmount: (invoice.amount_due / 100).toFixed(2),
+        currency: invoice.currency.toUpperCase(),
+      });
+    }
+  }
+
+  return res.status(200).json({ received: true });
+}
+</code></pre>
+<hr />
+<h3>Email 1: The Transactional Glitch (Day 0 — Immediate)</h3>
+<ul>
+<li><strong>Trigger:</strong> Dispatched instantly on the first execution of <code>invoice.payment_failed</code> (<code>attempt_count === 1</code>).</li>
+<li><strong>Tone:</strong> Helpful, objective, non-accusatory. Assumes bank-side security flags or card expiration rather than insolvency.</li>
+<li><strong>Sender:</strong> <code>System Updates &lt;notifications@yourdomain.com&gt;</code></li>
+</ul>
+<pre><code class="language-markdown">Subject: Quick heads-up: We couldn't process your payment for {{ plan_name }}
+
+Hi {{ customer.first_name }},
+
+We tried to process your renewal payment of {{ invoice.amount }} {{ invoice.currency }} for your {{ product_name }} workspace, but your card issuer declined the transaction.
+
+This usually happens due to routine security checks, an expired card date, or an updated billing address. 
+
+Your account access remains completely uninterrupted right now. However, Stripe will automatically retry the charge in a few days.
+
+To prevent any service disruptions for you and your team, please take 30 seconds to confirm or update your payment details:
+
+--&gt; Update your payment details: {{ invoice.hosted_invoice_url }}
+
+(This link takes you straight to our secure payment gateway—no login credentials required.)
+
+Best,  
+The {{ product_name }} Team
+</code></pre>
+<hr />
+<h3>Email 2: The Service Continuity Advisory (Day 3)</h3>
+<ul>
+<li><strong>Trigger:</strong> Dispatched on the second failed attempt (<code>attempt_count === 2</code>).</li>
+<li><strong>Tone:</strong> Clear, slightly more urgent, focus on utility and operational continuity.</li>
+<li><strong>Sender:</strong> <code>{{ founder_name }} at {{ product_name }} &lt;founder@yourdomain.com&gt;</code></li>
+</ul>
+<pre><code class="language-markdown">Subject: Issue updating your {{ product_name }} subscription
+
+Hi {{ customer.first_name }},
+
+I'm writing to you directly because our automated payment retry for your {{ product_name }} account just failed for the second time.
+
+Right now, your workspaces, webhooks, and active integrations are still operational. But because the invoice of {{ invoice.amount }} {{ invoice.currency }} remains unresolved, our system has scheduled your account for automated feature restriction on {{ suspension_date }}.
+
+If you'd like to keep things running smoothly without your pipeline pausing, you can securely refresh your billing information on file here:
+
+--&gt; Refresh Billing Info: {{ invoice.hosted_invoice_url }}
+
+If you have already resolved this with your bank and believe this email crossed paths in error, you can safely disregard this message or reply directly to me.
+
+Regards,  
+{{ founder_name }}, Founder &amp; CEO  
+{{ product_name }}
+</code></pre>
+<hr />
+<h3>Email 3: Degradation Warning &amp; Feature Lock Schedule (Day 7)</h3>
+<ul>
+<li><strong>Trigger:</strong> Dispatched on the third failed attempt (<code>attempt_count === 3</code>).</li>
+<li><strong>Tone:</strong> Firm, risk-oriented, setting absolute deadlines before destructive actions take place.</li>
+<li><strong>Sender:</strong> <code>{{ product_name }} Billing Desk &lt;support@yourdomain.com&gt;</code></li>
+</ul>
+<pre><code class="language-markdown">Subject: Final notice: Your {{ product_name }} access will pause in 48 hours
+
+Hi {{ customer.first_name }},
+
+We haven’t been able to process the outstanding balance of {{ invoice.amount }} {{ invoice.currency }} for your {{ product_name }} workspace. 
+
+Because of this, your account is scheduled for immediate service suspension on {{ suspension_date }}.
+
+Here is what happens when your account is suspended:
+- API access keys will immediately return 401 Unauthorized errors.
+- Background syncs and scheduled processing pipelines will freeze.
+- Your team workspace will switch to read-only mode.
+
+You can prevent this freeze entirely by updating your payment method before {{ suspension_date }}:
+
+--&gt; Restore Full Account Standing: {{ invoice.hosted_invoice_url }}
+
+We hold your system configurations and stored data safely for 14 days following suspension before data archival routines engage. 
+
+If your team is evaluating whether to adjust or cancel this seat, please reply directly to this message so we can pause the automated workflow manually.
+
+The {{ product_name }} Team
+</code></pre>
+<hr />
+<h3>Email 4: Account Lockout &amp; Archive Initiation (Day 14)</h3>
+<ul>
+<li><strong>Trigger:</strong> Dispatched on the final failed retry event or subscription state transition to <code>canceled</code> / <code>unpaid</code>.</li>
+<li><strong>Tone:</strong> Off-boarding, calm, emphasizing data integrity, easy reactivation path.</li>
+<li><strong>Sender:</strong> <code>{{ founder_name }} &lt;founder@yourdomain.com&gt;</code></li>
+</ul>
+<pre><code class="language-markdown">Subject: Account paused: {{ product_name }} workspace downgraded
+
+Hi {{ customer.first_name }},
+
+Following repeated unsuccessful attempts to renew your subscription, your {{ product_name }} account has been officially paused and converted to restricted read-only mode.
+
+Your active endpoints and automations are no longer processing incoming tasks. 
+
+**What happens to your data?**  
+All your records, schemas, and workspace configurations are intact and safely secured in our encrypted storage. We will preserve these snapshots for the next 30 days. On {{ deletion_date }}, unmaintained data snapshots are queued for permanent deletion per our compliance lifecycle.
+
+If you ever wish to restart your workspace, you don't have to rebuild anything from scratch. Simply drop in a valid card and your entire environment will restore instantly:
+
+--&gt; Reactivate Workspace Instantly: {{ invoice.hosted_invoice_url }}
+
+Thank you for building with us so far, {{ customer.first_name }}. If you have any feedback on why {{ product_name }} missed the mark for your team, please let me know—I read and reply to every email personally.
+
+Best,  
+{{ founder_name }}
+</code></pre>
+<hr />
+<h2>3. Micro-SaaS Unit Economics &amp; Margin Calculator Engine</h2>
+<p>Building sustainably requires calculating gross margins down to the third decimal point. Do not guess your unit economics; calculate your fully burdened marginal cost of service.</p>
+<h3>Financial Formulas</h3>
+<p>$$\text{COGS} = \text{Infrastructure Compute} + \text{Inference/Third-Party APIs} + \text{Transactional Layer} + \text{Payment Gateway Costs}$$</p>
+<p>$$\text{Gross Margin \%} = \frac{\text{Net Revenue} - \text{COGS}}{\text{Net Revenue}} \times 100$$</p>
+<p>$$\text{Net Revenue Retention (NRR)} = \frac{\text{Starting ARR} + \text{Expansion} - \text{Contraction} - \text{Churn}}{\text{Starting ARR}} \times 100$$</p>
+<p>$$\text{CAC Payback Period (Months)} = \frac{\text{CAC}}{\text{ARPU} \times \text{Gross Margin \%}}$$</p>
+<p>$$\text{Customer Lifetime Value (LTV)} = \frac{\text{ARPU} \times \text{Gross Margin \%}}{\text{User Churn Rate (Monthly)}}$$</p>
+<hr />
+<h3>Target Benchmark Matrix (B2B Micro-SaaS)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric</th>
+<th style="text-align: left;">Danger Level</th>
+<th style="text-align: left;">Healthy Minimum</th>
+<th style="text-align: left;">World Class Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Gross Margin</strong></td>
+<td style="text-align: left;">$&lt; 65\%$</td>
+<td style="text-align: left;">$75\% - 85\%$</td>
+<td style="text-align: left;">$&gt; 88\%$</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Monthly Churn</strong></td>
+<td style="text-align: left;">$&gt; 8\%$</td>
+<td style="text-align: left;">$3\% - 5\%$</td>
+<td style="text-align: left;">$&lt; 1.5\%$</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CAC Payback Period</strong></td>
+<td style="text-align: left;">$&gt; 14 \text{ months}$</td>
+<td style="text-align: left;">$6 - 12 \text{ months}$</td>
+<td style="text-align: left;">$&lt; 3 \text{ months}$</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>LTV : CAC Ratio</strong></td>
+<td style="text-align: left;">$&lt; 2:1$</td>
+<td style="text-align: left;">$3:1$</td>
+<td style="text-align: left;">$&gt; 5:1$</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>NRR</strong></td>
+<td style="text-align: left;">$&lt; 90\%$</td>
+<td style="text-align: left;">$100\% - 105\%$</td>
+<td style="text-align: left;">$&gt; 120\%$</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>Executable Node.js Unit Economics Engine</h3>
+<p>Save this file as <code>calculate-unit-economics.ts</code>. Run with <code>npx ts-node calculate-unit-economics.ts</code>.</p>
+<p>```typescript
+interface PlanMetrics {
+  planName: string;
+  pricePerMonth: number;
+  monthlyPaidAcquisitionSpend: number;
+  newCustomersPerMonth: number;
+  monthlyCustomerChurnRate: number; // Decimal (e.g., 0.04 for 4%)
+  expansionRevenuePerMonth: number; // Average expansion per user</p>
+<p>// Cost of Goods Sold (COGS) Inputs per user per month
+  cogs: {
+    serverComputeAndDb: number;
+    thirdPartyAPIs: number;     // e.g., OpenAI tokens, webhooks
+    transactionalEmails: number; // e.g., Postmark/Resend allocations
+    paymentProcessingPercent: number; // Usually 0.029 (2.9%)
+    paymentProcessingFixed: number;   // Usually 0.30 ($0.30)
+  };
+}</p>
+<p>interface CalculatedEconomics {
+  cogsPerUser: number;
+  grossProfitPerUser: number;
+  grossMarginPercentage: number;
+  blendedCAC: number;
+  cacPaybackMonths: number;
+  ltvMonths: number;
+  ltvGross: number;
+  ltvToCacRatio: number;
+}</p>
+<p>function calculateEconomics(input: PlanMetrics): CalculatedEconomics {
+  // 1. Calculate direct variable payment costs
+  const paymentFee = (input.pricePerMonth * input.cogs.paymentProcessingPercent) + input.cogs.paymentProcessingFixed;</p>
+<p>// 2. Sum up total monthly COGS per active customer
+  const totalCogs = 
+    input.cogs.serverComputeAndDb +
+    input.cogs.thirdPartyAPIs +
+    input.cogs.transactionalEmails +
+    paymentFee;</p>
+<p>// 3. Profitability Metrics
+  const grossProfit = input.pricePerMonth - totalCogs;
+  const grossMargin = (grossProfit / input.pricePerMonth) * 100;</p>
+<p>// 4. CAC calculation
+  const blendedCAC = input.monthlyPaidAcquisitionSpend / input.newCustomersPerMonth;</p>
+<p>// 5. Payback period in months
+  const paybackPeriod = blendedCAC / grossProfit;</p>
+<p>// 6. LTV Calculation based on Gross Profit
+  const averageCustomerLifespanMonths = 1 / input.monthlyCustomerChurnRate;
+  const ltv = grossProfit * averageCustomerLifespanMonths;
+  const ltvToCac = ltv / blendedCAC;</p>
+<p>return {
+    cogsPerUser: Number(totalCogs.toFixed(2)),
+    grossProfitPerUser: Number(grossProfit.toFixed(2)),
+    grossMarginPercentage: Number(grossMargin.toFixed(2)),
+    blendedCAC: Number(blendedCAC.toFixed(2)),
+    cacPaybackMonths: Number(paybackPeriod.toFixed(2)),
+    ltvMonths: Number(averageCustomerLifespanMonths.toFixed(1)),
+    ltvGross: Number(ltv.toFixed(2)),
+    ltvToCacRatio: Number(ltvToCac.toFixed(2)),
+  };
+}</p>
+<p>// Concrete execution example: $49/month AI-augmented SaaS product
+const currentProductRun: PlanMetrics = {
+  planName: 'Pro Tier ($49/mo)',
+  pricePerMonth: 49.00,
+  monthlyPaidAcquisitionSpend: 1200.00,
+  newCustomersPerMonth: 30,
+  monthlyCustomerChurnRate: 0.045, // 4.5% monthly churn
+  expansionRevenuePerMonth: 2.50,
+  cogs: {
+    serverComputeAndDb: 1.20,
+    thirdPartyAPIs: 3.80,       // Model calls (LLMs/Vector DB)
+    transactionalEmails: 0.15,
+    paymentProcessingPercent: 0.029,
+    paymentProcessingFixed: 0.30,
+  },
+};</p>
+<p>const results = calculateEconomics(currentProductRun);</p>
+<p>console.log(<code>=== UNIT ECONOMICS REPORT: ${currentProductRun.planName} ===</code>);
+console.log(<code>Total Direct COGS/User:   $${results.cogsPerUser}</code>);
+console.log(<code>Gross Profit/User:         $${results.grossProfitPerUser}</code>);
+console.log(<code>Gross Margin:              ${results.grossMarginPercentage}%</code>);
+console.log(<code>Blended CAC:               $${results.blendedCAC}</code>);
+console.log(<code>Payback Period:            ${results.cacPaybackMonths} Months</code>);
+console.log(<code>Average User Lifespan:     ${results.ltvMonths} Months</code>);
+console.log(`Gross Customer LTV:        $${results.</p>
+</body>
+</html>

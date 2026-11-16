@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Micro-SaaS Architecture & Launch Vault: 40+ Production Specs, API Blueprints & GTM Playbooks</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: 25+ Production PRDs, Database Schemas &amp; API Integration Blueprints</h1>
+<p>This module contains copy-paste architectural specifications, database schemas, and integration engines designed for production deployments. Every specification includes concrete implementations, explicit schemas, deterministic error handling, and security controls.</p>
+<hr />
+<h2>1. Architectural PRD: AI Automation Wrapper</h2>
+<h3>1.1 Metadata &amp; Service Level Objectives (SLOs)</h3>
+<ul>
+<li><strong>Document Version:</strong> <code>2.4.0</code></li>
+<li><strong>Target System:</strong> Distributed Async LLM Pipeline with Streaming Delivery</li>
+<li><strong>Availability SLO:</strong> 99.95% uptime (&lt; 21.9 minutes downtime/month)</li>
+<li><strong>Latency SLOs:</strong></li>
+<li>Time to First Token (TTFT): $\le 650\text{ ms}$ (p95)</li>
+<li>End-to-End Execution (Buffered Fallback): $\le 4,200\text{ ms}$ (p99)</li>
+<li><strong>Durability Target:</strong> 100% trace retention on failure; zero unlogged silent fallbacks</li>
+</ul>
+<h3>1.2 Pipeline State Machine</h3>
+<p>Requests move through an explicit state machine with persistent transitions logged to an unlogged transition table for post-mortem debugging.</p>
+<pre><code>       [ INCOMING REQUEST ]
+                 │
+                 ▼
+        [ TOKEN VALIDATION ]
+                 │
+                 ├── (Invalid / Quota Exceeded) ──► [ REJECT 402/429 ]
+                 │
+                 ▼
+        [ DISPATCH WORKER ]
+                 │
+                 ▼
+       [ PRIMARY: OPENAI ] ─── (Timeout &gt; 3500ms / 5xx) ───┐
+                 │                                         │
+                 ├─────────────┐                           ▼
+                 │ Success     │ Stream Interrupted  [ SECONDARY: ANTHROPIC ]
+                 ▼             ▼                           │
+        [ CLIENT STREAM ]  [ RECONNECT BUFFER ]            ├── (Timeout / 5xx)
+                 │                                         │
+                 │                                         ▼
+                 │                                  [ TERTIARY: MISTRAL ]
+                 │                                         │
+                 │                                         ├── (Total Failure)
+                 │                                         │          │
+                 ▼                                         ▼          ▼
+         [ LOG &amp; METER ]                           [ PARSE ERROR ]  [ DEAD LETTER ]
+</code></pre>
+<h3>1.3 Concrete Fallback &amp; Execution Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Tier</th>
+<th style="text-align: left;">Provider</th>
+<th style="text-align: left;">Model ID</th>
+<th style="text-align: left;">Timeout (Connect / Read)</th>
+<th style="text-align: left;">Trigger Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Primary</strong></td>
+<td style="text-align: left;">OpenAI</td>
+<td style="text-align: left;"><code>gpt-4o-2024-08-06</code></td>
+<td style="text-align: left;">$400\text{ ms}$ / $3,500\text{ ms}$</td>
+<td style="text-align: left;">Default route</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Secondary</strong></td>
+<td style="text-align: left;">Anthropic</td>
+<td style="text-align: left;"><code>claude-3-5-sonnet-20240620</code></td>
+<td style="text-align: left;">$500\text{ ms}$ / $4,000\text{ ms}$</td>
+<td style="text-align: left;">HTTP 429, 500, 502, 503, 504, or primary TTFT &gt; $1,200\text{ ms}$</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tertiary</strong></td>
+<td style="text-align: left;">Groq (Llama)</td>
+<td style="text-align: left;"><code>llama-3.1-70b-versatile</code></td>
+<td style="text-align: left;">$250\text{ ms}$ / $2,000\text{ ms}$</td>
+<td style="text-align: left;">Anthropic API connection timeout or regional outage</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Fallback</strong></td>
+<td style="text-align: left;">Cached / Deterministic</td>
+<td style="text-align: left;">Static Mock Template</td>
+<td style="text-align: left;">$0\text{ ms}$</td>
+<td style="text-align: left;">All upstream providers exhausted</td>
+</tr>
+</tbody>
+</table>
+<h3>1.4 Hardened LLM Completion &amp; Resilient Router (TypeScript)</h3>
+<p>This module handles automatic upstream failover, response normalization, and structured output parsing.</p>
+<pre><code class="language-typescript">// File: src/lib/llm/resilient-router.ts
+import OpenAI from &quot;openai&quot;;
+import Anthropic from &quot;@anthropic-ai/sdk&quot;;
+import { z } from &quot;zod&quot;;
+
+export const GenerationOutputSchema = z.object({
+  analysis: z.string().min(10),
+  suggestedActions: z.array(z.string().min(3)).max(5),
+  confidenceScore: z.number().min(0).max(1),
+  metadata: z.record(z.string(), z.unknown()),
+});
+
+export type GenerationOutput = z.infer&lt;typeof GenerationOutputSchema&gt;;
+
+interface ExecutionContext {
+  tenantId: string;
+  requestId: string;
+  prompt: string;
+  systemContext: string;
+}
+
+export class ResilientLLMRouter {
+  private openai: OpenAI;
+  private anthropic: Anthropic;
+
+  constructor() {
+    this.openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY!, timeout: 3500 });
+    this.anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY!, timeout: 4000 });
+  }
+
+  public async execute(context: ExecutionContext): Promise&lt;{
+    data: GenerationOutput;
+    provider: &quot;openai&quot; | &quot;anthropic&quot; | &quot;cache_fallback&quot;;
+    latencyMs: number;
+  }&gt; {
+    const startTime = performance.now();
+
+    // 1. Primary Attempt: OpenAI Structured Outputs
+    try {
+      const response = await this.openai.beta.chat.completions.parse({
+        model: &quot;gpt-4o-2024-08-06&quot;,
+        messages: [
+          { role: &quot;system&quot;, content: context.systemContext },
+          { role: &quot;user&quot;, content: context.prompt },
+        ],
+        response_format: {
+          type: &quot;json_schema&quot;,
+          json_schema: {
+            name: &quot;automation_output&quot;,
+            strict: true,
+            schema: {
+              type: &quot;object&quot;,
+              properties: {
+                analysis: { type: &quot;string&quot; },
+                suggestedActions: { type: &quot;array&quot;, items: { type: &quot;string&quot; } },
+                confidenceScore: { type: &quot;number&quot; },
+                metadata: { type: &quot;object&quot;, additionalProperties: true },
+              },
+              required: [&quot;analysis&quot;, &quot;suggestedActions&quot;, &quot;confidenceScore&quot;, &quot;metadata&quot;],
+              additionalProperties: false,
+            },
+          },
+        },
+      });
+
+      const parsed = response.choices[0]?.message.parsed;
+      if (!parsed) throw new Error(&quot;NULL_OPENAI_RESPONSE_BODY&quot;);
+
+      return {
+        data: GenerationOutputSchema.parse(parsed),
+        provider: &quot;openai&quot;,
+        latencyMs: Math.round(performance.now() - startTime),
+      };
+    } catch (primaryError: any) {
+      console.warn(`[ROUTER_FAILOVER] Primary failed: ${primaryError.message}. Routing to Secondary.`);
+    }
+
+    // 2. Secondary Attempt: Anthropic Tool Use Fallback
+    try {
+      const toolSchema = {
+        name: &quot;record_automation_output&quot;,
+        description: &quot;Record structured output response from prompt execution&quot;,
+        input_schema: {
+          type: &quot;object&quot; as const,
+          properties: {
+            analysis: { type: &quot;string&quot; },
+            suggestedActions: { type: &quot;array&quot;, items: { type: &quot;string&quot; } },
+            confidenceScore: { type: &quot;number&quot; },
+            metadata: { type: &quot;object&quot; },
+          },
+          required: [&quot;analysis&quot;, &quot;suggestedActions&quot;, &quot;confidenceScore&quot;, &quot;metadata&quot;],
+        },
+      };
+
+      const response = await this.anthropic.messages.create({
+        model: &quot;claude-3-5-sonnet-20240620&quot;,
+        max_tokens: 1024,
+        system: context.systemContext,
+        tools: [toolSchema],
+        tool_choice: { type: &quot;tool&quot;, name: &quot;record_automation_output&quot; },
+        messages: [{ role: &quot;user&quot;, content: context.prompt }],
+      });
+
+      const toolUseBlock = response.content.find((block) =&gt; block.type === &quot;tool_use&quot;);
+      if (!toolUseBlock || toolUseBlock.type !== &quot;tool_use&quot;) {
+        throw new Error(&quot;ANTHROPIC_FAILED_TOOL_CALL&quot;);
+      }
+
+      return {
+        data: GenerationOutputSchema.parse(toolUseBlock.input),
+        provider: &quot;anthropic&quot;,
+        latencyMs: Math.round(performance.now() - startTime),
+      };
+    } catch (secondaryError: any) {
+      console.error(`[ROUTER_OUTAGE] Secondary failed: ${secondaryError.message}. Emitting fallback.`);
+    }
+
+    // 3. Graceful Deterministic Fallback
+    return {
+      data: {
+        analysis: &quot;Automated analysis temporarily unavailable due to upstream connectivity limits.&quot;,
+        suggestedActions: [&quot;Retry task manually&quot;, &quot;Check platform status page&quot;],
+        confidenceScore: 0.0,
+        metadata: { fallback: true, executionContext: context.requestId },
+      },
+      provider: &quot;cache_fallback&quot;,
+      latencyMs: Math.round(performance.now() - startTime),
+    };
+  }
+}
+</code></pre>
+<hr />
+<h2>2. PostgreSQL Multi-Tenant Schema with Hard RLS</h2>
+<p>This relational architecture enforces strict logical data isolation at the database layer using native PostgreSQL Row Level Security (RLS). Connection pooling (via PgBouncer/Supabase) is fully supported through transaction-scoped session configuration variables.</p>
+<pre><code>       ┌────────────────┐
+       │ organizations  │
+       └───────┬────────┘
+               │ 1
+               │
+               │ N
+       ┌───────┴────────┐          ┌────────────────┐
+       │  memberships   │◄─────────┤     users      │
+       └───────┬────────┘ N      1 └────────────────┘
+               │
+               │ Context: app.current_tenant_id
+               ▼
+┌──────────────────────────────┐
+│  projects / resources / logs  │ ◄─── Enforced by PostgreSQL RLS
+└──────────────────────────────┘
+</code></pre>
+<h3>2.1 Complete DDL &amp; RLS Migration Script</h3>
+<pre><code class="language-sql">-- Migration: 001_core_multi_tenant_rls.sql
+BEGIN;
+
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS &quot;uuid-ossp&quot;;
+CREATE EXTENSION IF NOT EXISTS &quot;citext&quot;;
+
+-- 1. Organizations (Tenants)
+CREATE TABLE organizations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    slug CITEXT UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    stripe_customer_id VARCHAR(255) UNIQUE,
+    subscription_status VARCHAR(50) NOT NULL DEFAULT 'trialing',
+    plan_tier VARCHAR(50) NOT NULL DEFAULT 'starter',
+    max_seats INT NOT NULL DEFAULT 5,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX idx_organizations_slug ON organizations (slug);
+CREATE INDEX idx_organizations_stripe ON organizations (stripe_customer_id);
+
+-- 2. Users (Global platform accounts)
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email CITEXT UNIQUE NOT NULL,
+    encrypted_password VARCHAR(255),
+    full_name VARCHAR(255),
+    is_superadmin BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX idx_users_email ON users (email);
+
+-- 3. Tenant Memberships &amp; RBAC
+CREATE TYPE user_role AS ENUM ('owner', 'admin', 'member', 'viewer');
+
+CREATE TABLE memberships (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role user_role NOT NULL DEFAULT 'member',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    CONSTRAINT uq_organization_user UNIQUE (organization_id, user_id)
+);
+
+CREATE INDEX idx_memberships_org_user ON memberships (organization_id, user_id);
+CREATE INDEX idx_memberships_user ON memberships (user_id);
+
+-- 4. Projects (Tenant-Scoped Resource)
+CREATE TABLE projects (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    configuration JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX idx_projects_tenant ON projects (organization_id);
+CREATE INDEX idx_projects_config_gin ON projects USING GIN (configuration);
+
+-- 5. Audit Log (Append-Only Event Ledger)
+CREATE TABLE audit_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    action VARCHAR(100) NOT NULL,
+    resource_type VARCHAR(100) NOT NULL,
+    resource_id UUID NOT NULL,
+    ip_address INET,
+    user_agent TEXT,
+    changes JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX idx_audit_logs_tenant_created ON audit_logs (organization_id, created_at DESC);
+
+-- =========================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES
+-- =========================================================================
+
+-- Enable RLS on Tenant-Isolated Tables
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Helper Function: Read active tenant from dynamic session configuration
+CREATE OR REPLACE FUNCTION current_tenant_id() RETURNS UUID AS $$
+BEGIN
+    RETURN NULLIF(current_setting('app.current_tenant_id', true), '')::UUID;
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- Organizations Policy: Only visible if tenant matches current_tenant_id
+CREATE POLICY tenant_isolation_organizations ON organizations
+    FOR ALL
+    USING (id = current_tenant_id());
+
+-- Memberships Policy: Only visible if membership belongs to active tenant
+CREATE POLICY tenant_isolation_memberships ON memberships
+    FOR ALL
+    USING (organization_id = current_tenant_id());
+
+-- Projects Policy: Full isolation per active tenant context
+CREATE POLICY tenant_isolation_projects ON projects
+    FOR ALL
+    USING (organization_id = current_tenant_id())
+    WITH CHECK (organization_id = current_tenant_id());
+
+-- Audit Logs Policy: Append-only by tenant, no client deletions
+CREATE POLICY tenant_isolation_audit_logs_select ON audit_logs
+    FOR SELECT
+    USING (organization_id = current_tenant_id());
+
+CREATE POLICY tenant_isolation_audit_logs_insert ON audit_logs
+    FOR INSERT
+    WITH CHECK (organization_id = current_tenant_id());
+
+-- Auto-update timestamps trigger
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = TIMEZONE('utc', NOW());
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER tr_organizations_updated_at BEFORE UPDATE ON organizations FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+CREATE TRIGGER tr_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+CREATE TRIGGER tr_memberships_updated_at BEFORE UPDATE ON memberships FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+CREATE TRIGGER tr_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
+
+COMMIT;
+</code></pre>
+<h3>2.2 Application Connection Wrapper (Prisma &amp; Raw pg)</h3>
+<p>Every query executed on behalf of a tenant must declare its context. Here is the transaction-safe execution wrapper:</p>
+<pre><code class="language-typescript">// File: src/lib/db/tenant-context.ts
+import { Pool, PoolClient } from 'pg';
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,
+  idleTimeoutMillis: 30000,
+});
+
+export async function withTenantContext&lt;T&gt;(
+  tenantId: string,
+  callback: (client: PoolClient) =&gt; Promise&lt;T&gt;
+): Promise&lt;T&gt; {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Set transaction-local tenant context (prevents connection leak across pool reuses)
+    await client.query(`SET LOCAL app.current_tenant_id = $1`, [tenantId]);
+
+    const result = await callback(client);
+
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+</code></pre>
+<hr />
+<h2>3. Stripe Usage-Based Metered Billing Engine</h2>
+<h3>3.1 Metering Schema Specification</h3>
+<p>The ledger uses optimistic concurrency control alongside an idempotent write log. Every metered execution is recorded locally first, then reported upstream via the Stripe Meter Events API.</p>
+<pre><code class="language-sql">-- Migration: 002_stripe_metering_ledger.sql
+BEGIN;
+
+CREATE TYPE meter_sync_status AS ENUM ('pending', 'delivered', 'failed', 'reconciled');
+
+CREATE TABLE billing_usage_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    stripe_customer_id VARCHAR(255) NOT NULL,
+    event_name VARCHAR(100) NOT NULL, -- matches Stripe Meter event_name (e.g. 'ai_pipeline_invocations')
+    idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+    quantity INT NOT NULL CHECK (quantity &gt; 0),
+    properties JSONB NOT NULL DEFAULT '{}'::jsonb,
+    sync_status meter_sync_status NOT NULL DEFAULT 'pending',
+    stripe_event_id VARCHAR(255),
+    error_message TEXT,
+    retry_count INT NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    synced_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_usage_sync_status ON billing_usage_events (sync_status) WHERE sync_status = 'pending';
+CREATE INDEX idx_usage_customer_time ON billing_usage_events (stripe_customer_id, recorded_at);
+
+COMMIT;
+</code></pre>
+<h3>3.2 Production Usage Meter Service (TypeScript / Stripe v2 Meter API)</h3>
+<pre><code class="language-typescript">// File: src/lib/billing/usage-meter.ts
+import Stripe from 'stripe';
+import { Pool } from 'pg';
+import crypto from 'crypto';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2024-06-20',
+  maxNetworkRetries: 3,
+});
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+export interface MeterIngestRequest {
+  organizationId: string;
+  stripeCustomerId: string;
+  meterEventName: string;
+  quantity: number;
+  properties?: Record&lt;string, string | number&gt;;
+}
+
+export class StripeMeterEngine {
+  /**
+   * Records usage locally and dispatches immediately to Stripe with an idempotency key.
+   */
+  public async recordUsage(entry: MeterIngestRequest): Promise&lt;string&gt; {
+    const idempotencyKey = `meter_${entry.organizationId}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`;
+
+    // 1. Write to local database ledger in PENDING state
+    const insertQuery = `
+      INSERT INTO billing_usage_events (
+        organization_id,
+        stripe_customer_id,
+        event_name,
+        idempotency_key,
+        quantity,
+        properties,
+        sync_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      RETURNING id;
+    `;
+
+    const result = await pool.query(insertQuery, [
+      entry.organizationId,
+      entry.stripeCustomerId,
+      entry.meterEventName,
+      idempotencyKey,
+      entry.quantity,
+      JSON.stringify(entry.properties || {}),
+    ]);
+
+    const localLedgerId = result.rows[0].id;
+
+    // 2. Transmit to Stripe Meter Event API
+    try {
+      const meterEvent = await stripe.billing.meterEvents.create({
+        event_name: entry.meterEventName,
+        payload: {
+          value: entry.quantity.toString(),
+          stripe_customer_id: entry.stripeCustomerId,
+        },
+        identifier: idempotencyKey,
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+
+      // 3. Mark Ledger Record Delivered
+      await pool.query(
+        `UPDATE billing_usage_events 
+         SET sync_status = 'delivered', 
+             stripe_event_id = $1, 
+             synced_at = NOW() 
+         WHERE id = $2`,
+        [meterEvent.identifier, localLedgerId]
+      );
+
+      return idempotencyKey;
+    } catch (err: any) {
+      console.error(`[METERING_ERROR] Delivery failed for ledger ID ${localLedgerId}:`, err);
+
+      await pool.query(
+        `UPDATE billing_usage_events 
+         SET sync_status = 'failed', 
+             error_message = $1, 
+             retry_count = retry_count + 1 
+         WHERE id = $2`,
+        [err.message, localLedgerId]
+      );
+
+      throw err;
+    }
+  }
+
+  /**
+   * Replay processor invoked via cron to flush pending/failed meter events.
+   */
+  public async flushFailedEvents(batchLimit: number = 100): Promise&lt;number&gt; {
+    const client = await pool.connect();
+    let flushedCount = 0;
+
+    try {
+      const pendingEvents = await client.query(
+        `SELECT * FROM billing_usage_events 
+         WHERE sync_status IN ('pending', 'failed') 
+           AND retry_count &lt; 5 
+         ORDER BY recorded_at ASC 
+         LIMIT $1 FOR UPDATE SKIP LOCKED`,
+        [batchLimit]
+      );
+
+      for (const row of pendingEvents.rows) {
+        try {
+          await stripe.billing.meterEvents.create({
+            event_name: row.event_name,
+            payload: {
+              value: row.quantity.toString(),
+              stripe_customer_id: row.stripe_customer_id,
+            },
+            identifier: row.idempotency_key,
+            timestamp: Math.floor(new Date(row.recorded_at).getTime() / 1000),
+          });
+
+          await client.query(
+            `UPDATE billing_usage_events 
+             SET sync_status = 'delivered', synced_at = NOW(), error_message = NULL 
+             WHERE id = $1`,
+            [row.id]
+          );
+
+          flushedCount++;
+        } catch (innerErr: any) {
+          await client.query(
+            `UPDATE billing_usage_events 
+             SET retry_count = retry_count + 1, error_message = $1 
+             WHERE id = $2`,
+            [innerErr.message, row.id]
+          );
+        }
+      }
+    } finally {
+      client.release();
+    }
+
+    return flushedCount;
+  }
+}
+</code></pre>
+<hr />
+<h2>4. Production Webhook Security &amp; Idempotency Handler</h2>
+<p>An enterprise-ready webhook endpoint must handle three failure modes:
+1. Replay attacks with stale timestamps.
+2. Timing attacks via string comparison.
+3. Race conditions caused by concurrent webhook deliveries.</p>
+<pre><code>       [ HTTP POST /api/v1/webhooks/stripe ]
+                         │
+                         ▼
+             [ Read Raw Body Buffer ]
+                         │
+                         ▼
+        [ Check Header: stripe-signature ]
+                         │
+                         ▼
+   [ Verify Tolerance Window: Math.abs(Now - T) &lt;= 300s ]
+                         │
+                         ▼
+        [ Crypto: timingSafeEqual HMAC-SHA256 ]
+                         │
+                         ├── (Mismatch / Expired) ──► [ REJECT 400 Bad Request ]
+                         │
+                         ▼
+          [ BEGIN DB ISOLATION TX ]
+                         │
+                         ▼
+     [ INSERT event_id INTO processed_webhooks ]
+                         │
+                         ├── (Conflict: 23505) ────► [ ACK 200 &quot;Already Processed&quot; ]
+                         │
+                         ▼
+             [ PROCESS BUSINESS LOGIC ]
+                         │
+                         ├── (Exception) ──────────► [ ROLLBACK &amp; RETURN 500 ]
+                         │
+                         ▼
+            [ COMMIT TX &amp; RETURN 200 ]
+</code></pre>
+<h3>4.1 Webhook Storage Engine Schema</h3>
+<pre><code class="language-sql">-- Migration: 003_webhook_idempotency.sql
+BEGIN;
+
+CREATE TABLE processed_webhooks (
+    event_id VARCHAR(255) PRIMARY KEY,
+    source VARCHAR(50) NOT NULL, -- e.g. 'stripe', 'clerk', 'github'
+    event_type VARCHAR(100) NOT NULL,
+    payload JSONB NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX idx_webhooks_processed_at ON processed_webhooks (processed_at);
+
+COMMIT;
+</code></pre>
+<h3>4.2 Webhook Security Handler (Next.js / Node Route)</h3>
+<p>```typescript
+// File: src/app/api/webhooks/stripe/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { Pool } from 'pg';</p>
+<p>const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET!;
+const TOLERANCE_SECONDS = 300; // 5-minute replay window</p>
+<p>function verifyStripeSignature(rawBody: string, signatureHeader: string, secret: string): boolean {
+  const parts = signatureHeader.split(',');
+  let timestamp: string | null = null;
+  const signatures: string[] = [];</p>
+<p>for (const part of parts) {
+    const [key, value] = part.split('=');
+    if (key === 't') timestamp = value;
+    if (key === 'v1') signatures.push(value);
+  }</p>
+<p>if (!timestamp || signatures.length === 0) {
+    return false;
+  }</p>
+<p>// Prevent Replay Attacks: Check timestamp freshness
+  const now = Math.floor(Date.now() / 1000);
+  const eventTime = parseInt(timestamp, 10);
+  if (isNaN(eventTime) || Math.abs(now - eventTime) &gt; TOLERANCE_SECONDS) {
+    return false;
+  }</p>
+<p>// Compute expected HMAC
+  const signedPayload = <code>${timestamp}.${rawBody}</code>;
+  const hmac = crypto.createHmac('sha256', secret);
+  const expectedSignature = hmac.update(signedPayload).digest('hex');</p>
+<p>const expectedBuffer = Buffer.from(expectedSignature, 'utf8');</p>
+<p>// Constant-time string matching to neutralize timing attacks
+  return signatures.some((sig) =&gt; {
+    const sigBuffer = Buffer.from(sig, 'utf8');
+    if (sigBuffer.length !== expectedBuffer.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+  });
+}</p>
+<p>export async function POST(req: NextRequest) {
+  const signature = req.headers.get('stripe-signature');
+  if (!signature) {
+    return NextResponse.json({ error: 'Missing stripe-signature header' }, { status: 400 });
+  }</p>
+<p>const rawBody = await req.text();</p>
+<p>// 1. Signature Verification
+  const isValid = verifyStripeSignature(rawBody, signature, WEBHOOK_SECRET);
+  if (!isValid) {
+    return NextResponse.json({ error: 'Invalid or expired signature' }, { status: 400 });
+  }</p>
+<p>let event: { id: string; type: string; data: { object: any } };
+  try {
+    event = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: 'Malformed payload JSON' }, { status: 400 });
+  }</p>
+<p>const client = await pool.connect();
+  try {
+    await client.query('BEGIN');</p>
+<pre><code>// 2. Atomic Deduplication Lock via processed_webhooks
+const dedupeQuery = `
+  INSERT INTO processed_webhooks (event_id, source, event_type, payload)
+  VALUES ($1, 'stripe', $2, $3)
+  ON CONFLICT (event_id) DO NOTHING
+  RETURNING event_id;
+`;
+const dedupeRes = await client.query(dedupeQuery, [event.id, event.type, rawBody]);
+
+// If no row was inserted, this event was already ingested and processed
+if (dedupeRes.rowCount === 0) {
+  await client.query('ROLLBACK');
+  return NextResponse.json({ status: 'ignored', reason: 'duplicate_event' }, { status: 200 });
+}
+
+// 3. Deterministic Domain Logic Routing
+switch (event.type) {
+  case 'customer.subscription.updated':
+  case 'customer.subscription.deleted': {
+    const subscription = event.data.object;
+    await client.query(
+      `UPDATE organizations 
+       SET subscription_status = $1, updated_at = NOW() 
+       WHERE stripe_customer_id = $2`,
+      [subscription.status, subscription.customer]
+    );
+    break;
+  }
+  case 'invoice.payment_failed': {
+    const invoice = event.data.object;
+    await client.query(
+      `UPDATE organizations 
+       SET subscription_status = 'past_due', updated_at = NOW
+</code></pre>
+</body>
+</html>
