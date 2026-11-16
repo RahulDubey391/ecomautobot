@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Programmatic SEO Playbook: 50+ Data Pipelines, Dynamic Page Templates & Fast Indexing Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Data Pipeline Blueprints, Schemas &amp; AI Enrichment Workflows</h1>
+<p>Scaling a programmatic SEO (pSEO) engine to 100,000+ organic monthly visits requires treating data not as content to be written, but as software state to be ingested, normalized, enriched, and validated. If your underlying data pipeline produces duplicate slugs, hallucinated specifications, or low-information-density boilerplate, search engines will classify the entire subfolder as algorithmic spam.</p>
+<p>This module provides the production database architectures, ingestion scripts, LLM enrichment engines, and deterministic validation guardrails required to run resilient pSEO operations.</p>
+<hr />
+<h2>1. Production Database Schemas</h2>
+<p>A programmatic SEO database must solve four structural problems:
+1. <strong>Slug Stability &amp; Canonical Integrity:</strong> Prevent URL churn and handle parent-child hierarchy.
+2. <strong>Dynamic JSON-LD Generation:</strong> Store strongly typed structured data to render schema markup at build time.
+3. <strong>Publishing State Machine:</strong> Prevent draft, partially enriched, or soft-deleted pages from hitting the sitemap.
+4. <strong>Full-Text &amp; Vector Search:</strong> Support cross-linking related pages based on topical proximity.</p>
+<h3>1.1. PostgreSQL / Supabase Schema</h3>
+<p>This production DDL includes custom enums, auto-updating timestamps, generated columns for full-text search, and relational constraints between parent hubs and leaf pages.</p>
+<pre><code class="language-sql">-- Enable necessary extensions
+CREATE EXTENSION IF NOT EXISTS &quot;uuid-ossp&quot;;
+CREATE EXTENSION IF NOT EXISTS &quot;pg_trgm&quot;;
+
+-- Enum for indexing state management
+CREATE TYPE indexing_status AS ENUM (
+    'draft',
+    'enriched',
+    'validated',
+    'published',
+    'pruned',
+    'failed_validation'
+);
+
+-- Core Entity Table (The single source of truth for programmatic records)
+CREATE TABLE pseo_entities (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    slug VARCHAR(255) NOT NULL,
+    parent_slug VARCHAR(255),
+    entity_type VARCHAR(64) NOT NULL, -- e.g., 'comparison', 'integration', 'city_service'
+    primary_keyword VARCHAR(255) NOT NULL,
+    canonical_url VARCHAR(512) NOT NULL,
+    status indexing_status NOT NULL DEFAULT 'draft',
+
+    -- Content payloads
+    meta_title VARCHAR(120) NOT NULL,
+    meta_description VARCHAR(200) NOT NULL,
+    h1 VARCHAR(255) NOT NULL,
+    core_attributes JSONB NOT NULL DEFAULT '{}'::jsonb,
+    enriched_content JSONB NOT NULL DEFAULT '{}'::jsonb,
+    schema_markup JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+    -- Quality &amp; Deduplication
+    content_hash CHAR(64) NOT NULL, -- SHA-256 hash of normalized core attributes
+    quality_score NUMERIC(3, 2) DEFAULT 0.00 CHECK (quality_score &gt;= 0.00 AND quality_score &lt;= 1.00),
+    word_count INT NOT NULL DEFAULT 0,
+
+    -- Search &amp; Indexing vectors
+    tsv_search TSVECTOR GENERATED ALWAYS AS (
+        to_tsvector('english', coalesce(primary_keyword, '') || ' ' || coalesce(h1, '') || ' ' || coalesce(meta_description, ''))
+    ) STORED,
+
+    -- Audit Timestamps
+    created_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT TIMEZONE('utc', NOW()),
+    published_at TIMESTAMPTZ,
+
+    -- Constraints
+    CONSTRAINT uq_pseo_entities_slug UNIQUE (slug),
+    CONSTRAINT uq_pseo_entities_hash UNIQUE (content_hash)
+);
+
+-- Indexes for maximum query velocity during static generation (SSG)
+CREATE INDEX idx_pseo_entities_status_type ON pseo_entities (status, entity_type);
+CREATE INDEX idx_pseo_entities_parent_slug ON pseo_entities (parent_slug) WHERE parent_slug IS NOT NULL;
+CREATE INDEX idx_pseo_entities_attributes_gin ON pseo_entities USING GIN (core_attributes);
+CREATE INDEX idx_pseo_entities_tsv ON pseo_entities USING GIN (tsv_search);
+CREATE INDEX idx_pseo_entities_trgm ON pseo_entities USING GIN (primary_keyword gin_trgm_ops);
+
+-- Automatic updated_at trigger function
+CREATE OR REPLACE FUNCTION update_timestamp_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = TIMEZONE('utc', NOW());
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER tr_pseo_entities_updated_at
+    BEFORE UPDATE ON pseo_entities
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp_column();
+</code></pre>
+<h3>1.2. SQLite Schema (Optimized for SSG Build Caches)</h3>
+<p>For Next.js, Astro, or Eleventy builds running on local runners, reading from a pre-built SQLite file is up to 10x faster than remote API fetches.</p>
+<pre><code class="language-sql">PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS programmatic_pages (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    parent_slug TEXT,
+    entity_type TEXT NOT NULL,
+    primary_keyword TEXT NOT NULL,
+    canonical_url TEXT NOT NULL,
+    status TEXT CHECK(status IN ('draft', 'enriched', 'validated', 'published', 'pruned')) NOT NULL DEFAULT 'draft',
+    meta_title TEXT NOT NULL,
+    meta_description TEXT NOT NULL,
+    h1 TEXT NOT NULL,
+    data_json TEXT NOT NULL, -- Encoded JSON object for template bindings
+    schema_json TEXT NOT NULL, -- Pre-computed Schema.org JSON-LD
+    content_hash TEXT NOT NULL UNIQUE,
+    word_count INTEGER NOT NULL,
+    published_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pages_status_type ON programmatic_pages(status, entity_type);
+CREATE INDEX IF NOT EXISTS idx_pages_parent ON programmatic_pages(parent_slug);
+</code></pre>
+<hr />
+<h2>2. Airtable-to-JSON Pipeline with Incremental Sync</h2>
+<p>Airtable is often used as a non-technical curation interface. However, querying the Airtable API directly during a production site build introduces severe rate limits (5 requests per second) and leads to broken deployments.</p>
+<p>This Node.js script provides an incremental sync: it fetches records, computes an MD5 checksum of each row, checks against a local cache, and writes only modified records to static JSON outputs.</p>
+<p>Save this as <code>scripts/airtable-sync.ts</code>:</p>
+<pre><code class="language-typescript">import fs from &quot;node:fs/promises&quot;;
+import path from &quot;node:path&quot;;
+import crypto from &quot;node:crypto&quot;;
+
+interface AirtableRawRecord {
+  id: string;
+  fields: {
+    Slug?: string;
+    EntityType?: string;
+    PrimaryKeyword?: string;
+    ParentSlug?: string;
+    MetaTitle?: string;
+    MetaDescription?: string;
+    H1?: string;
+    AttributesJSON?: string;
+    Published?: boolean;
+  };
+}
+
+interface NormalizedPageRecord {
+  id: string;
+  slug: string;
+  parentSlug: string | null;
+  entityType: string;
+  primaryKeyword: string;
+  metaTitle: string;
+  metaDescription: string;
+  h1: string;
+  attributes: Record&lt;string, unknown&gt;;
+  contentHash: string;
+  lastSyncedAt: string;
+}
+
+interface SyncManifest {
+  lastSyncTimestamp: string;
+  recordHashes: Record&lt;string, string&gt;;
+}
+
+const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY!;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID!;
+const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || &quot;ProgrammaticPages&quot;;
+const OUTPUT_DIR = path.resolve(process.cwd(), &quot;data/generated&quot;);
+const MANIFEST_PATH = path.resolve(OUTPUT_DIR, &quot;.sync-manifest.json&quot;);
+
+function computeHash(payload: unknown): string {
+  return crypto
+    .createHash(&quot;sha256&quot;)
+    .update(JSON.stringify(payload))
+    .digest(&quot;hex&quot;);
+}
+
+async function loadManifest(): Promise&lt;SyncManifest&gt; {
+  try {
+    const raw = await fs.readFile(MANIFEST_PATH, &quot;utf-8&quot;);
+    return JSON.parse(raw);
+  } catch {
+    return { lastSyncTimestamp: new Date(0).toISOString(), recordHashes: {} };
+  }
+}
+
+async function fetchAirtablePage(offset?: string): Promise&lt;{ records: AirtableRawRecord[]; offset?: string }&gt; {
+  const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_NAME}`);
+  url.searchParams.append(&quot;view&quot;, &quot;Grid view&quot;);
+  url.searchParams.append(&quot;pageSize&quot;, &quot;100&quot;);
+  if (offset) {
+    url.searchParams.append(&quot;offset&quot;, offset);
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+      &quot;Content-Type&quot;: &quot;application/json&quot;,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Airtable sync failed: ${response.status} ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+async function runPipeline(): Promise&lt;void&gt; {
+  if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
+    throw new Error(&quot;Missing AIRTABLE_API_KEY or AIRTABLE_BASE_ID environment variables.&quot;);
+  }
+
+  await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  const manifest = await loadManifest();
+  const nextManifest: SyncManifest = {
+    lastSyncTimestamp: new Date().toISOString(),
+    recordHashes: { ...manifest.recordHashes },
+  };
+
+  let offset: string | undefined = undefined;
+  let totalProcessed = 0;
+  let totalUpdated = 0;
+
+  console.log(&quot;Starting Airtable incremental synchronization...&quot;);
+
+  do {
+    const data = await fetchAirtablePage(offset);
+    offset = data.offset;
+
+    for (const record of data.records) {
+      totalProcessed++;
+      const fields = record.fields;
+
+      // Filter non-published records immediately
+      if (!fields.Published || !fields.Slug) {
+        continue;
+      }
+
+      let parsedAttributes = {};
+      try {
+        parsedAttributes = fields.AttributesJSON ? JSON.parse(fields.AttributesJSON) : {};
+      } catch {
+        console.warn(`[WARN] Invalid JSON in record ${record.id} (${fields.Slug}). Defaulting to empty object.`);
+      }
+
+      const normalized: NormalizedPageRecord = {
+        id: record.id,
+        slug: fields.Slug.trim().toLowerCase(),
+        parentSlug: fields.ParentSlug ? fields.ParentSlug.trim().toLowerCase() : null,
+        entityType: fields.EntityType || &quot;general&quot;,
+        primaryKeyword: fields.PrimaryKeyword || &quot;&quot;,
+        metaTitle: fields.MetaTitle || &quot;&quot;,
+        metaDescription: fields.MetaDescription || &quot;&quot;,
+        h1: fields.H1 || &quot;&quot;,
+        attributes: parsedAttributes,
+        contentHash: &quot;&quot;,
+        lastSyncedAt: nextManifest.lastSyncTimestamp,
+      };
+
+      const recordHash = computeHash(normalized);
+      normalized.contentHash = recordHash;
+
+      // Incremental cache check
+      if (manifest.recordHashes[record.id] === recordHash) {
+        continue;
+      }
+
+      // Write single page JSON data
+      const targetFilePath = path.join(OUTPUT_DIR, `${normalized.slug}.json`);
+      await fs.writeFile(targetFilePath, JSON.stringify(normalized, null, 2), &quot;utf-8&quot;);
+
+      nextManifest.recordHashes[record.id] = recordHash;
+      totalUpdated++;
+    }
+  } while (offset);
+
+  // Write updated manifest
+  await fs.writeFile(MANIFEST_PATH, JSON.stringify(nextManifest, null, 2), &quot;utf-8&quot;);
+
+  console.log(`Sync complete. Processed: ${totalProcessed}. Written to disk: ${totalUpdated}.`);
+}
+
+runPipeline().catch((err) =&gt; {
+  console.error(&quot;Pipeline run failed:&quot;, err);
+  process.exit(1);
+});
+</code></pre>
+<hr />
+<h2>3. LLM Enrichment Engine with Structured Outputs</h2>
+<p>Raw source data is rarely ready to publish immediately. It requires contextual analysis, concise synthesis, and structural transformations (e.g., pros/cons, unique pricing verdict, programmatic FAQ answers).</p>
+<p>The enrichment pipeline below uses Python, Pydantic, and OpenAI’s native JSON Schema Structured Outputs API to eliminate formatting errors entirely.</p>
+<p>Save this as <code>pipelines/enrichment_engine.py</code>:</p>
+<pre><code class="language-python">import os
+import json
+import logging
+from typing import List, Optional
+from pydantic import BaseModel, Field
+from openai import OpenAI
+
+logging.basicConfig(level=logging.INFO, format=&quot;%(asctime)s [%(levelname)s] %(message)s&quot;)
+logger = logging.getLogger(__name__)
+
+# Pydantic Schema for Strict Output Enforcement
+class FAQItem(BaseModel):
+    question: str = Field(description=&quot;Search-intent focused question containing entity name&quot;)
+    answer: str = Field(description=&quot;Direct, factual answer under 45 words. No filler phrases.&quot;)
+
+class ComparisonInsight(BaseModel):
+    feature_name: str
+    winner_entity_name: str
+    nuance_explanation: str = Field(description=&quot;One sentence detailing specific trade-offs.&quot;)
+
+class PageEnrichmentPayload(BaseModel):
+    h2_verdict: str = Field(description=&quot;Authoritative, 1-sentence verdict on which option is best for whom.&quot;)
+    key_tradeoffs: List[str] = Field(description=&quot;3 distinct non-obvious operational or technical trade-offs.&quot;)
+    comparison_breakdown: List[ComparisonInsight]
+    faqs: List[FAQItem] = Field(description=&quot;3 programmatic FAQ objects matching long-tail search intent.&quot;)
+    schema_faq_type: str = Field(default=&quot;FAQPage&quot;)
+
+SYSTEM_PROMPT = &quot;&quot;&quot;You are a senior programmatic content strategist and technical data analyst.
+Your task is to analyze raw entity data and produce dense, factual comparisons for search engines.
+
+STRICT EDITORIAL RULES:
+1. Ban these words completely: 'delve', 'testament', 'tapestry', 'game-changer', 'revolutionize', 'paramount', 'moreover'.
+2. Zero marketing fluff. Every sentence must communicate a metric, a specific feature, a constraint, or an integration fact.
+3. Every FAQ answer must start with a direct conclusion, not an introductory dependent clause.
+4. Do not invent pricing, certifications, or feature support not directly present in the source data.
+&quot;&quot;&quot;
+
+def enrich_entity_record(client: OpenAI, entity_a_name: str, entity_b_name: str, raw_attributes: dict) -&gt; PageEnrichmentPayload:
+    user_prompt = f&quot;&quot;&quot;Generate analytical comparison content for the following two entities:
+Entity A: {entity_a_name}
+Entity B: {entity_b_name}
+
+Source Data:
+{json.dumps(raw_attributes, indent=2)}
+
+Extract non-obvious distinctions and format directly into the requested JSON schema.&quot;&quot;&quot;
+
+    try:
+        completion = client.beta.chat.completions.parse(
+            model=&quot;gpt-4o-mini-2024-07-18&quot;,
+            messages=[
+                {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: SYSTEM_PROMPT},
+                {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: user_prompt},
+            ],
+            response_format=PageEnrichmentPayload,
+            temperature=0.2, # Low temperature ensures strict factual consistency
+        )
+        return completion.choices[0].message.parsed
+    except Exception as e:
+        logger.error(f&quot;Enrichment failed for {entity_a_name} vs {entity_b_name}: {str(e)}&quot;)
+        raise
+
+if __name__ == &quot;__main__&quot;:
+    api_key = os.getenv(&quot;OPENAI_API_KEY&quot;)
+    if not api_key:
+        raise ValueError(&quot;OPENAI_API_KEY environment variable not set.&quot;)
+
+    ai_client = OpenAI(api_key=api_key)
+
+    mock_raw_data = {
+        &quot;entity_a&quot;: {
+            &quot;name&quot;: &quot;PostgreSQL&quot;,
+            &quot;type&quot;: &quot;Relational DBMS&quot;,
+            &quot;pricing_model&quot;: &quot;Open Source&quot;,
+            &quot;memory_engine&quot;: &quot;Buffer Pool&quot;,
+            &quot;json_support&quot;: &quot;Native JSONB indexing&quot;,
+            &quot;replication&quot;: &quot;Streaming Replication&quot;
+        },
+        &quot;entity_b&quot;: {
+            &quot;name&quot;: &quot;MongoDB&quot;,
+            &quot;type&quot;: &quot;Document Store&quot;,
+            &quot;pricing_model&quot;: &quot;Source Available (SSPL)&quot;,
+            &quot;memory_engine&quot;: &quot;WiredTiger&quot;,
+            &quot;json_support&quot;: &quot;Native BSON&quot;,
+            &quot;replication&quot;: &quot;Replica Sets&quot;
+        }
+    }
+
+    result = enrich_entity_record(
+        client=ai_client,
+        entity_a_name=&quot;PostgreSQL&quot;,
+        entity_b_name=&quot;MongoDB&quot;,
+        raw_attributes=mock_raw_data
+    )
+
+    print(json.dumps(result.model_dump(), indent=2))
+</code></pre>
+<hr />
+<h2>4. Automated Deduplication &amp; Entity Resolution Engine</h2>
+<p>Programmatic databases frequently ingest the same physical entity from multiple upstream files, CSVs, or scrapers under differing names (e.g., <code>Stripe, Inc.</code> vs. <code>Stripe</code>, or <code>San Francisco, CA</code> vs. <code>San Francisco, California</code>). </p>
+<p>Allowing multiple variants generates cannibalizing URLs and triggers duplicate content penalties.</p>
+<p>The engine below implements deterministic entity resolution using text normalization, token-sort similarity, and canonical slug assignment.</p>
+<p>Save this as <code>pipelines/entity_resolution.py</code>:</p>
+<pre><code class="language-python">import re
+import unicodedata
+from typing import Dict, List, Tuple
+
+class EntityResolver:
+    def __init__(self, similarity_threshold: float = 0.88):
+        self.threshold = similarity_threshold
+        # Stop-words that distort entity matching
+        self.corporate_suffixes = {
+            &quot;inc&quot;, &quot;incorporated&quot;, &quot;corp&quot;, &quot;corporation&quot;, 
+            &quot;llc&quot;, &quot;ltd&quot;, &quot;limited&quot;, &quot;co&quot;, &quot;company&quot;
+        }
+
+    def normalize_text(self, text: str) -&gt; str:
+        text = unicodedata.normalize(&quot;NFKD&quot;, text).encode(&quot;ascii&quot;, &quot;ignore&quot;).decode(&quot;utf-8&quot;)
+        text = text.lower().strip()
+        # Remove all punctuation
+        text = re.sub(r&quot;[^\w\s]&quot;, &quot;&quot;, text)
+        tokens = text.split()
+        cleaned_tokens = [t for t in tokens if t not in self.corporate_suffixes]
+        return &quot; &quot;.join(cleaned_tokens)
+
+    def generate_slug(self, text: str) -&gt; str:
+        normalized = self.normalize_text(text)
+        slug = re.sub(r&quot;\s+&quot;, &quot;-&quot;, normalized)
+        return slug
+
+    def _levenshtein_distance(self, s1: str, s2: str) -&gt; int:
+        if len(s1) &lt; len(s2):
+            return self._levenshtein_distance(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        return previous_row[-1]
+
+    def token_sort_ratio(self, str1: str, str2: str) -&gt; float:
+        norm1 = &quot; &quot;.join(sorted(self.normalize_text(str1).split()))
+        norm2 = &quot; &quot;.join(sorted(self.normalize_text(str2).split()))
+
+        if not norm1 and not norm2:
+            return 1.0
+        if not norm1 or not norm2:
+            return 0.0
+
+        distance = self._levenshtein_distance(norm1, norm2)
+        max_len = max(len(norm1), len(norm2))
+        return 1.0 - (distance / max_len)
+
+    def resolve_entities(self, raw_entities: List[Dict]) -&gt; List[Dict]:
+        &quot;&quot;&quot;
+        Groups similar entities and merges secondary records into the canonical record.
+        &quot;&quot;&quot;
+        canonical_pool: List[Dict] = []
+
+        for candidate in raw_entities:
+            candidate_name = candidate[&quot;name&quot;]
+            best_match: Tuple[Optional[Dict], float] = (None, 0.0)
+
+            for canonical in canonical_pool:
+                score = self.token_sort_ratio(candidate_name, canonical[&quot;canonical_name&quot;])
+                if score &gt; best_match[1]:
+                    best_match = (canonical, score)
+
+            if best_match[1] &gt;= self.threshold and best_match[0] is not None:
+                # Merge into existing canonical record
+                target = best_match[0]
+                target[&quot;aliases&quot;].append(candidate_name)
+                # Merge attributes: fill nulls
+                for k, v in candidate.get(&quot;attributes&quot;, {}).items():
+                    if k not in target[&quot;attributes&quot;] or target[&quot;attributes&quot;][k] is None:
+                        target[&quot;attributes&quot;][k] = v
+            else:
+                # Create a new canonical record
+                canonical_record = {
+                    &quot;canonical_id&quot;: f&quot;ent_{self.generate_slug(candidate_name)}&quot;,
+                    &quot;canonical_name&quot;: candidate_name,
+                    &quot;canonical_slug&quot;: self.generate_slug(candidate_name),
+                    &quot;aliases&quot;: [candidate_name],
+                    &quot;attributes&quot;: candidate.get(&quot;attributes&quot;, {})
+                }
+                canonical_pool.append(canonical_record)
+
+        return canonical_pool
+
+if __name__ == &quot;__main__&quot;:
+    sample_inputs = [
+        {&quot;name&quot;: &quot;Stripe, Inc.&quot;, &quot;attributes&quot;: {&quot;pricing&quot;: &quot;2.9% + 30c&quot;, &quot;hq&quot;: &quot;San Francisco&quot;}},
+        {&quot;name&quot;: &quot;Stripe&quot;, &quot;attributes&quot;: {&quot;developer_api&quot;: &quot;REST&quot;, &quot;hq&quot;: None}},
+        {&quot;name&quot;: &quot;Adyen N.V.&quot;, &quot;attributes&quot;: {&quot;pricing&quot;: &quot;Interchange++&quot;, &quot;hq&quot;: &quot;Amsterdam&quot;}},
+        {&quot;name&quot;: &quot;Adyen&quot;, &quot;attributes&quot;: {&quot;developer_api&quot;: &quot;GraphQL&quot;, &quot;hq&quot;: &quot;Amsterdam&quot;}},
+        {&quot;name&quot;: &quot;Stripe Payment Processing LLC&quot;, &quot;attributes&quot;: {&quot;founded&quot;: 2010}},
+    ]
+
+    resolver = EntityResolver(similarity_threshold=0.85)
+    resolved = resolver.resolve_entities(sample_inputs)
+
+    import json
+    print(json.dumps(resolved, indent=2))
+</code></pre>
+<hr />
+<h2>5. Automated Fact-Checking &amp; Guardrail Matrix</h2>
+<p>A pSEO engine cannot rely on manual QA across 10,000+ pages. Every generated row must pass a programmatic assertion matrix before entering the production database. If a row violates a single rule, it is routed to <code>'failed_validation'</code> and excluded from deployments.</p>
+<h3>Guardrail Specification Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric</th>
+<th style="text-align: left;">Target Boundary</th>
+<th style="text-align: left;">Severity</th>
+<th style="text-align: left;">Triggered Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Meta Title Length</strong></td>
+<td style="text-align: left;">30 to 60 characters</td>
+<td style="text-align: left;">Critical</td>
+<td style="text-align: left;">Flag &amp; fallback to template default</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Meta Description Length</strong></td>
+<td style="text-align: left;">110 to 155 characters</td>
+<td style="text-align: left;">Critical</td>
+<td style="text-align: left;">Flag &amp; fallback to template default</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Banned AI Vocabulary</strong></td>
+<td style="text-align: left;">Count = 0 matches</td>
+<td style="text-align: left;">High</td>
+<td style="text-align: left;">Reject row; trigger deterministic rewrite</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Attribute Density</strong></td>
+<td style="text-align: left;">Minimum 4 non-null attributes</td>
+<td style="text-align: left;">Critical</td>
+<td style="text-align: left;">Prune page (Thin Content protection)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Internal Canonical URL</strong></td>
+<td style="text-align: left;">Must match regex <code>/^[a-z0-9-\/]+$/</code></td>
+<td style="text-align: left;">Blocker</td>
+<td style="text-align: left;">Abort build immediately</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Numerical Bounds</strong></td>
+<td style="text-align: left;"><code>0 &lt;= price &lt;= 1,000,000</code></td>
+<td style="text-align: left;">High</td>
+<td style="text-align: left;">Revert field to <code>Contact Sales</code></td>
+</tr>
+</tbody>
+</table>
+<p>Save this validation harness as <code>pipelines/guardrails.py</code>:</p>
+<pre><code class="language-python">import re
+from typing import Dict, Any, List, Tuple
+
+class QualityGuardrailEngine:
+    BANNED_WORDS = {
+        &quot;delve&quot;, &quot;testament&quot;, &quot;tapestry&quot;, &quot;revolutionize&quot;, 
+        &quot;game-changer&quot;, &quot;paramount&quot;, &quot;nestled&quot;, &quot;unleash&quot;,
+        &quot;beacon&quot;, &quot;foster&quot;, &quot;holistic&quot;, &quot;seamlessly&quot;
+    }
+
+    def __init__(self):
+        self.slug_regex = re.compile(r&quot;^[a-z0-9]+(?:-[a-z0-9]+)*$&quot;)
+
+    def validate_page(self, page_data: Dict[str, Any]) -&gt; Tuple[bool, List[str]]:
+        errors: List[str] = []
+
+        # 1. Title Validation
+        meta_title = page_data.get(&quot;meta_title&quot;, &quot;&quot;)
+        if not (30 &lt;= len(meta_title) &lt;= 65):
+            errors.append(f&quot;Meta title length out of bounds ({len(meta_title)} chars). Must be 30-65.&quot;)
+
+        # 2. Description Validation
+        meta_desc = page_data.get(&quot;meta_description&quot;, &quot;&quot;)
+        if not (110 &lt;= len(meta_desc) &lt;= 160):
+            errors.append(f&quot;Meta description length out of bounds ({len(meta_desc)} chars). Must be 110-160.&quot;)
+
+        # 3. Slug Regex Enforcement
+        slug = page_data.get(&quot;slug&quot;, &quot;&quot;)
+        if not self.slug_regex.match(slug):
+            errors.append(f&quot;Slug '{slug}' contains invalid characters, uppercase letters, or consecutive dashes.&quot;)
+
+        # 4. Thin Content Guardrail
+        attributes = page_data.get(&quot;attributes&quot;, {})
+        non_null_attrs = [k for k, v in attributes.items() if v is not None and str(v).strip() != &quot;&quot;]
+        if len(non_null_attrs) &lt; 4:
+            errors.append(f&quot;Thin content failure: Only {len(non_null_attrs)} valid attributes present. Minimum is 4.&quot;)
+
+        # 5. Hallucination / AI Vocabulary Scan
+        all_text = &quot; &quot;.join([
+            meta_title,
+            meta_desc,
+            page_data.get(&quot;h1&quot;, &quot;&quot;),
+            str(page_data.get(&quot;enriched_content&quot;, &quot;&quot;))
+        ]).lower()
+
+        found_banned = [w for w in self.BANNED_WORDS if re.search(r'\b' + re.escape(w) + r'\b', all_text)]
+        if found_banned:
+            errors.append(f&quot;Banned AI vocabulary detected: {', '.join(found_banned)}&quot;)
+
+        # 6. Structured Schema Validation
+        schema = page_data.get(&quot;schema_markup&quot;, {})
+        if not schema.get(&quot;@context&quot;) or not schema.get(&quot;@type&quot;):
+            errors.append(&quot;Invalid or missing Schema.org JSON-LD root fields (@context or @type missing).&quot;)
+
+        is_valid = len(errors) == 0
+        return is_valid, errors
+
+if __name__ == &quot;__main__&quot;:
+    guardrail = QualityGuardrailEngine()
+
+    dirty_mock_page = {
+        &quot;slug&quot;: &quot;stripe-vs-paypal-2024!&quot;,
+        &quot;meta_title&quot;: &quot;Stripe vs PayPal: Which Is The Best?&quot;,
+        &quot;meta_description&quot;: &quot;We delve into the paramount tapestry of digital payments to revolutionize your checkout experience today.&quot;,
+        &quot;h1&quot;: &quot;Stripe vs PayPal Comparison&quot;,
+        &quot;attributes&quot;: {
+            &quot;fee&quot;: &quot;2.9%&quot;,
+            &quot;chargeback_protection&quot;: None,
+            &quot;api_type&quot;: &quot;&quot;
+        },
+        &quot;enriched_content&quot;: &quot;This payment processor is a game-changer.&quot;,
+        &quot;schema_markup&quot;: {}
+    }
+
+    passed, failures = guardrail.validate_page(dirty_mock_page)
+    print(f&quot;Validation Passed: {passed}&quot;)
+    for fail in failures:
+        print(f&quot; - FAIL: {fail}&quot;)
+</code></pre>
+<hr />
+<h2>6. Pipeline Execution Runbook &amp; Pre-Flight Checklist</h2>
+<p>Before initiating static generation builds or publishing database records to production, run this operational sequence in order.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Raw Ingestion: Airtable / CSV / Scrapers] --&gt; B[Entity Resolution &amp; Deduplication]
+    B --&gt; C[LLM Structured Enrichment]
+    C --&gt; D[Guardrail Assertion Matrix]
+    D -- Pass --&gt; E[Store in PostgreSQL / Supabase]
+    D -- Fail --&gt; F[Route to failed_validation Table]
+    E --&gt; G[Export Local SQLite Cache]
+    G --&gt; H[Execute Static Site Build SSG]
+</code></pre>
+<h3>Pre-Flight Verification Checklist</h3>
+<ul>
+<li>[ ] <strong>Database Connection Pool Sizing:</strong> Ensure your PostgreSQL connection pool supports at least $N$ parallel workers: $\text{Max Connections} \ge (\text{Worker Threads} \times 2) + 5$.</li>
+<li>[ ] <strong>Slug Stability Check:</strong> Confirm that no previously generated slug has changed its path prefix, which would introduce 404s without automated 301 redirects.</li>
+<li>[ ] <strong>Index Freshness Verification:</strong> Run <code>ANALYZE pseo_entities;</code> in PostgreSQL to update planner statistics for <code>tsv_search</code> and trgm indexes before running dynamic routing queries.</li>
+<li>[ ] <strong>OpenAI Schema Locking:</strong> Verify that the enrichment script uses <code>response_format=PydanticModel</code> with <code>temperature</code> set to <code>0.2</code> or lower to prevent structural divergence.</li>
+<li>[ ] <strong>Zero Banned Words:</strong> Verify that <code>pipelines/guardrails.py</code> returns <code>exit code 0</code> on sample outputs prior to running batch updates.</li>
+<li>[ ] <strong>Differential Build Artifacts:</strong> Check `.</li>
+</ul>
+</body>
+</html>
