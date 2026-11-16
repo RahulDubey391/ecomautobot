@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Python Automation & Scraping Vault: 100+ Production Scripts, Web Scrapers & Task Automations</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Deployment Playbooks, Anti-Bot Checklists &amp; CLI Cheat Sheet</h1>
+<h2>1. Production Deployment Blueprint: systemd Services &amp; Timers</h2>
+<p>Using traditional <code>cron</code> for long-running or mission-critical Python scrapers exposes pipelines to silent failures: processes overlap, crashed tasks don't restart, log files saturate disks, and memory leaks freeze nodes. The standard Linux enterprise approach uses <code>systemd</code> services coupled with <code>systemd</code> timers. This guarantees sandboxed permissions, automatic restart logic, process isolation, and centralized structured logging via <code>journald</code>.</p>
+<h3>1.1 Hardened systemd Service Template</h3>
+<p>Save the service definition at <code>/etc/systemd/system/scraper-worker.service</code>. This configuration runs non-root, binds memory limits to prevent runaway Chrome processes from causing an Out-Of-Memory (OOM) kernel panic, and enforces a strict read-only filesystem policy.</p>
+<pre><code class="language-ini">[Unit]
+Description=Python Vault Production Scraper Worker
+After=network.target network-online.target
+Wants=network-online.target
+Documentation=https://github.com/your-org/scraper-vault
+
+[Service]
+Type=simple
+User=scraperdaemon
+Group=scraperdaemon
+WorkingDirectory=/opt/scraper-vault
+EnvironmentFile=/etc/scraper-vault/production.env
+ExecStart=/opt/scraper-vault/venv/bin/python -u -m src.runners.cli_worker --pipeline market_data --concurrency 8
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+
+# Process Lifecycle &amp; Recovery
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=45s
+KillMode=mixed
+
+# Resource Sandboxing &amp; Constraints (cgroups v2)
+MemoryMax=4G
+MemoryHigh=3.5G
+CPUQuota=200%
+TasksMax=250
+
+# Security Hardening
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/log/scraper-vault /opt/scraper-vault/runtime_data
+
+# Standard I/O to systemd-journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scraper-worker
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+<h3>1.2 systemd Timer Template (Deterministic &amp; Jittered Scheduling)</h3>
+<p>Save the companion timer definition at <code>/etc/systemd/system/scraper-worker.timer</code>. Timers supersede crontabs by supporting built-in randomized jitter (<code>RandomizedDelaySec</code>). This prevents downstream anti-bot triggers caused by firing scraping jobs at the exact microsecond of an hour.</p>
+<pre><code class="language-ini">[Unit]
+Description=Trigger Python Vault Scraper Pipeline on Randomized Jitter Schedule
+Requires=scraper-worker.service
+
+[Timer]
+# Trigger daily at 02:30:00 UTC
+OnCalendar=*-*-* 02:30:00
+# Add uniform random delay between 0 and 900 seconds (15 minutes) to avoid detection
+RandomizedDelaySec=900s
+# Catch up immediately if the server was offline during the scheduled interval
+Persistent=true
+Unit=scraper-worker.service
+
+[Install]
+WantedBy=timers.target
+</code></pre>
+<h3>1.3 Production Deployment &amp; Maintenance Workflow</h3>
+<p>Execute these commands sequentially on Debian/Ubuntu systems to install users, secure permissions, and manage unit states:</p>
+<pre><code class="language-bash"># 1. Provision dedicated system user with restricted home directory
+sudo useradd -r -s /usr/sbin/nologin -d /opt/scraper-vault scraperdaemon
+
+# 2. Establish deployment directories and permissions
+sudo mkdir -p /opt/scraper-vault /var/log/scraper-vault /etc/scraper-vault
+sudo chown -R scraperdaemon:scraperdaemon /opt/scraper-vault /var/log/scraper-vault
+sudo chmod 750 /opt/scraper-vault /var/log/scraper-vault
+sudo chmod 700 /etc/scraper-vault
+
+# 3. Create hardened environment file
+sudo touch /etc/scraper-vault/production.env
+sudo chown root:scraperdaemon /etc/scraper-vault/production.env
+sudo chmod 640 /etc/scraper-vault/production.env
+
+# Inject secrets securely
+cat &lt;&lt; 'EOF' | sudo tee /etc/scraper-vault/production.env &gt; /dev/null
+PYTHONPATH=/opt/scraper-vault
+ENVIRONMENT=production
+PROXIES_ROTATION_URL=http://usr_enterprise_tier:Pass_8819@gate.smartproxy.io:7000
+DATABASE_URL=postgresql://scraper_admin:Secured_P4ssW0rd!@10.0.4.12:5432/scraping_warehouse
+SENTRY_DSN=https://abc123token@o0.ingest.sentry.io/456789
+LOG_LEVEL=INFO
+EOF
+
+# 4. Copy unit definitions into systemd registry
+sudo cp scraper-worker.service /etc/systemd/system/scraper-worker.service
+sudo cp scraper-worker.timer /etc/systemd/system/scraper-worker.timer
+
+# 5. Reload daemon and start the pipeline
+sudo systemctl daemon-reload
+sudo systemctl enable --now scraper-worker.timer
+
+# 6. Verify scheduled execution windows and logs
+systemctl list-timers --all | grep scraper-worker
+sudo journalctl -u scraper-worker.service -f --output=cat
+</code></pre>
+<hr />
+<h2>2. Serverless Scheduling: GitHub Actions Production Cron Runners</h2>
+<p>GitHub Actions allows you to run distributed scraping workflows without provisioning persistent cloud servers. This setup handles persistent browser dependencies, implements headless displays (Xvfb), manages artifacts on failures, and posts alerts to Discord or Slack.</p>
+<p>Save this workflow to <code>.github/workflows/scraper-cron.yml</code>:</p>
+<pre><code class="language-yaml">name: Production Scraping Pipeline
+
+on:
+  schedule:
+    # Runs at minute 15 past every 4th hour: 00:15, 04:15, 08:15, 12:15, 16:15, 20:15 UTC
+    - cron: '15 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target Target Environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      max_pages:
+        description: 'Override Maximum Scraping Page Depth'
+        required: false
+        default: '50'
+
+concurrency:
+  group: scraping-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    name: Scrape Engine Execution
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set Up Python 3.11 Runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: '**/requirements.txt'
+
+      - name: Install System Dependencies for Headless Browsers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libnss3 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libcairo2 \
+            libasound2 \
+            xvfb \
+            tesseract-ocr
+
+      - name: Install Python Package Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          # Explicitly install modern browser binaries with system-level wrappers
+          playwright install --with-deps chromium
+
+      - name: Execute Scraping Pipeline Engine
+        id: scrape
+        env:
+          TARGET_ENV: ${{ inputs.target_env || 'production' }}
+          MAX_PAGES: ${{ inputs.max_pages || '100' }}
+          PROXY_POOL_CREDENTIALS: ${{ secrets.PROXY_POOL_CREDENTIALS }}
+          STORAGE_S3_KEY_ID: ${{ secrets.STORAGE_S3_KEY_ID }}
+          STORAGE_S3_SECRET_KEY: ${{ secrets.STORAGE_S3_SECRET_KEY }}
+          WAREHOUSE_POSTGRES_DSN: ${{ secrets.WAREHOUSE_POSTGRES_DSN }}
+          HEADLESS: &quot;true&quot;
+        run: |
+          # Use Xvfb to supply a simulated virtual display, bypassing headless checks
+          xvfb-run --auto-servernum --server-args=&quot;-screen 0 1920x1080x24 -ac&quot; \
+            python -m src.pipelines.runner \
+            --env &quot;$TARGET_ENV&quot; \
+            --pages &quot;$MAX_PAGES&quot; \
+            --export-format parquet
+
+      - name: Capture Failure State &amp; Telemetry Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-crash-dumps-${{ github.run_id }}
+          path: |
+            runtime_data/screenshots/*.png
+            runtime_data/dom_dumps/*.html
+            runtime_data/har_network/*.har
+            logs/*.log
+          retention-days: 7
+
+      - name: Send Slack Webhook on Pipeline Failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -s -X POST -H 'Content-type: application/json' \
+            --data &quot;{
+              \&quot;text\&quot;: \&quot;:rotating_light: *SCRAPER RUNTIME FAILURE* :rotating_light:\n*Workflow:* ${GITHUB_WORKFLOW}\n*Run ID:* ${GITHUB_RUN_ID}\n*Triggered By:* ${GITHUB_EVENT_NAME}\n*Logs:* https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\&quot;
+            }&quot; &quot;$SLACK_WEBHOOK_URL&quot;
+</code></pre>
+<hr />
+<h2>3. Containerized Micro-Runners: Docker &amp; Docker Compose</h2>
+<p>Running browser scrapers inside containers often causes resource issues—like Chromium memory crashes via depleted shared memory (<code>/dev/shm</code>), zombie PID accumulation, or deadlocks. The following production Dockerfile uses a multi-stage approach, a non-root security context, and <code>dumb-init</code> to handle child browser processes cleanly.</p>
+<h3>3.1 Production Hardened <code>Dockerfile</code></h3>
+<p>Save as <code>Dockerfile</code>:</p>
+<pre><code class="language-dockerfile"># ==========================================
+# Stage 1: Build virtualenv &amp; wheels
+# ==========================================
+FROM python:3.11-slim-bullseye AS builder
+
+WORKDIR /build
+
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    build-essential \
+    libffi-dev \
+    libssl-dev \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN python -m venv /opt/venv &amp;&amp; \
+    /opt/venv/bin/pip install --upgrade pip &amp;&amp; \
+    /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# ==========================================
+# Stage 2: Minimalist Production Runner
+# ==========================================
+FROM python:3.11-slim-bullseye AS runner
+
+# Stop Python from generating .pyc files and enable unbuffered stdout/stderr streaming
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PATH=&quot;/opt/venv/bin:$PATH&quot;
+
+WORKDIR /app
+
+# Install native dependencies required by Chromium &amp; dumb-init
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+    dumb-init \
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxcb1 \
+    libxkbcommon0 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    ca-certificates \
+    curl \
+    fonts-liberation \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Pull prepared virtual environment from Stage 1
+COPY --from=builder /opt/venv /opt/venv
+
+# Install Playwright browser engines explicitly into centralized system path
+RUN /opt/venv/bin/playwright install chromium
+
+# Create unprivileged application user
+RUN groupadd -g 10001 scraper &amp;&amp; \
+    useradd -u 10001 -g scraper -s /bin/bash -m scraper &amp;&amp; \
+    mkdir -p /app/data /app/logs /ms-playwright &amp;&amp; \
+    chown -R scraper:scraper /app /ms-playwright
+
+# Copy project source tree with secured ownership
+COPY --chown=scraper:scraper . .
+
+USER scraper:scraper
+
+# Forward signal processing to dumb-init to avoid Chrome zombie process accumulation
+ENTRYPOINT [&quot;/usr/bin/dumb-init&quot;, &quot;--&quot;]
+
+CMD [&quot;python&quot;, &quot;-m&quot;, &quot;src.main&quot;, &quot;--mode=cluster&quot;]
+</code></pre>
+<h3>3.2 Production <code>docker-compose.yml</code></h3>
+<p>This deployment profile configures resource limits, mounts <code>/dev/shm</code> to prevent browser crashes, and adds automated health checking:</p>
+<pre><code class="language-yaml">version: '3.8'
+
+services:
+  scraper-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scraper-vault:micro-runner-latest
+    restart: unless-stopped
+    ipc: host # Grants access to the host's shared memory, preventing Chromium bus crashes
+    shm_size: '2gb' # Explicit fallback if host IPC is disabled
+    user: &quot;10001:10001&quot;
+
+    deploy:
+      resources:
+        limits:
+          cpus: '3.00'
+          memory: 4096M
+        reservations:
+          cpus: '0.50'
+          memory: 512M
+
+    environment:
+      - RUNTIME_ENV=production
+      - CONCURRENCY=6
+      - DATABASE_URL=postgresql://svc_app:Pr0d_Vault_98!@warehouse-db:5432/scraping_db
+      - REDIS_METRICS_URL=redis://redis-state:6379/0
+      - PROXY_ENDPOINT=http://p.webshare.io:80
+      - PROXY_USERNAME=scraper_subuser
+      - PROXY_PASSWORD=Secret_Token_098
+
+    volumes:
+      - scraper_data:/app/data
+      - scraper_logs:/app/logs
+
+    healthcheck:
+      test: [&quot;CMD&quot;, &quot;curl&quot;, &quot;-f&quot;, &quot;http://localhost:8080/healthz&quot;]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    logging:
+      driver: &quot;json-file&quot;
+      options:
+        max-size: &quot;100m&quot;
+        max-file: &quot;5&quot;
+
+  warehouse-db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: scraping_db
+      POSTGRES_USER: svc_app
+      POSTGRES_PASSWORD: Pr0d_Vault_98!
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+
+  redis-state:
+    image: redis:7-alpine
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  scraper_data:
+  scraper_logs:
+  pgdata:
+</code></pre>
+<hr />
+<h2>4. The 25-Point Production Anti-Bot &amp; Fingerprint Checklist</h2>
+<p>Before running any scraper at scale, audit the target against this 25-point checklist. Modern anti-bot platforms (Cloudflare Turnstile/Under Attack Mode, Datadome, Akamai BMP, PerimeterX/HUMAN) evaluate traffic across multiple network and runtime layers.</p>
+<pre><code>+-------------------------------------------------------------------------------+
+|             ANTI-BOT &amp; BROWSER FINGERPRINT TRIAGE ARCHITECTURE                |
++-------------------------------------------------------------------------------+
+|  LAYER 1: NETWORK &amp; TRANSPORT                                                 |
+|    [X] Dedicated IPv4/IPv6 Residential Subnets (No ASN Leaks)                 |
+|    [X] Validated TLS Fingerprint via Cipher Ordering (JA3/JA4 Parity)         |
+|    [X] HTTP/2 Framing, Stream Multiplexing &amp; SETTINGS Alignment               |
+|    [X] Consistent Host/Proxy Latency (&lt;120ms Jitter Dispersion)               |
++-------------------------------------------------------------------------------+
+                                      |
+                                      v
++-------------------------------------------------------------------------------+
+|  LAYER 2: RUNTIME ENGINE &amp; CDP SHIELDING                                      |
+|    [X] Nullified navigator.webdriver Object Properties                        |
+|    [X] Evaded CDP (Runtime.enable &amp; Console Debugging Traces)                 |
+|    [X] Re-bound Function.prototype.toString to Native Built-in Signatures     |
+|    [X] Synchronized Canvas/WebGL/WebAudio Noise Injection                     |
++-------------------------------------------------------------------------------+
+                                      |
+                                      v
++-------------------------------------------------------------------------------+
+|  LAYER 3: BEHAVIORAL DISPERSION &amp; EXECUTION HYGIENE                           |
+|    [X] Non-Linear Bezier Cursor Trajectories via Algorithmic Mouse Models     |
+|    [X] Realistic Per-Keystroke Latencies (Normal Distribution Curves)         |
+|    [X] Human Session Traversal with Organic Mouse Enter/Leave Triggering     |
++-------------------------------------------------------------------------------+
+</code></pre>
+<h3>Layer 1: Network &amp; TLS Fingerprinting</h3>
+<ul>
+<li>[ ] <strong>1. Clean ASN Reputation:</strong> Run target IP tests via <code>ipinfo.io</code>. Ensure your proxy IPs resolve to residential or commercial ISPs (Comcast, AT&amp;T, Verizon), never hosting ASNs (OVH, AWS, DigitalOcean, Hetzner).</li>
+<li>[ ] <strong>2. JA3/JA4 Fingerprint Parity:</strong> Ensure your client TLS fingerprint matches modern browsers. Python's default <code>requests</code> library leaks OpenSSL signature orders; use <code>curl_cffi</code> or <code>tls-client</code> targeting Chrome 120+.</li>
+<li>[ ] <strong>3. HTTP/2 SETTINGS Frame Verification:</strong> Check that the initialization frame sends standard browser parameters (<code>HEADER_TABLE_SIZE: 65536</code>, <code>MAX_CONCURRENT_STREAMS: 1000</code>, <code>INITIAL_WINDOW_SIZE: 6291456</code>).</li>
+<li>[ ] <strong>4. HTTP/2 Header Casing &amp; Order:</strong> Verify that pseudo-headers appear in the required order (<code>:method</code>, <code>:authority</code>, <code>:scheme</code>, <code>:path</code>) with lowercase keys.</li>
+<li>[ ] <strong>5. TLS ALPN Negotiation:</strong> Verify the TLS Application-Layer Protocol Negotiation explicitly offers <code>h2</code> and <code>http/1.1</code>, avoiding raw TCP pipelines that fail to advertise ALPN.</li>
+<li>[ ] <strong>6. Proxy DNS Leak Prevention:</strong> Check that DNS resolution resolves on the remote proxy gateway, not the scraper's host machine (e.g., using <code>--proxy-type socks5h</code> instead of <code>socks5</code>).</li>
+</ul>
+<h3>Layer 2: JavaScript Runtime &amp; CDP Signatures</h3>
+<ul>
+<li>[ ] <strong>7. <code>navigator.webdriver</code> Nullification:</strong> Verify <code>navigator.webdriver</code> is explicitly <code>false</code> or <code>undefined</code>.
+  <code>javascript
+  // Pass test in DevTools Console:
+  Object.getOwnPropertyDescriptor(navigator, 'webdriver'); // Must be undefined</code></li>
+<li>[ ] <strong>8. Elimination of Chrome DevTools Protocol (CDP) Leaks:</strong> Anti-bot scripts detect CDP bindings via <code>window.cdc_adoQpoasnfa76pfcZLmcfl_Array</code>. Ensure binary patching or use undetected drivers (<code>undetected-chromedriver</code> or <code>playwright-stealth</code>).</li>
+<li>[ ] <strong>9. Runtime <code>Function.prototype.toString</code> Integrity:</strong> Verify patched native functions cannot be detected via inspection:
+  <code>javascript
+  // Must print native code signature:
+  WebGLRenderingContext.prototype.getParameter.toString(); 
+  // "function getParameter() { [native code] }"</code></li>
+<li>[ ] <strong>10. WebGL Vendor &amp; Renderer Masquerading:</strong> Confirm your headless browser presents legitimate GPU strings rather than SwiftShader:</li>
+<li><em>Renderer:</em> <code>ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)</code></li>
+<li><em>Vendor:</em> <code>Google Inc. (NVIDIA)</code></li>
+<li>[ ] <strong>11. Canvas Hash Noise/Consistency:</strong> Ensure Canvas operations generate consistent hashes across the session without matching a known headless default.</li>
+<li>[ ] <strong>12. AudioContext Fingerprint Generation:</strong> Verify that <code>AudioContext</code> and <code>OfflineAudioContext</code> return valid frequency vectors and dynamic audio buffer decays.</li>
+<li>[ ] <strong>13. Navigator Screen/Window Parity:</strong> Check that window metric checks resolve correctly:
+  <code>javascript
+  window.outerWidth - window.innerWidth &gt;= 0; // True
+  window.screen.availHeight &lt;= window.screen.height; // True
+  window.devicePixelRatio &gt;= 1; // Must never be 0</code></li>
+<li>[ ] <strong>14. Hardware Concurrency &amp; Memory Profiles:</strong> Verify realistic values:</li>
+<li><code>navigator.hardwareConcurrency</code> must be an even integer (<code>4</code>, <code>8</code>, <code>16</code>).</li>
+<li><code>navigator.deviceMemory</code> must be a valid memory boundary (<code>4</code>, <code>8</code>), never <code>undefined</code>.</li>
+<li>[ ] <strong>15. Peripheral Detection:</strong> Confirm <code>navigator.plugins.length &gt; 0</code> and <code>navigator.mimeTypes</code> contain expected PDF and browser extensions.</li>
+</ul>
+<h3>Layer 3: Protocol, Headers &amp; Context Tracking</h3>
+<ul>
+<li>[ ] <strong>16. Complete User-Agent / Sec-CH-UA Consistency:</strong> Verify Client Hint headers match the User-Agent:
+  <code>http
+  User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36
+  sec-ch-ua: "Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"
+  sec-ch-ua-mobile: ?0
+  sec-ch-ua-platform: "Windows"</code></li>
+<li>[ ] <strong>17. Accept-Language &amp; Timezone Consistency:</strong> Match system headers to your proxy's geolocation:</li>
+<li><em>Proxy Region:</em> Frankfurt, Germany.</li>
+<li><em>Header:</em> <code>Accept-Language: de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7</code></li>
+<li><em>Emulated Timezone:</em> <code>Europe/Berlin</code> (via <code>Intl.DateTimeFormat().resolvedOptions().timeZone</code>).</li>
+<li>[ ] <strong>18. Referer Header Lifecycle Management:</strong> Do not send naked, non-referral GET requests directly to internal product sub-routes. Seed history from search landing pages or search engines first.</li>
+<li>[ ] <strong>19. Cache Headers &amp; Static Resource Flow:</strong> Request linked <code>.css</code>, <code>.js</code>, font, and image files naturally instead of stripping asset calls entirely, which triggers basic bot detection.</li>
+</ul>
+<h3>Layer 4: Behavioral Profiling &amp; Traversal Mechanics</h3>
+<ul>
+<li>[ ] <strong>20. Curved Human-Like Mouse Trajectories:</strong> Use cubic Bezier curves with varying velocity models. Avoid straight-line cursor jumps (<code>moveTo(x, y)</code>).</li>
+<li>[ ] <strong>21. Realistic Keyboard Dynamics:</strong> Inject typing cadence with human-like variance (70ms–240ms delays per keystroke, with occasional backspaces).</li>
+<li>[ ] <strong>22. Natural Scrolling Dynamics:</strong> Scroll using incremental steps, dynamic deceleration, and brief pauses to mimic real content consumption:
+  <code>python
+  # Example step:
+  await page.mouse.wheel(delta_x=0, delta_y=random.randint(180, 420))</code></li>
+<li>[ ] <strong>23. DOM Focus &amp; FocusOut States:</strong> Trigger standard document focus events (<code>window.onfocus</code>, <code>element.focus()</code>) before typing input fields.</li>
+<li>[ ] <strong>24. Session Pacing:</strong> Enforce Poisson-distributed delays between target actions. Avoid static sleeping patterns (<code>time.sleep(5)</code>).</li>
+<li>[ ] <strong>25. Automated CAPTCHA Fallback:</strong> If a CAPTCHA appears, verify your system isolates cookies, extracts the site key, calls an external solver (such as 2Captcha, CapSolver, or Anti-Captcha), and injects the response token cleanly without reloading the base page context.</li>
+</ul>
+<hr />
+<h2>5. Zero-Downtime Triage &amp; Live Debugging CLI Cheatsheet</h2>
+<p>This cheatsheet provides production Linux, Docker, and network diagnostics for real-time scraper troubleshooting.</p>
+<h3>5.1 Host &amp; systemd Inspection</h3>
+<pre><code class="language-bash"># Display full systemd status, including real-time cgroup memory consumption
+sudo systemctl status scraper-worker.service
+
+# Stream unit logs with microsecond precision timestamps, reverse chronological order
+sudo journalctl -u scraper-worker.service -f -o short-precise
+
+# Query journal errors strictly matching exit code failures from previous 6 hours
+sudo journalctl -u scraper-worker.service --since &quot;6 hours ago&quot; -p err..emerg
+
+# Trace CPU, Memory, and Disk IO load per systemd unit continuously
+systemd-cgtop
+
+# Gracefully signal scraper daemon to finish processing current loop
+sudo kill -SIGTERM $(systemctl show --property MainPID --value scraper-worker.service)
+
+# Force-kill a runaway scraper daemon instance
+sudo systemctl kill -s SIGKILL scraper-worker.service
+</code></pre>
+<h3>5.2 Process Analysis &amp; Zombie Chrome Cleanup</h3>
+<pre><code class="language-bash"># Locate all headless Chrome and Playwright instances along with parent process IDs
+ps aux | grep -E '(chrome|chromium|playwright)' | awk '{print $2, $3, $4, $11}'
+
+# Check process trees to find orphaned child browsers whose parent runners crashed
+pstree -p -s $(pgrep -f &quot;python.*src.main&quot;)
+
+# Terminate all orphaned/zombie Chrome browser processes instantly
+sudo kill -9 $(pgrep -f &quot;(chrome|chromium).*headless&quot;)
+
+# Count the number of active open file descriptors for the running scraper process
+ls -1 /proc/$(pgrep -f &quot;python -m src&quot;)/fd | wc -l
+
+# Identify open network sockets tied to a running python scraper process
+lsof -Pan -p $(pgrep -f &quot;python -m src&quot;) -i
+</code></pre>
+<h3>5.3 Docker Micro-Runner Triage</h3>
+<pre><code class="language-bash"># View real-time resource utilization across all scraping containers
+docker stats --format &quot;table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}&quot;
+
+# Follow container logs, displaying only the last 200 lines and appending timestamps
+docker compose logs --tail=200 -t -f scraper-runner
+
+# Execute an interactive shell within a running container without stopping it
+docker compose exec -it scraper-runner /bin/bash
+
+# Inspect container exits caused by OOM (Out-of-Memory) killer
+docker inspect scraper-runner --format='{{range .State}}{{println .ExitCode .OOMKilled}}{{end}}'
+
+# Check available shared memory inside the container (must match host capabilities)
+docker compose exec scraper-runner df -h /dev/shm
+</code></pre>
+<h3>5.4 Network, Proxy &amp; TLS Triage</h3>
+<pre><code class="language-bash"># Test residential proxy connectivity, latency, and returned public IP address
+curl -I -sS -k --proxy &quot;http://user:password@proxy.example.com:8000&quot; &quot;https://httpbin.org/ip&quot;
+
+# Run an in-depth TLS handshake inspection to view negotiated ciphers and protocol versions
+openssl s_client -connect target-site.com:443 -servername target-site.com -tls1_3 -brief
+
+# Validate HTTP/2 ALPN availability and display detailed protocol frame negotiations
+curl -I --http2 -v -s -o /dev/null https://target-site.com/robots.txt
+
+# Measure round-trip time across different stages of a proxy request (DNS, TLS, Connect)
+curl -w &quot;\nLookup: %{time_namelookup}s\nConnect: %{time_connect}s\nAppConnect: %{time_appconnect}s\nStartTransfer: %{time_starttransfer}s\nTotal: %{time_total}s\n&quot; \
+     -o /dev/null -s -x &quot;http://user:password@proxy.example.com:8000&quot; &quot;https://target-site.com/api/test&quot;
+
+# Inspect local network interface drops or saturation points
+netstat -s | grep -E '(overflows|dropped)'
+</code></pre>
+<h3>5.5 Diagnostics Quick-Reference</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Problem / Symptom</th>
+<th style="text-align: left;">Root Cause</th>
+<th style="text-align: left;">Diagnosis Command</th>
+<th style="text-align: left;">Primary Remediation Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong><code>TargetClosedError</code></strong></td>
+<td style="text-align: left;">Chromium ran out of memory in <code>/dev/shm</code>.</td>
+<td style="text-align: left;"><code>df -h /dev/shm</code></td>
+<td style="text-align: left;">Set <code>ipc: host</code> or <code>shm_size: 2gb</code> in <code>docker-compose.yml</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Cloudflare Error 1020</strong></td>
+<td style="text-align: left;">Broken TLS fingerprint (JA3/JA4) or datacenter ASN.</td>
+<td style="text-align: left;"><code>curl_cffi</code> debug test with proxy.</td>
+<td style="text-align: left;">Switch to residential proxy pool; use TLS impersonation (<code>impersonate="chrome120"</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;">**Rapid Process Exit (Code 13</td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+<td style="text-align: left;"></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

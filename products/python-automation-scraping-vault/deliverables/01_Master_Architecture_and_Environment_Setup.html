@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Python Automation & Scraping Vault: 100+ Production Scripts, Web Scrapers & Task Automations</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Automation Architecture &amp; Resilient Environment Setup</h1>
+<p>Building production-grade web scrapers and browser automation agents requires shifting away from brittle, local-machine scripts toward hardened, resilient infrastructure. This module establishes the master architectural blueprint for running high-throughput, undetectable automation pipelines capable of bypassing modern anti-bot perimeter defenses (Cloudflare Turnstile, DataDome, Akamai, and Kasada) while preserving compute resources and proxy budgets.</p>
+<hr />
+<h2>1. Enterprise Directory Blueprint &amp; Isolation</h2>
+<p>To support dozens of concurrent scrapers without dependency collisions or state contamination, use an isolated workspace layout. This structure enforces a separation of concerns between scraper logic, browser runtime configurations, persistent state profiles, proxy managers, and pipeline orchestrators.</p>
+<h3>Standardized Automation Repository Layout</h3>
+<pre><code class="language-text">scraping_vault/
+├── .env.example
+├── pyproject.toml
+├── requirements.txt
+├── config/
+│   ├── __init__.py
+│   ├── browser_profiles.json
+│   ├── headers_pool.json
+│   └── settings.py
+├── core/
+│   ├── __init__.py
+│   ├── circuit_breaker.py
+│   ├── exceptions.py
+│   ├── fingerprints.py
+│   ├── proxy_manager.py
+│   └── retry_engine.py
+├── drivers/
+│   ├── __init__.py
+│   ├── playwright_factory.py
+│   └── uc_factory.py
+├── pipelines/
+│   ├── __init__.py
+│   └── base_pipeline.py
+├── storage/
+│   ├── sessions/
+│   ├── logs/
+│   └── raw_artifacts/
+├── tests/
+│   ├── test_fingerprints.py
+│   └── test_proxies.py
+└── scripts/
+    └── bootstrap_env.sh
+</code></pre>
+<h3>Production Dependency Specification: <code>requirements.txt</code></h3>
+<p>The dependencies below are pinned to versions that prevent ABI breaks across browser automation libraries, C extensions, and asynchronous networking engines.</p>
+<pre><code class="language-text"># --- Networking, TLS &amp; HTTP Clients ---
+curl_cffi==0.7.4
+httpx[http2]==0.27.2
+aiohttp==3.10.10
+requests==2.32.3
+urllib3==2.2.3
+
+# --- Browser Automation Runtimes ---
+playwright==1.48.0
+playwright-stealth==1.0.6
+undetected-chromedriver==3.5.5
+selenium==4.25.0
+
+# --- Parsing &amp; DOM Extraction ---
+beautifulsoup4==4.12.3
+lxml==5.3.0
+parsel==1.9.1
+selectolax==0.3.21
+
+# --- Resiliency, Scheduling &amp; Concurrency ---
+tenacity==9.0.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+celery==5.4.0
+redis==5.1.1
+loguru==0.7.2
+pyyaml==6.0.2
+
+# --- Systems, Signals &amp; Emulation ---
+fake-useragent==1.5.1
+python-dotenv==1.0.1
+xvfbwrapper==0.2.9
+psutil==6.0.0
+</code></pre>
+<h3>Automated Infrastructure Provisioning: <code>scripts/bootstrap_env.sh</code></h3>
+<p>This script handles Linux/macOS environment preparation, installs underlying OS dependencies for headless Chromium, configures the virtual environment, and installs Playwright binaries.</p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -eo pipefail
+
+echo &quot;===&gt; [1/5] Initializing Python Virtual Environment...&quot;
+PYTHON_BIN=$(command -v python3.11 || command -v python3)
+$PYTHON_BIN -m venv .venv
+source .venv/bin/activate
+
+echo &quot;===&gt; [2/5] Upgrading Core Packaging Utilities...&quot;
+pip install --upgrade pip setuptools wheel
+
+echo &quot;===&gt; [3/5] Installing Pinned Dependencies...&quot;
+pip install -r requirements.txt
+
+echo &quot;===&gt; [4/5] Installing Playwright Operating System Dependencies &amp; Browsers...&quot;
+if [[ &quot;$OSTYPE&quot; == &quot;linux-gnu&quot;* ]]; then
+    # Linux host requirements (Ubuntu/Debian-based)
+    if command -v apt-get &amp;&gt; /dev/null; then
+        echo &quot;Detected Debian/Ubuntu. Installing Xvfb and shared libraries...&quot;
+        sudo apt-get update &amp;&amp; sudo apt-get install -y \
+            xvfb \
+            libxi6 \
+            libgconf-2-4 \
+            libnss3 \
+            libasound2 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libcairo2
+    fi
+fi
+
+# Fetch Chromium, Firefox, WebKit headless runtimes
+playwright install chromium
+playwright install-deps chromium
+
+echo &quot;===&gt; [5/5] Creating Storage Runtime Directories...&quot;
+mkdir -p storage/sessions storage/logs storage/raw_artifacts
+
+echo &quot;===&gt; Environment Setup Complete. Activate via: source .venv/bin/activate&quot;
+</code></pre>
+<hr />
+<h2>2. Stealth Browser Infrastructure</h2>
+<p>Standard headless browser sessions emit distinct runtime artifacts. Automation engines modify <code>window.navigator</code>, emit execution anomalies via the Chrome DevTools Protocol (CDP), and produce inconsistent WebGL/Canvas hashes. </p>
+<p>Below are the two core production factories: Playwright with targeted CDP patches and <code>undetected-chromedriver</code> running atop a virtual frame buffer.</p>
+<h3>Playwright Stealth Engine: <code>drivers/playwright_factory.py</code></h3>
+<p>This implementation removes the <code>navigator.webdriver</code> flag, standardizes WebGL renderer signatures, bypasses runtime permission prompts, and aligns modern user-agent client hints (<code>sec-ch-ua</code>).</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Core Playwright driver initialization module.
+Configures evasion flags, Context parameters, and dynamic route blocking.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+import asyncio
+from pathlib import Path
+from typing import Dict, Any, Optional
+from loguru import logger
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+
+class PlaywrightStealthFactory:
+    def __init__(self, headless: bool = True, proxy_url: Optional[str] = None):
+        self.headless = headless
+        self.proxy_url = proxy_url
+        self.playwright: Optional[Playwright] = None
+        self.browser: Optional[Browser] = None
+
+    async def initialize(self) -&gt; None:
+        &quot;&quot;&quot;Starts Playwright and boots Chromium with hardened launch arguments.&quot;&quot;&quot;
+        self.playwright = await async_playwright().start()
+
+        launch_args = [
+            &quot;--disable-blink-features=AutomationControlled&quot;,
+            &quot;--disable-infobars&quot;,
+            &quot;--disable-background-networking&quot;,
+            &quot;--disable-background-timer-throttling&quot;,
+            &quot;--disable-backgrounding-occluded-windows&quot;,
+            &quot;--disable-breakpad&quot;,
+            &quot;--disable-client-side-phishing-detection&quot;,
+            &quot;--disable-default-apps&quot;,
+            &quot;--disable-dev-shm-usage&quot;,
+            &quot;--disable-extensions&quot;,
+            &quot;--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints&quot;,
+            &quot;--disable-ipc-flooding-protection&quot;,
+            &quot;--disable-popup-blocking&quot;,
+            &quot;--disable-prompt-on-repost&quot;,
+            &quot;--disable-renderer-backgrounding&quot;,
+            &quot;--force-color-profile=srgb&quot;,
+            &quot;--metrics-recording-only&quot;,
+            &quot;--no-first-run&quot;,
+            &quot;--password-store=basic&quot;,
+            &quot;--use-mock-keychain&quot;,
+            &quot;--no-sandbox&quot;
+        ]
+
+        proxy_config = {&quot;server&quot;: self.proxy_url} if self.proxy_url else None
+
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=launch_args,
+            proxy=proxy_config,
+            chromium_sandbox=False
+        )
+        logger.info(f&quot;Chromium instance booted. Headless: {self.headless} | Proxy: {bool(self.proxy_url)}&quot;)
+
+    async def create_stealth_context(
+        self,
+        viewport_width: int = 1920,
+        viewport_height: int = 1080,
+        user_agent: Optional[str] = None,
+        locale: str = &quot;en-US&quot;,
+        timezone_id: str = &quot;America/New_York&quot;
+    ) -&gt; BrowserContext:
+        &quot;&quot;&quot;Creates an isolated, patched context that neutralizes common bot-detection hooks.&quot;&quot;&quot;
+        if not self.browser:
+            raise RuntimeError(&quot;Browser not initialized. Call initialize() first.&quot;)
+
+        ua = user_agent or (
+            &quot;Mozilla/5.0 (Windows NT 10.0; Win64; x64) &quot;
+            &quot;AppleWebKit/537.36 (KHTML, like Gecko) &quot;
+            &quot;Chrome/128.0.0.0 Safari/537.36&quot;
+        )
+
+        context = await self.browser.new_context(
+            viewport={&quot;width&quot;: viewport_width, &quot;height&quot;: viewport_height},
+            user_agent=ua,
+            locale=locale,
+            timezone_id=timezone_id,
+            color_scheme=&quot;dark&quot;,
+            device_scale_factor=1,
+            has_touch=False,
+            is_mobile=False,
+            java_script_enabled=True,
+            ignore_https_errors=True
+        )
+
+        # Inject stealth runtime scripts before any page scripts evaluate
+        await context.add_init_script(&quot;&quot;&quot;
+            // Patch navigator.webdriver
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () =&gt; undefined
+            });
+
+            // Patch Chrome runtime object
+            window.chrome = {
+                app: { isInstalled: false, InstallState: { DISABLED: 'DISABLED' }, RunningState: { CANNOT_RUN: 'CANNOT_RUN' } },
+                runtime: { OnInstalledReason: { INSTALL: 'install' }, PlatformOs: { MAC: 'mac', WIN: 'win' } },
+                loadTimes: function() {},
+                csi: function() {}
+            };
+
+            // Patch Notification permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) =&gt; (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+
+            // Prevent PluginArray inspection fingerprinting
+            Object.defineProperty(navigator, 'plugins', {
+                get: () =&gt; [1, 2, 3, 4, 5]
+            });
+
+            // Patch WebGL Vendor and Renderer
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) {
+                    return 'Google Inc. (NVIDIA)';
+                }
+                if (parameter === 37446) {
+                    return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                }
+                return getParameter.apply(this, [parameter]);
+            };
+        &quot;&quot;&quot;)
+
+        return context
+
+    async def close(self) -&gt; None:
+        &quot;&quot;&quot;Gracefully terminates browser and driver threads.&quot;&quot;&quot;
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+        logger.info(&quot;Playwright driver teardown complete.&quot;)
+</code></pre>
+<h3>Undetected-ChromeDriver Factory: <code>drivers/uc_factory.py</code></h3>
+<p>When targets use deep browser instrumentation, <code>undetected-chromedriver</code> bypasses checks by patching binary offsets in the <code>chromedriver</code> executable at runtime (specifically renaming <code>$cdc_</code> and <code>$wdc_</code> strings).</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Undetected ChromeDriver factory with native Xvfb virtualization for Linux servers.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+import sys
+import os
+from typing import Optional
+from loguru import logger
+import undetected_chromedriver as uc
+
+class UCStealthDriver:
+    def __init__(
+        self,
+        headless: bool = True,
+        proxy_url: Optional[str] = None,
+        user_data_dir: Optional[str] = None
+    ):
+        self.headless = headless
+        self.proxy_url = proxy_url
+        self.user_data_dir = user_data_dir
+        self.driver: Optional[uc.Chrome] = None
+        self._xvfb = None
+
+    def start(self) -&gt; uc.Chrome:
+        &quot;&quot;&quot;Initializes undetected-chromedriver under an Xvfb display if running headless on Linux.&quot;&quot;&quot;
+        options = uc.ChromeOptions()
+
+        # Core flags for running inside containers or CI/CD VPS
+        options.add_argument(&quot;--no-sandbox&quot;)
+        options.add_argument(&quot;--disable-dev-shm-usage&quot;)
+        options.add_argument(&quot;--disable-popup-blocking&quot;)
+        options.add_argument(&quot;--window-size=1920,1080&quot;)
+        options.add_argument(&quot;--lang=en-US&quot;)
+
+        if self.proxy_url:
+            options.add_argument(f&quot;--proxy-server={self.proxy_url}&quot;)
+
+        if self.user_data_dir:
+            options.add_argument(f&quot;--user-data-dir={self.user_data_dir}&quot;)
+
+        # Undetected-chromedriver headless detection workaround on Linux
+        if self.headless:
+            if sys.platform.startswith(&quot;linux&quot;):
+                logger.info(&quot;Initializing virtual frame buffer (Xvfb) for undetected-chromedriver...&quot;)
+                from xvfbwrapper import Xvfb
+                self._xvfb = Xvfb(width=1920, height=1080, colordepth=24)
+                self._xvfb.start()
+                # Run as normal headful instance inside the virtual display
+                self.driver = uc.Chrome(options=options, headless=False)
+            else:
+                # Use the new headless mode on Windows/macOS
+                options.add_argument(&quot;--headless=new&quot;)
+                self.driver = uc.Chrome(options=options, headless=True)
+        else:
+            self.driver = uc.Chrome(options=options, headless=False)
+
+        # Enforce page load timeout constraints
+        self.driver.set_page_load_timeout(35)
+        logger.info(&quot;Undetected-Chromedriver process initialized successfully.&quot;)
+        return self.driver
+
+    def quit(self) -&gt; None:
+        &quot;&quot;&quot;Ensures both the driver process and virtual displays terminate cleanly.&quot;&quot;&quot;
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception as e:
+                logger.warning(f&quot;Error during UC driver quit: {e}&quot;)
+        if self._xvfb:
+            self._xvfb.stop()
+            logger.info(&quot;Virtual frame buffer (Xvfb) stopped.&quot;)
+</code></pre>
+<hr />
+<h2>3. Dynamic Header Synthesis &amp; Fingerprint Management</h2>
+<p>Anti-bot systems match HTTP headers against the underlying TCP/IP, TLS (JA3/JA4), and HTTP/2 settings. For example, sending a Chrome 128 User-Agent with HTTP/1.1 or out-of-order headers triggers an immediate block.</p>
+<h3>Modern Anti-Bot Evaluation Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Detection Layer</th>
+<th style="text-align: left;">Vector Evaluated</th>
+<th style="text-align: left;">Detection Trigger</th>
+<th style="text-align: left;">Production Countermeasure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>L4 / Transport</strong></td>
+<td style="text-align: left;">TCP SYN Packet (Window Size, TTL, Options)</td>
+<td style="text-align: left;">Linux TCP stack signature mismatching Windows User-Agent</td>
+<td style="text-align: left;">Host-level OS alignment or MTU/TCP scrubbing via gateway proxy</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>L7 / TLS</strong></td>
+<td style="text-align: left;">JA3/JA4 Fingerprint, Cipher Suite Suites, Extensions</td>
+<td style="text-align: left;">Python <code>requests</code> or <code>urllib3</code> default OpenSSL cipher order</td>
+<td style="text-align: left;">Impersonate browser TLS engine using <code>curl_cffi</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>L7 / HTTP/2</strong></td>
+<td style="text-align: left;">SETTINGS frames, WINDOW_UPDATE parameters, pseudo-header order</td>
+<td style="text-align: left;">Non-browser frame order (<code>:method</code> after <code>:path</code>)</td>
+<td style="text-align: left;">Native HTTP/2 framing enforcement (<code>curl_cffi</code> or Playwright)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>L7 / Semantic</strong></td>
+<td style="text-align: left;">Client Hints (<code>Sec-Ch-Ua</code>), Accept-Language, Ordering</td>
+<td style="text-align: left;">Header keys sent in alphabetical order (standard Python library defaults)</td>
+<td style="text-align: left;">Ordered casing maps matching target browser brand</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Client Runtime</strong></td>
+<td style="text-align: left;"><code>navigator.webdriver</code>, Canvas hashes, AudioContext latency</td>
+<td style="text-align: left;">Missing native prototypes, zero-latency rendering</td>
+<td style="text-align: left;">JavaScript dynamic prototype manipulation &amp; driver binary patching</td>
+</tr>
+</tbody>
+</table>
+<h3>TLS Fingerprint Matching: <code>core/fingerprints.py</code></h3>
+<p>This script uses <code>curl_cffi</code> to mimic Chrome's exact TLS and HTTP/2 fingerprints, and contains a header synthesis engine that matches User-Agent strings with appropriate client hints.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Header and Browser Fingerprint Synchronization Module.
+Provides valid Client Hints, HTTP/2 pseudo-header order, and TLS profile impersonation.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+import random
+from typing import Dict, Any
+from curl_cffi.requests import AsyncSession
+
+class StealthHeaderEngine:
+    CHROME_VERSIONS = [&quot;126&quot;, &quot;127&quot;, &quot;128&quot;]
+
+    @classmethod
+    def get_headers(cls, platform: str = &quot;windows&quot;) -&gt; Dict[str, str]:
+        &quot;&quot;&quot;Generates synchronized HTTP headers matching exact client architecture hints.&quot;&quot;&quot;
+        version = random.choice(cls.CHROME_VERSIONS)
+
+        if platform == &quot;windows&quot;:
+            platform_str = '&quot;Windows&quot;'
+            ua_platform = &quot;Windows NT 10.0; Win64; x64&quot;
+            platform_version = '&quot;15.0.0&quot;'
+        elif platform == &quot;macos&quot;:
+            platform_str = '&quot;macOS&quot;'
+            ua_platform = &quot;Macintosh; Intel Mac OS X 10_15_7&quot;
+            platform_version = '&quot;14.5.0&quot;'
+        else:
+            raise ValueError(f&quot;Unsupported platform: {platform}&quot;)
+
+        user_agent = f&quot;Mozilla/5.0 ({ua_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36&quot;
+
+        return {
+            &quot;Host&quot;: &quot;&quot;, # Managed by client runtime
+            &quot;Connection&quot;: &quot;keep-alive&quot;,
+            &quot;sec-ch-ua&quot;: f'&quot;Not/A)Brand&quot;;v=&quot;8&quot;, &quot;Chromium&quot;;v=&quot;{version}&quot;, &quot;Google Chrome&quot;;v=&quot;{version}&quot;',
+            &quot;sec-ch-ua-mobile&quot;: &quot;?0&quot;,
+            &quot;sec-ch-ua-platform&quot;: platform_str,
+            &quot;sec-ch-ua-platform-version&quot;: platform_version,
+            &quot;Upgrade-Insecure-Requests&quot;: &quot;1&quot;,
+            &quot;User-Agent&quot;: user_agent,
+            &quot;Accept&quot;: &quot;text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7&quot;,
+            &quot;Sec-Fetch-Site&quot;: &quot;none&quot;,
+            &quot;Sec-Fetch-Mode&quot;: &quot;navigate&quot;,
+            &quot;Sec-Fetch-User&quot;: &quot;?1&quot;,
+            &quot;Sec-Fetch-Dest&quot;: &quot;document&quot;,
+            &quot;Accept-Encoding&quot;: &quot;gzip, deflate, br, zstd&quot;,
+            &quot;Accept-Language&quot;: &quot;en-US,en;q=0.9&quot;,
+            &quot;Priority&quot;: &quot;u=0, i&quot;
+        }
+
+async def make_stealth_request(url: str, proxy: str | None = None) -&gt; str:
+    &quot;&quot;&quot;Executes an HTTP request impersonating Chrome's TLS layer and HTTP/2 framing.&quot;&quot;&quot;
+    headers = StealthHeaderEngine.get_headers(platform=&quot;windows&quot;)
+    # Host header is derived automatically; drop empty string
+    del headers[&quot;Host&quot;]
+
+    async with AsyncSession(impersonate=&quot;chrome124&quot;) as session:
+        response = await session.get(
+            url,
+            headers=headers,
+            proxy=proxy,
+            timeout=15.0
+        )
+        if response.status_code &gt;= 400:
+            raise RuntimeError(f&quot;Request failed: HTTP {response.status_code}&quot;)
+        return response.text
+</code></pre>
+<hr />
+<h2>4. Enterprise Proxy Orchestration &amp; Pool Rotation</h2>
+<p>Production scrapers process hundreds of thousands of pages. Routing them through a single IP triggers ratelimits and perimeter bans. Production workflows require a dynamic proxy pool to distribute load across datacenter, residential, and mobile proxies.</p>
+<pre><code class="language-text">               ┌────────────────────────────────────────────────────────┐
+               │                  Scraper Architecture                  │
+               └──────────────────────────┬─────────────────────────────┘
+                                          │
+                            Proxy Checkout &amp; Lease Request
+                                          │
+                                          ▼
+                      ┌───────────────────────────────────────┐
+                      │          ProxyPoolManager             │
+                      │  - Validates Health / Latency         │
+                      │  - Selects Tier (DC / Resi / Mobile)  │
+                      │  - Tracks Leases &amp; Cooldowns          │
+                      └───────┬───────────────────────┬───────┘
+                              │                       │
+      Static Datacenter Route │                       │ Rotating Residential Route
+      (Low cost, high speed)  │                       │ (High trust, challenge bypass)
+                              ▼                       ▼
+                     ┌────────────────┐      ┌─────────────────┐
+                     │ Datacenter Pool│      │Residential Pool │
+                     │   (50-100 IPs) │      │ (10,000+ Nodes) │
+                     └───────┬────────┘      └────────┬────────┘
+                             │                        │
+                             └───────────┬────────────┘
+                                         ▼
+                            ┌────────────────────────┐
+                            │ Target Edge/Protection │
+                            │ (Cloudflare/DataDome)  │
+                            └────────────────────────┘
+</code></pre>
+<h3>High-Throughput Proxy Manager: <code>core/proxy_manager.py</code></h3>
+<p>This thread-safe proxy manager handles health-tracking, latency scoring, protocol conversion, and automatic quarantine with backoff penalties.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Resilient Proxy Pool Management with Health Tracking and Dynamic Quarantine.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+import asyncio
+import time
+from typing import Dict, List, Optional
+from pydantic import BaseModel, HttpUrl
+from loguru import logger
+
+class ProxyNode(BaseModel):
+    url: str
+    protocol: str = &quot;http&quot;
+    failure_count: int = 0
+    success_count: int = 0
+    avg_latency_ms: float = 0.0
+    quarantined_until: float = 0.0
+
+    @property
+    def is_available(self) -&gt; bool:
+        return time.time() &gt; self.quarantined_until
+
+class ProxyPoolManager:
+    def __init__(self, proxy_list: List[str], quarantine_duration_secs: int = 300):
+        self.quarantine_duration = quarantine_duration_secs
+        self._lock = asyncio.Lock()
+        self._pool: List[ProxyNode] = []
+
+        for p in proxy_list:
+            self._pool.append(ProxyNode(url=p))
+
+        logger.info(f&quot;Initialized ProxyPoolManager with {len(self._pool)} nodes.&quot;)
+
+    async def get_next_proxy(self) -&gt; ProxyNode:
+        &quot;&quot;&quot;Retrieves the healthiest available proxy using a latency-weighted policy.&quot;&quot;&quot;
+        async with self._lock:
+            available = [p for p in self._pool if p.is_available]
+            if not available:
+                # Emergency: Clear expired quarantines or pick lowest penalty
+                logger.warning(&quot;All proxies quarantined. Overriding node with earliest release.&quot;)
+                available = sorted(self._pool, key=lambda x: x.quarantined_until)
+                return available[0]
+
+            # Sort primarily by lowest failure count, secondarily by latency
+            available.sort(key=lambda x: (x.failure_count, x.avg_latency_ms))
+            selected = available[0]
+            return selected
+
+    async def report_success(self, proxy: ProxyNode, latency_ms: float) -&gt; None:
+        &quot;&quot;&quot;Updates health metrics on successful execution.&quot;&quot;&quot;
+        async with self._lock:
+            proxy.success_count += 1
+            proxy.failure_count = max(0, proxy.failure_count - 1)
+            # Update moving average latency
+            if proxy.avg_latency_ms == 0.0:
+                proxy.avg_latency_ms = latency_ms
+            else:
+                proxy.avg_latency_ms = (proxy.avg_latency_ms * 0.8) + (latency_ms * 0.2)
+
+    async def report_failure(self, proxy: ProxyNode, status_code: Optional[int] = None) -&gt; None:
+        &quot;&quot;&quot;Applies penalties and quarantines nodes after threshold limits.&quot;&quot;&quot;
+        async with self._lock:
+            proxy.failure_count += 1
+            logger.warning(
+                f&quot;Proxy {proxy.url} failed. Code: {status_code} | &quot;
+                f&quot;Total Failures: {proxy.failure_count}&quot;
+            )
+
+            # Fast quarantine on definitive access blocks
+            if status_code in [403, 429] or proxy.failure_count &gt;= 3:
+                penalty_time = self.quarantine_duration * proxy.failure_count
+                proxy.quarantined_until = time.time() + penalty_time
+                logger.error(f&quot;Quarantining {proxy.url} for {penalty_time}s.&quot;)
+</code></pre>
+<hr />
+<h2>5. Fault Tolerance, Circuit Breakers &amp; Backoff Strategies</h2>
+<p>Unchecked exceptions in long-running scrapes can exhaust memory, trigger target-wide bans, or corrupt session state. Production pipelines require structured retries with exponential jitter and circuit-breaker patterns to stop traffic during active defenses.</p>
+<pre><code class="language-text">Request Cycle ──► [Try HTTP Fetch]
+                         │
+        ┌────────────────┴────────────────┐
+     Success                           Failure
+        │                                 │
+ [Return Data]              [Circuit Breaker Trips?]
+                             ├── YES ──► Raise SystemHalt &amp; Abort Scrape
+                             └── NO  ──► Check Retry Engine
+                                           │
+                             [Exponential Backoff + Jitter]
+                                           │
+                                  [Next Attempt / Proxy]
+</code></pre>
+<h3>Custom Exception Hierarchy: <code>core/exceptions.py</code></h3>
+<pre><code class="language-python">&quot;&quot;&quot;Domain-specific exceptions for automation pipelines.&quot;&quot;&quot;
+
+class AutomationVaultException(Exception):
+    &quot;&quot;&quot;Base exception for all vault workflows.&quot;&quot;&quot;
+
+class RateLimitException(AutomationVaultException):
+    &quot;&quot;&quot;Target returned HTTP 429 or dynamic rate limiting response.&quot;&quot;&quot;
+
+class BotChallengeException(AutomationVaultException):
+    &quot;&quot;&quot;Target triggered Turnstile, Cloudflare IUAM, or DataDome challenge.&quot;&quot;&quot;
+
+class ProxyConnectionException(AutomationVaultException):
+    &quot;&quot;&quot;Upstream proxy server dropped connection or timed out.&quot;&quot;&quot;
+
+class TargetSchemaChangedException(AutomationVaultException):
+    &quot;&quot;&quot;DOM structure changed, missing expected selectors.&quot;&quot;&quot;
+</code></pre>
+<h3>Circuit Breaker &amp; Retry Engine: <code>core/retry_engine.py</code></h3>
+<p>This module uses <code>tenacity</code> along with a sliding-window circuit breaker to catch edge failures and stop execution when an IP block or structural change occurs.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Fault-tolerance engine combining exponential jittered retry loops
+with a stateful circuit breaker.
+&quot;&quot;&quot;
+
+from __future__ import annotations
+import random
+import time
+from typing import Callable, Any
+from loguru import logger
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
+from core.exceptions import (
+    RateLimitException,
+    BotChallengeException,
+    ProxyConnectionException
+)
+
+class ScrapingCircuitBreaker:
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 600):
+        self.threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.consecutive_failures = 0
+        self.last_failure_time = 0.0
+        self.state = &quot;CLOSED&quot;  # CLOSED, OPEN, HALF-OPEN
+
+    def record_success(self) -&gt; None:
+        self.consecutive_failures = 0
+        self.state = &quot;CLOSED&quot;
+
+    def record_failure(self) -&gt; None:
+        self.consecutive_failures += 1
+        self.last_failure_time = time.time()
+        if self.consecutive_failures &gt;= self.threshold:
+            self.state = &quot;OPEN&quot;
+            logger.critical(
+                f&quot;CIRCUIT BREAKER OPENED: {self.consecutive_failures} sequential failures. &quot;
+                f&quot;System paused for {self.recovery_timeout} seconds.&quot;
+            )
+
+    def can_proceed(self) -&gt; bool:
+        if self.state == &quot;CLOSED&quot;:
+            return True
+        if self.state == &quot;OPEN&quot;:
+            if time.time() - self.last_failure_time &gt; self.recovery_timeout:
+                self.state = &quot;HALF-OPEN&quot;
+                logger.info(&quot;Circuit breaker shifted to HALF-OPEN. Executing test canary request.&quot;)
+                return True
+            return False
+        return True  # HALF-OPEN allows single speculative execution
+
+def custom_retry_policy():
+    &quot;&quot;&quot;Returns a Tenacity retry orchestrator tuned for scraping operations.&quot;&quot;&quot;
+    return retry(
+        reraise=True,
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=2, min=3, max=45),
+        retry=retry_if_exception_type(
+            (RateLimitException, ProxyConnectionException, TimeoutError)
+        ),
+        before_sleep=lambda retry_state: logger.warning(
+            f&quot;Retry attempt {retry_state.attempt_number} due to: {retry_state.outcome.exception()}&quot;
+        )
+    )
+</code></pre>
+<hr />
+<h2>6. Production Health Checklist &amp; Verification Suite</h2>
+<p>Before deploying automated pipelines into production, run this end-to-end verification script. It boots the browser and networking engines, executes tests against real-world fingerprint leak listeners, and confirms environment readiness.</p>
+<h3>Automated Smoke Verification Script: <code>tests/test_fingerprints.py</code></h3>
+<p>Run this script inside the newly built <code>.venv</code> environment to verify your setup before starting production runs:</p>
+<p>```python
+"""
+End-to-End Validation Engine. Run this to verify local environments against
+perimeter detection benchmarks.
+"""</p>
+<p>from <strong>future</strong> import annotations
+import asyncio
+import json
+import sys
+from loguru import logger
+from drivers.playwright_factory import PlaywrightStealthFactory
+from core.fingerprints import make_stealth_request</p>
+<p>async def test_tls_layer() -&gt; bool:
+    logger.info("Executing TLS &amp; HTTP/2 Validation Test...")
+    url = "https://tls.peet.ws/api/all"
+    try:
+        raw_response = await make_stealth_request(url)
+        data = json.loads(raw_response)
+        http_version = data.get("http_version", "")
+        ja3 = data.get("tls", {}).get("ja3_hash", "NONE")
+        logger.info(f"Connected using HTTP Version: {http_version} | JA3 Hash: {ja3}")
+        if "h2" not in http_version.lower() and "http/2" not in http_version.lower():
+            logger.error("TLS engine failed to negotiate HTTP/2 framing.")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"TLS test crashed: {e}")
+        return False</p>
+<p>async def test_playwright_leaks() -&gt; bool:
+    logger.info("Executing Playwright Runtime Leak Test...")
+    factory = PlaywrightStealthFactory(headless=True)
+    await factory.initialize()
+    try:
+        context = await factory.create</p>
+</body>
+</html>

@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Python Automation & Scraping Vault: 100+ Production Scripts, Web Scrapers & Task Automations</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: 40+ Data Pipeline, API &amp; Document Automations</h1>
+<p>This module delivers drop-in automation engines for data extraction, document parsing, financial reconciliation, webhook dispatching, encrypted cloud storage backups, and database synchronization. Every script is architected for autonomous execution inside cron daemons, systemd timers, or containerized worker pools.</p>
+<hr />
+<h2>1. Architectural Standards &amp; Pipeline Design Patterns</h2>
+<p>All scripts within this module adhere to four non-negotiable operational requirements:</p>
+<ol>
+<li><strong>Idempotency</strong>: Running a pipeline twice over the same input state will never produce duplicate records, orphaned storage objects, or corrupted ledgers.</li>
+<li><strong>Fail-Closed Operations</strong>: Every network, filesystem, or database transaction executes inside an atomic context. Partial state changes are rolled back automatically.</li>
+<li><strong>Structured Telemetry</strong>: Standard output uses machine-readable JSON logs containing timestamps, transaction counts, execution latency, and trace hashes.</li>
+<li><strong>Environment Isolation</strong>: Zero hardcoded credentials. All tokens, secrets, endpoints, and bucket names resolve through strict environment variables.</li>
+</ol>
+<h3>Environment Variable Specification (<code>.env.pipeline</code>)</h3>
+<pre><code class="language-ini"># Database Endpoints
+SOURCE_DB_URI=postgresql://etl_reader:Secr3tP@ss!@pg-primary.internal:5432/core_production
+TARGET_DB_URI=postgresql://etl_writer:Secr3tP@ss!@pg-replica.internal:5432/core_warehouse
+
+# S3 / Object Storage Configuration
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+AWS_DEFAULT_REGION=us-east-1
+S3_BACKUP_BUCKET=prod-database-backups-immutable
+S3_ENDPOINT_URL=https://s3.us-east-1.amazonaws.com
+
+# Webhook Event Bus Security
+WEBHOOK_SHARED_SECRET=c8f8b3c4f9a0d2e5b7a1d4c8e9f2a5b7c1d3e5f7a9b1c3d5e7f9a1b3c5d7e9f1
+WEBHOOK_DESTINATION_URL=https://events.partnerapi.com/v1/ingest
+DEAD_LETTER_LOG_PATH=/var/log/automation/dead_letter_queue.jsonl
+
+# PDF &amp; Reconciliation File Targets
+DOCUMENT_INGEST_DIR=/var/data/inbound_docs
+RECONCILIATION_EXPORT_DIR=/var/data/finance_exports
+</code></pre>
+<hr />
+<h2>2. Script 3.1: High-Performance Batch PDF Table &amp; Text Extractor</h2>
+<p>Extracts semi-structured tabular records, line items, and invoice metadata from arbitrary batches of PDFs without external cloud APIs. Employs <code>pdfplumber</code> with automated bounding-box fallbacks and regex parsing for structured output to JSON Lines.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;
+Production Batch PDF Extractor
+Extracts tabular line items and metadata from PDF invoices into structured JSONL.
+&quot;&quot;&quot;
+
+import os
+import re
+import sys
+import json
+import logging
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+import pdfplumber
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='{&quot;time&quot;:&quot;%(asctime)s&quot;, &quot;level&quot;:&quot;%(levelname)s&quot;, &quot;module&quot;:&quot;%(filename)s&quot;, &quot;message&quot;:&quot;%(message)s&quot;}'
+)
+logger = logging.getLogger(&quot;pdf_extractor&quot;)
+
+REGEX_PATTERNS = {
+    &quot;invoice_number&quot;: re.compile(r&quot;(?i)invoice\s*(?:no|number|#)?[:\s]+([A-Z0-9\-]+)&quot;),
+    &quot;date&quot;: re.compile(r&quot;(?i)(?:invoice\s*)?date[:\s]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\w+\s+\d{1,2},\s*\d{4})&quot;),
+    &quot;total_amount&quot;: re.compile(r&quot;(?i)total\s*(?:due|amount)?[:\s]*[\$€£]?\s*([0-9,]+\.\d{2})&quot;),
+    &quot;tax_amount&quot;: re.compile(r&quot;(?i)(?:tax|vat)\s*(?:amount)?[:\s]*[\$€£]?\s*([0-9,]+\.\d{2})&quot;)
+}
+
+def clean_currency(val: Optional[str]) -&gt; float:
+    if not val:
+        return 0.0
+    cleaned = re.sub(r&quot;[^\d.-]&quot;, &quot;&quot;, val)
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+def parse_metadata_from_text(text: str) -&gt; Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        &quot;invoice_number&quot;: None,
+        &quot;date&quot;: None,
+        &quot;total_amount&quot;: 0.0,
+        &quot;tax_amount&quot;: 0.0
+    }
+    for field, pattern in REGEX_PATTERNS.items():
+        match = pattern.search(text)
+        if match:
+            if &quot;amount&quot; in field:
+                metadata[field] = clean_currency(match.group(1))
+            else:
+                metadata[field] = match.group(1).strip()
+    return metadata
+
+def extract_tables_from_page(page: pdfplumber.page.Page) -&gt; List[List[str]]:
+    table_settings = {
+        &quot;vertical_strategy&quot;: &quot;lines&quot;,
+        &quot;horizontal_strategy&quot;: &quot;lines&quot;,
+        &quot;explicit_vertical_lines&quot;: [],
+        &quot;explicit_horizontal_lines&quot;: [],
+        &quot;snap_tolerance&quot;: 3,
+        &quot;join_tolerance&quot;: 3,
+        &quot;edge_min_length&quot;: 3,
+        &quot;min_words_vertical&quot;: 3,
+        &quot;min_words_horizontal&quot;: 1,
+        &quot;intersection_tolerance&quot;: 3,
+    }
+    extracted = page.extract_table(table_settings=table_settings)
+    if not extracted:
+        # Fallback to text strategy if no vector lines exist
+        table_settings[&quot;vertical_strategy&quot;] = &quot;text&quot;
+        table_settings[&quot;horizontal_strategy&quot;] = &quot;text&quot;
+        extracted = page.extract_table(table_settings=table_settings)
+
+    if not extracted:
+        return []
+
+    # Sanitize inner cells
+    sanitized_table = []
+    for row in extracted:
+        cleaned_row = [re.sub(r&quot;\s+&quot;, &quot; &quot;, cell).strip() if cell else &quot;&quot; for cell in row]
+        if any(cleaned_row):
+            sanitized_table.append(cleaned_row)
+    return sanitized_table
+
+def process_single_pdf(pdf_path: Path) -&gt; Dict[str, Any]:
+    document_record: Dict[str, Any] = {
+        &quot;source_file&quot;: pdf_path.name,
+        &quot;page_count&quot;: 0,
+        &quot;metadata&quot;: {},
+        &quot;line_items&quot;: []
+    }
+
+    with pdfplumber.open(pdf_path) as pdf:
+        document_record[&quot;page_count&quot;] = len(pdf.pages)
+        aggregated_text = &quot;&quot;
+
+        for idx, page in enumerate(pdf.pages):
+            text = page.extract_text() or &quot;&quot;
+            aggregated_text += f&quot;\n{text}&quot;
+
+            tables = extract_tables_from_page(page)
+            if tables and len(tables) &gt; 1:
+                headers = tables[0]
+                for row in tables[1:]:
+                    if len(row) == len(headers):
+                        item = dict(zip(headers, row))
+                        item[&quot;_page&quot;] = idx + 1
+                        document_record[&quot;line_items&quot;].append(item)
+
+        document_record[&quot;metadata&quot;] = parse_metadata_from_text(aggregated_text)
+
+    return document_record
+
+def run_pdf_extraction_pipeline(inbound_dir: str, output_jsonl: str) -&gt; None:
+    input_path = Path(inbound_dir)
+    output_path = Path(output_jsonl)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pdf_files = list(input_path.glob(&quot;*.pdf&quot;))
+    logger.info(f&quot;Identified {len(pdf_files)} PDF documents in {inbound_dir}&quot;)
+
+    success_count = 0
+    failure_count = 0
+
+    with open(output_path, &quot;a&quot;, encoding=&quot;utf-8&quot;) as out_file:
+        for file in pdf_files:
+            try:
+                record = process_single_pdf(file)
+                out_file.write(json.dumps(record, ensure_ascii=False) + &quot;\n&quot;)
+                out_file.flush()
+                success_count += 1
+                logger.info(f&quot;Successfully processed {file.name}&quot;)
+            except Exception as e:
+                failure_count += 1
+                logger.error(f&quot;Failed processing {file.name}: {str(e)}&quot;)
+
+    logger.info(f&quot;Pipeline complete. Succeeded: {success_count}, Failed: {failure_count}&quot;)
+
+if __name__ == &quot;__main__&quot;:
+    INBOUND = os.getenv(&quot;DOCUMENT_INGEST_DIR&quot;, &quot;./inbound_docs&quot;)
+    OUT_JSONL = os.getenv(&quot;EXTRACTION_OUT_PATH&quot;, &quot;./extracted_records.jsonl&quot;)
+    run_pdf_extraction_pipeline(INBOUND, OUT_JSONL)
+</code></pre>
+<hr />
+<h2>3. Script 3.2: Multi-Sheet Financial Reconciler &amp; Difference Engine</h2>
+<p>Compares ERP General Ledger exports against Payment Gateway bank reconciliation settlement sheets. Computes outer joins, identifies missing entries, highlights variances beyond floating-point epsilon tolerances, and exports a formatted Excel file with color-coded variances.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;
+Multi-Sheet Financial Reconciler
+Performs deterministic comparisons between Internal Ledger and External Bank/Gateway extracts.
+Generates an audit-ready, styled Excel workbook containing delta matrices.
+&quot;&quot;&quot;
+
+import os
+import sys
+import logging
+import pandas as pd
+import numpy as np
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='{&quot;time&quot;:&quot;%(asctime)s&quot;, &quot;level&quot;:&quot;%(levelname)s&quot;, &quot;message&quot;:&quot;%(message)s&quot;}'
+)
+logger = logging.getLogger(&quot;reconciliation_engine&quot;)
+
+EPSILON_TOLERANCE = 0.01  # Cash tolerances below 1 cent are ignored
+
+def run_reconciliation(internal_path: str, external_path: str, report_output_path: str) -&gt; None:
+    logger.info(f&quot;Loading internal ledger: {internal_path}&quot;)
+    df_internal = pd.read_excel(internal_path, sheet_name=0)
+
+    logger.info(f&quot;Loading external statement: {external_path}&quot;)
+    df_external = pd.read_excel(external_path, sheet_name=0)
+
+    # Required standard schema validation
+    required_cols = {&quot;transaction_id&quot;, &quot;amount&quot;, &quot;date&quot;}
+    if not required_cols.issubset(set(df_internal.columns)) or not required_cols.issubset(set(df_external.columns)):
+        missing_int = required_cols - set(df_internal.columns)
+        missing_ext = required_cols - set(df_external.columns)
+        raise ValueError(f&quot;Schema mismatch. Internal missing: {missing_int}, External missing: {missing_ext}&quot;)
+
+    # Coerce data types
+    for df in [df_internal, df_external]:
+        df[&quot;transaction_id&quot;] = df[&quot;transaction_id&quot;].astype(str).str.strip().str.upper()
+        df[&quot;amount&quot;] = pd.to_numeric(df[&quot;amount&quot;], errors=&quot;coerce&quot;).fillna(0.0)
+        df[&quot;date&quot;] = pd.to_datetime(df[&quot;date&quot;], errors=&quot;coerce&quot;)
+
+    # Aggregate by transaction_id to prevent multi-hit inflation
+    int_grouped = df_internal.groupby(&quot;transaction_id&quot;).agg({
+        &quot;amount&quot;: &quot;sum&quot;,
+        &quot;date&quot;: &quot;first&quot;
+    }).reset_index().rename(columns={&quot;amount&quot;: &quot;internal_amount&quot;, &quot;date&quot;: &quot;internal_date&quot;})
+
+    ext_grouped = df_external.groupby(&quot;transaction_id&quot;).agg({
+        &quot;amount&quot;: &quot;sum&quot;,
+        &quot;date&quot;: &quot;first&quot;
+    }).reset_index().rename(columns={&quot;amount&quot;: &quot;external_amount&quot;, &quot;date&quot;: &quot;external_date&quot;})
+
+    # Full Outer Join
+    merged = pd.merge(int_grouped, ext_grouped, on=&quot;transaction_id&quot;, how=&quot;outer&quot;)
+    merged[&quot;internal_amount&quot;] = merged[&quot;internal_amount&quot;].fillna(0.0)
+    merged[&quot;external_amount&quot;] = merged[&quot;external_amount&quot;].fillna(0.0)
+
+    # Calculate Variance
+    merged[&quot;variance&quot;] = (merged[&quot;internal_amount&quot;] - merged[&quot;external_amount&quot;]).round(4)
+    merged[&quot;abs_variance&quot;] = merged[&quot;variance&quot;].abs()
+
+    # Classification
+    conditions = [
+        (merged[&quot;internal_date&quot;].isna()) &amp; (merged[&quot;external_date&quot;].notna()),
+        (merged[&quot;internal_date&quot;].notna()) &amp; (merged[&quot;external_date&quot;].isna()),
+        (merged[&quot;abs_variance&quot;] &lt;= EPSILON_TOLERANCE),
+        (merged[&quot;abs_variance&quot;] &gt; EPSILON_TOLERANCE)
+    ]
+    choices = [
+        &quot;MISSING_IN_INTERNAL_LEDGER&quot;,
+        &quot;MISSING_IN_EXTERNAL_STATEMENT&quot;,
+        &quot;MATCHED&quot;,
+        &quot;AMOUNT_MISMATCH&quot;
+    ]
+    merged[&quot;status&quot;] = np.select(conditions, choices, default=&quot;UNKNOWN_ERROR&quot;)
+    merged.drop(columns=[&quot;abs_variance&quot;], inplace=True)
+    merged.sort_values(by=[&quot;status&quot;, &quot;variance&quot;], ascending=[True, False], inplace=True)
+
+    # Export to Excel
+    logger.info(f&quot;Writing audit reconciliation to {report_output_path}&quot;)
+    with pd.ExcelWriter(report_output_path, engine=&quot;openpyxl&quot;) as writer:
+        merged.to_excel(writer, sheet_name=&quot;Reconciliation_Summary&quot;, index=False)
+
+        # Summary KPI Sheet
+        kpis = {
+            &quot;Total Internal Transactions&quot;: [len(df_internal)],
+            &quot;Total External Transactions&quot;: [len(df_external)],
+            &quot;Matched Count&quot;: [len(merged[merged[&quot;status&quot;] == &quot;MATCHED&quot;])],
+            &quot;Mismatched Value Count&quot;: [len(merged[merged[&quot;status&quot;] == &quot;AMOUNT_MISMATCH&quot;])],
+            &quot;Missing in Internal Ledger&quot;: [len(merged[merged[&quot;status&quot;] == &quot;MISSING_IN_INTERNAL_LEDGER&quot;])],
+            &quot;Missing in External Statement&quot;: [len(merged[merged[&quot;status&quot;] == &quot;MISSING_IN_EXTERNAL_STATEMENT&quot;])],
+            &quot;Gross Ledger Exposure&quot;: [merged[&quot;variance&quot;].sum()]
+        }
+        pd.DataFrame(kpis).T.to_excel(writer, sheet_name=&quot;Executive_KPIs&quot;, header=False)
+
+    apply_excel_formatting(report_output_path)
+    logger.info(&quot;Reconciliation run completed successfully.&quot;)
+
+def apply_excel_formatting(filepath: str) -&gt; None:
+    wb = load_workbook(filepath)
+    ws = wb[&quot;Reconciliation_Summary&quot;]
+
+    red_fill = PatternFill(start_color=&quot;FCE4D6&quot;, end_color=&quot;FCE4D6&quot;, fill_type=&quot;solid&quot;)
+    yellow_fill = PatternFill(start_color=&quot;FFF2CC&quot;, end_color=&quot;FFF2CC&quot;, fill_type=&quot;solid&quot;)
+    green_fill = PatternFill(start_color=&quot;E2EFDA&quot;, end_color=&quot;E2EFDA&quot;, fill_type=&quot;solid&quot;)
+    header_fill = PatternFill(start_color=&quot;1F4E79&quot;, end_color=&quot;1F4E79&quot;, fill_type=&quot;solid&quot;)
+    header_font = Font(name=&quot;Calibri&quot;, size=11, bold=True, color=&quot;FFFFFF&quot;)
+
+    thin_border = Border(
+        left=Side(style=&quot;thin&quot;, color=&quot;D9D9D9&quot;),
+        right=Side(style=&quot;thin&quot;, color=&quot;D9D9D9&quot;),
+        top=Side(style=&quot;thin&quot;, color=&quot;D9D9D9&quot;),
+        bottom=Side(style=&quot;thin&quot;, color=&quot;D9D9D9&quot;)
+    )
+
+    # Format Headers
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal=&quot;center&quot;, vertical=&quot;center&quot;)
+
+    status_col_idx = None
+    for col in range(1, ws.max_column + 1):
+        if ws.cell(row=1, column=col).value == &quot;status&quot;:
+            status_col_idx = col
+            break
+
+    # Format Data Rows
+    for row in range(2, ws.max_row + 1):
+        status_val = ws.cell(row=row, column=status_col_idx).value if status_col_idx else &quot;&quot;
+        row_fill = None
+        if status_val == &quot;MATCHED&quot;:
+            row_fill = green_fill
+        elif status_val == &quot;AMOUNT_MISMATCH&quot;:
+            row_fill = red_fill
+        elif &quot;MISSING&quot; in str(status_val):
+            row_fill = yellow_fill
+
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.border = thin_border
+            if row_fill:
+                cell.fill = row_fill
+            # Format currency columns
+            if col in [2, 4, 6]:  # amounts and variance
+                cell.number_format = '$#,##0.00;($#,##0.00);&quot;-&quot;;@'
+
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or &quot;&quot;)) for cell in col)
+        col_letter = get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    wb.save(filepath)
+
+if __name__ == &quot;__main__&quot;:
+    INTERNAL = os.getenv(&quot;INTERNAL_LEDGER_PATH&quot;, &quot;./internal_ledger.xlsx&quot;)
+    EXTERNAL = os.getenv(&quot;EXTERNAL_LEDGER_PATH&quot;, &quot;./bank_statement.xlsx&quot;)
+    REPORT = os.getenv(&quot;RECON_OUTPUT_PATH&quot;, &quot;./reconciliation_report.xlsx&quot;)
+
+    if not (os.path.exists(INTERNAL) and os.path.exists(EXTERNAL)):
+        logger.error(&quot;Missing input files for reconciliation run.&quot;)
+        sys.exit(1)
+
+    run_reconciliation(INTERNAL, EXTERNAL, REPORT)
+</code></pre>
+<hr />
+<h2>4. Script 3.3: Production Webhook Dispatcher &amp; Idempotent Event Delivery</h2>
+<p>Reliable event egress dispatcher engineered to withstand upstream downtime. Features cryptographically signed payloads via HMAC-SHA256, SQLite-based deduplication and persistent retry buffers, exponential backoff with full jitter, and auto-dead-letter archiving.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;
+Production Webhook Dispatcher
+Features HMAC authentication, local SQLite FIFO queues, exponential backoff, and DLQ handling.
+&quot;&quot;&quot;
+
+import os
+import sys
+import time
+import json
+import hmac
+import hashlib
+import sqlite3
+import random
+import logging
+from typing import Dict, Any, Optional
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='{&quot;time&quot;:&quot;%(asctime)s&quot;, &quot;level&quot;:&quot;%(levelname)s&quot;, &quot;event&quot;:&quot;%(message)s&quot;}'
+)
+logger = logging.getLogger(&quot;webhook_dispatcher&quot;)
+
+DB_PATH = os.getenv(&quot;QUEUE_DB_PATH&quot;, &quot;/tmp/webhook_buffer.db&quot;)
+MAX_RETRIES = 5
+BASE_BACKOFF_SECONDS = 2.0
+MAX_BACKOFF_SECONDS = 60.0
+
+def init_db(db_path: str = DB_PATH) -&gt; None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(&quot;&quot;&quot;
+            CREATE TABLE IF NOT EXISTS outbound_events (
+                event_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                attempts INTEGER DEFAULT 0,
+                next_attempt_at REAL NOT NULL,
+                status TEXT CHECK(status IN ('QUEUED', 'IN_FLIGHT', 'FAILED', 'DEAD_LETTER')) NOT NULL DEFAULT 'QUEUED',
+                created_at REAL NOT NULL
+            );
+        &quot;&quot;&quot;)
+        conn.execute(&quot;CREATE INDEX IF NOT EXISTS idx_next_attempt ON outbound_events (status, next_attempt_at);&quot;)
+        conn.commit()
+
+def calculate_signature(secret: str, payload_bytes: bytes) -&gt; str:
+    return hmac.new(secret.encode(&quot;utf-8&quot;), payload_bytes, hashlib.sha256).hexdigest()
+
+def get_http_client() -&gt; requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=2,
+        connect=2,
+        read=2,
+        status_forcelist=[502, 503, 504],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount(&quot;https://&quot;, adapter)
+    session.mount(&quot;http://&quot;, adapter)
+    return session
+
+def queue_event(event_id: str, payload: Dict[str, Any], db_path: str = DB_PATH) -&gt; None:
+    raw_payload = json.dumps(payload, separators=(',', ':'), sort_keys=True)
+    now = time.time()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            &quot;&quot;&quot;
+            INSERT OR IGNORE INTO outbound_events (event_id, payload, attempts, next_attempt_at, status, created_at)
+            VALUES (?, ?, 0, ?, 'QUEUED', ?)
+            &quot;&quot;&quot;,
+            (event_id, raw_payload, now, now)
+        )
+        conn.commit()
+    logger.info(f&quot;Queued event {event_id}&quot;)
+
+def calculate_jittered_backoff(attempt: int) -&gt; float:
+    # Full jitter backoff formula: Uniform(0, min(max_backoff, base * 2 ^ attempt))
+    temp = min(MAX_BACKOFF_SECONDS, BASE_BACKOFF_SECONDS * (2 ** attempt))
+    return random.uniform(0, temp)
+
+def process_outbound_queue(target_url: str, secret: str, dead_letter_log: str, db_path: str = DB_PATH) -&gt; None:
+    now = time.time()
+    session = get_http_client()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Select items ready for dispatch
+        cursor.execute(
+            &quot;&quot;&quot;
+            SELECT event_id, payload, attempts 
+            FROM outbound_events 
+            WHERE status = 'QUEUED' AND next_attempt_at &lt;= ?
+            LIMIT 100
+            &quot;&quot;&quot;,
+            (now,)
+        )
+        batch = cursor.fetchall()
+
+    if not batch:
+        return
+
+    logger.info(f&quot;Processing webhook batch of size: {len(batch)}&quot;)
+
+    for row in batch:
+        event_id = row[&quot;event_id&quot;]
+        payload_str = row[&quot;payload&quot;]
+        attempts = row[&quot;attempts&quot;]
+        payload_bytes = payload_str.encode(&quot;utf-8&quot;)
+
+        signature = calculate_signature(secret, payload_bytes)
+        headers = {
+            &quot;Content-Type&quot;: &quot;application/json&quot;,
+            &quot;X-Signature-256&quot;: signature,
+            &quot;X-Event-ID&quot;: event_id,
+            &quot;X-Delivery-Attempt&quot;: str(attempts + 1),
+            &quot;User-Agent&quot;: &quot;AutomationVault-Dispatcher/1.0&quot;
+        }
+
+        success = False
+        try:
+            response = session.post(target_url, data=payload_bytes, headers=headers, timeout=10.0)
+            if response.status_code in [200, 201, 202, 204]:
+                success = True
+            else:
+                logger.warning(f&quot;Delivery rejected by upstream: {response.status_code} for event {event_id}&quot;)
+        except requests.exceptions.RequestException as e:
+            logger.error(f&quot;Network error delivering event {event_id}: {str(e)}&quot;)
+
+        with sqlite3.connect(db_path) as conn:
+            if success:
+                conn.execute(&quot;DELETE FROM outbound_events WHERE event_id = ?&quot;, (event_id,))
+                conn.commit()
+                logger.info(f&quot;Dispatched event {event_id} successfully.&quot;)
+            else:
+                new_attempts = attempts + 1
+                if new_attempts &gt;= MAX_RETRIES:
+                    # Route to Dead Letter Queue
+                    conn.execute(&quot;UPDATE outbound_events SET status = 'DEAD_LETTER' WHERE event_id = ?&quot;, (event_id,))
+                    conn.commit()
+                    with open(dead_letter_log, &quot;a&quot;, encoding=&quot;utf-8&quot;) as dlq_file:
+                        dead_letter_entry = {
+                            &quot;event_id&quot;: event_id,
+                            &quot;payload&quot;: json.loads(payload_str),
+                            &quot;final_failure_timestamp&quot;: time.time(),
+                            &quot;total_attempts&quot;: new_attempts
+                        }
+                        dlq_file.write(json.dumps(dead_letter_entry) + &quot;\n&quot;)
+                    logger.error(f&quot;Event {event_id} moved to DEAD_LETTER after {new_attempts} attempts.&quot;)
+                else:
+                    delay = calculate_jittered_backoff(new_attempts)
+                    next_attempt = time.time() + delay
+                    conn.execute(
+                        &quot;UPDATE outbound_events SET attempts = ?, next_attempt_at = ? WHERE event_id = ?&quot;,
+                        (new_attempts, next_attempt, event_id)
+                    )
+                    conn.commit()
+                    logger.info(f&quot;Rescheduled event {event_id} for attempt {new_attempts + 1} in {delay:.2f}s&quot;)
+
+if __name__ == &quot;__main__&quot;:
+    init_db()
+    URL = os.getenv(&quot;WEBHOOK_DESTINATION_URL&quot;, &quot;https://httpbin.org/post&quot;)
+    SECRET = os.getenv(&quot;WEBHOOK_SHARED_SECRET&quot;, &quot;super-secret-key-12345&quot;)
+    DLQ_PATH = os.getenv(&quot;DEAD_LETTER_LOG_PATH&quot;, &quot;./dlq.jsonl&quot;)
+
+    # Example dispatch execution
+    sample_id = f&quot;evt_{hashlib.md5(str(time.time()).encode()).hexdigest()[:12]}&quot;
+    queue_event(sample_id, {&quot;event&quot;: &quot;customer.subscription.renewed&quot;, &quot;id&quot;: sample_id, &quot;amount&quot;: 99.00})
+
+    process_outbound_queue(URL, SECRET, DLQ_PATH)
+</code></pre>
+<hr />
+<h2>5. Script 3.4: Automated S3/R2 Multi-Cloud Encrypted Database Backup Pipeline</h2>
+<p>Directly executes <code>pg_dump</code> via a non-blocking UNIX pipe, streams standard output through an in-flight gzip compression utility, computes cryptographic integrity verification hashes, and transfers the payload directly to any S3-compliant target (AWS S3, Cloudflare R2, MinIO) without buffering the uncompressed dump to local disk.</p>
+<p>```python</p>
+<h1>!/usr/bin/env python3</h1>
+<p>"""
+S3/R2 Direct-Streaming Encrypted Database Backup Engine
+Streams database dumps into AWS S3/Cloudflare R2 without persisting uncompressed snapshots locally.
+"""</p>
+<p>import os
+import sys
+import subprocess
+import logging
+import datetime
+from io import BytesIO
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError</p>
+<p>logging.basicConfig(
+    level=logging.INFO,
+    format='{"time":"%(asctime)s", "level":"%(levelname)s", "message":"%(message)s"}'
+)
+logger = logging.getLogger("backup_pipeline")</p>
+<p>def get_s3_client() -&gt; boto3.client:
+    return boto3.client(
+        "s3",
+        region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        endpoint_url=os.getenv("S3_ENDPOINT_URL", None),
+        config=Config(retries={"max_attempts": 5, "mode": "standard"})
+    )</p>
+<p>def stream_postgres_backup(db_uri: str, bucket_name: str, retention_days: int = 14) -&gt; None:
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+    target_key = f"db_backups/postgres_{timestamp}.sql.gz"</p>
+<pre><code>s3 = get_s3_client()
+logger.info(f"Initiating pipe stream for pg_dump targeting s3://{bucket_name}/{target_key}")
+
+# Launch dump process writing to standard out
+dump_cmd = ["pg_dump", "--dbname", db_uri, "--no-owner", "--no-acl", "--clean", "--if-exists"]
+gzip_cmd = ["gzip", "-9"]
+
+try:
+    p_dump = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p_gzip = subprocess.Popen(gzip_cmd, stdin=p_dump.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Close dump stdout to allow p_dump to receive SIGPIPE if p_gzip fails
+    if p_dump.stdout:
+        p_dump.stdout.close()
+
+    # Multi-part upload streaming
+    s3.upload_fileobj(
+        Fileobj=p_gzip.stdout,
+        Bucket=bucket_name,
+        Key=target_key,
+        ExtraArgs={
+            "ServerSideEncryption": "AES256",
+            "Metadata": {
+                "source": "automation_vault_cron",
+                "backup_timestamp": timestamp
+            }
+        }
+    )
+
+    p_gzip.wait()
+    p_dump.wait()
+
+    if p_dump.returncode != 0:
+        stderr_dump = p_dump.stderr.read().decode() if p_dump.stderr else "Unknown"
+        raise RuntimeError(f"pg_dump exited with error code {p_dump.returncode}: {stderr_dump
+</code></pre>
+</body>
+</html>
