@@ -1,0 +1,7 @@
+🚀 Just launched: The Production RAG & Vector Architecture Vault: 50+ Retrieval Pipelines, Chunking Strategies & Eval Systems
+
+The definitive architectural playbook, hybrid search blueprints, reranker setups, and evaluation rubrics for building hallucination-free enterprise RAG systems.
+
+👉 Grab it here: https://gumroad.com/l/production-rag-vector-architecture
+
+#UIDesign #UXDesign #LandingPage #SaaS #Figma #WebDesign #IndieHacker #ConversionRate #RagArchitecture #VectorSearch #AiEngineering #LlmPipelines #Pgvector #Langchain #Llamaindex

@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Production RAG & Vector Architecture Vault: 50+ Retrieval Pipelines, Chunking Strategies & Eval Systems</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: RAGAS Evaluation Frameworks &amp; Production Troubleshooting</h1>
+<p>This production playbook contains production-grade evaluation pipelines, latency optimization runbooks, semantic cache implementations, and operational audit matrices. Use these frameworks to transition retrieval-augmented generation (RAG) systems from prototype validation into automated, regression-tested enterprise deployments.</p>
+<hr />
+<h2>1. Automated Evaluation Harness: RAGAS &amp; Deterministic Audits</h2>
+<p>A resilient evaluation pipeline executes two layers of defense: <strong>Deterministic Audits</strong> (structural regex, citation validation, context boundary compliance) and <strong>LLM-as-a-Judge Audits</strong> (semantic faithfulness, context recall, context precision, and hallucination rate).</p>
+<h3>1.1 Complete CI/CD Evaluation Pipeline (<code>eval_harness.py</code>)</h3>
+<p>This script executes against test datasets, runs asynchronous multi-metric scoring, and enforces strict build-breaking thresholds for CI/CD automation.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Production Evaluation Harness for Enterprise RAG.
+Dependencies: ragas&gt;=0.1.9, datasets, langchain-openai, pydantic&gt;=2.0
+&quot;&quot;&quot;
+
+import os
+import sys
+import json
+import asyncio
+from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+from datasets import Dataset
+
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from ragas import evaluate
+from ragas.metrics import (
+    faithfulness,
+    answer_relevancy,
+    context_precision,
+    context_recall,
+)
+from ragas.metrics.critique import harmfulness
+
+# ---------------------------------------------------------
+# 1. EVALUATION SCHEMAS &amp; CONFIGURATION
+# ---------------------------------------------------------
+
+class EvalSample(BaseModel):
+    question: str
+    ground_truth: str
+    contexts: List[str]
+    answer: str
+
+class EvalThresholds:
+    MIN_FAITHFULNESS: float = 0.88
+    MIN_CONTEXT_PRECISION: float = 0.82
+    MIN_CONTEXT_RECALL: float = 0.85
+    MIN_ANSWER_RELEVANCY: float = 0.85
+    MAX_HALLUCINATION_RATE: float = 0.05
+
+# ---------------------------------------------------------
+# 2. DETERMINISTIC HEURISTIC SCORER
+# ---------------------------------------------------------
+
+class DeterministicAuditor:
+    &quot;&quot;&quot;Evaluates syntactic constraints without invoking external models.&quot;&quot;&quot;
+
+    @staticmethod
+    def verify_citations(answer: str, retrieved_contexts: List[str]) -&gt; float:
+        &quot;&quot;&quot;
+        Validates that every citation bracket [Doc X] points to an existing index.
+        Returns score from 0.0 to 1.0.
+        &quot;&quot;&quot;
+        import re
+        citations = re.findall(r'\[Doc\s+(\d+)\]', answer)
+        if not citations:
+            return 0.0
+
+        valid_contexts_count = len(retrieved_contexts)
+        valid = 0
+        for citation in citations:
+            idx = int(citation) - 1
+            if 0 &lt;= idx &lt; valid_contexts_count:
+                valid += 1
+
+        return valid / len(citations) if citations else 0.0
+
+    @staticmethod
+    def verify_negative_rejection(question: str, answer: str, unanswerable: bool) -&gt; bool:
+        &quot;&quot;&quot;
+        Verifies that the engine explicitly states inability to answer
+        when contexts lack supporting facts.
+        &quot;&quot;&quot;
+        rejection_phrases = [
+            &quot;i am unable to find&quot;,
+            &quot;the provided context does not contain&quot;,
+            &quot;there is insufficient information&quot;,
+            &quot;not mentioned in the provided documents&quot;
+        ]
+        if unanswerable:
+            return any(phrase in answer.lower() for phrase in rejection_phrases)
+        return True
+
+# ---------------------------------------------------------
+# 3. LLM-AS-A-JUDGE: DUAL-PHASE EVALUATION HARNESS
+# ---------------------------------------------------------
+
+class ProductionEvalHarness:
+    def __init__(self, model_name: str = &quot;gpt-4o&quot;, temperature: float = 0.0):
+        self.eval_llm = ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            api_key=os.environ.get(&quot;OPENAI_API_KEY&quot;)
+        )
+        self.embeddings = OpenAIEmbeddings(
+            model=&quot;text-embedding-3-small&quot;,
+            api_key=os.environ.get(&quot;OPENAI_API_KEY&quot;)
+        )
+        self.metrics = [
+            faithfulness,
+            answer_relevancy,
+            context_precision,
+            context_recall,
+            harmfulness
+        ]
+
+    def build_dataset(self, samples: List[EvalSample]) -&gt; Dataset:
+        payload = {
+            &quot;question&quot;: [s.question for s in samples],
+            &quot;contexts&quot;: [s.contexts for s in samples],
+            &quot;answer&quot;: [s.answer for s in samples],
+            &quot;ground_truth&quot;: [s.ground_truth for s in samples]
+        }
+        return Dataset.from_dict(payload)
+
+    def execute_ragas(self, dataset: Dataset) -&gt; Dict[str, float]:
+        results = evaluate(
+            dataset=dataset,
+            metrics=self.metrics,
+            llm=self.eval_llm,
+            embeddings=self.embeddings,
+            raise_exceptions=True
+        )
+        return results
+
+    def run_full_suite(self, raw_samples: List[Dict[str, Any]]) -&gt; Dict[str, Any]:
+        samples = [EvalSample(**s) for s in raw_samples]
+        dataset = self.build_dataset(samples)
+
+        # Step 1: Run deterministic sweeps
+        citation_scores = []
+        for sample in samples:
+            c_score = DeterministicAuditor.verify_citations(sample.answer, sample.contexts)
+            citation_scores.append(c_score)
+
+        avg_citation_precision = sum(citation_scores) / len(citation_scores) if citation_scores else 0.0
+
+        # Step 2: Run RAGAS pipeline
+        ragas_scores = self.execute_ragas(dataset)
+
+        # Step 3: Aggregate
+        final_report = {
+            &quot;faithfulness&quot;: ragas_scores[&quot;faithfulness&quot;],
+            &quot;context_precision&quot;: ragas_scores[&quot;context_precision&quot;],
+            &quot;context_recall&quot;: ragas_scores[&quot;context_recall&quot;],
+            &quot;answer_relevancy&quot;: ragas_scores[&quot;answer_relevancy&quot;],
+            &quot;citation_precision&quot;: avg_citation_precision,
+            &quot;harmfulness&quot;: ragas_scores[&quot;harmfulness&quot;]
+        }
+
+        return final_report
+
+# ---------------------------------------------------------
+# 4. CI/CD INTEGRATION &amp; GATING
+# ---------------------------------------------------------
+
+def run_ci_gate():
+    # Production golden test set fixtures
+    golden_dataset = [
+        {
+            &quot;question&quot;: &quot;What is the memory retention SLA for cache node write failures?&quot;,
+            &quot;ground_truth&quot;: &quot;Cache node write failures fall back to local disk spooling with a 4-hour retention SLA before dropped records occur.&quot;,
+            &quot;contexts&quot;: [
+                &quot;Secondary Redis replicates maintain a heartbeat interval of 250ms. If a master node rejects a write, the proxy diverts records to a local WAL (write-ahead log).&quot;,
+                &quot;Disk spooling guarantees a 4-hour retention SLA under system degraded states. After 4 hours without upstream cluster recovery, oldest spool blocks are systematically unlinked.&quot;
+            ],
+            &quot;answer&quot;: &quot;Under cache node write failures, the proxy redirects data to a local write-ahead log that guarantees a 4-hour memory retention SLA prior to dropped records [Doc 2].&quot;
+        },
+        {
+            &quot;question&quot;: &quot;What is the maximum allowed query timeout for vector hybrid search?&quot;,
+            &quot;ground_truth&quot;: &quot;The maximum allowed query timeout across dense and sparse fusion is 650 milliseconds.&quot;,
+            &quot;contexts&quot;: [
+                &quot;Sparse query scoring runs synchronously alongside dense ANN search via HNSW indices.&quot;,
+                &quot;Global search dispatch enforces a strict 650 millisecond termination deadline across all hybrid fusion branches.&quot;
+            ],
+            &quot;answer&quot;: &quot;The maximum query timeout permitted for vector hybrid search is 650ms [Doc 2].&quot;
+        }
+    ]
+
+    auditor = ProductionEvalHarness()
+    results = auditor.run_full_suite(golden_dataset)
+    print(&quot;\n--- TEST SUITE EVALUATION RESULTS ---&quot;)
+    print(json.dumps(results, indent=2))
+
+    failures = []
+    if results[&quot;faithfulness&quot;] &lt; EvalThresholds.MIN_FAITHFULNESS:
+        failures.append(f&quot;Faithfulness {results['faithfulness']:.3f} below target {EvalThresholds.MIN_FAITHFULNESS}&quot;)
+    if results[&quot;context_precision&quot;] &lt; EvalThresholds.MIN_CONTEXT_PRECISION:
+        failures.append(f&quot;Context Precision {results['context_precision']:.3f} below target {EvalThresholds.MIN_CONTEXT_PRECISION}&quot;)
+    if results[&quot;context_recall&quot;] &lt; EvalThresholds.MIN_CONTEXT_RECALL:
+        failures.append(f&quot;Context Recall {results['context_recall']:.3f} below target {EvalThresholds.MIN_CONTEXT_RECALL}&quot;)
+    if results[&quot;answer_relevancy&quot;] &lt; EvalThresholds.MIN_ANSWER_RELEVANCY:
+        failures.append(f&quot;Relevancy {results['answer_relevancy']:.3f} below target {EvalThresholds.MIN_ANSWER_RELEVANCY}&quot;)
+
+    if failures:
+        print(&quot;\n❌ CI/CD GATE REJECTED - Production Quality Thresholds Not Met:&quot;)
+        for fail in failures:
+            print(f&quot;  - {fail}&quot;)
+        sys.exit(1)
+
+    print(&quot;\n✅ CI/CD GATE PASSED - Model and Retrieval parameters within tolerance.&quot;)
+    sys.exit(0)
+
+if __name__ == &quot;__main__&quot;:
+    run_ci_gate()
+</code></pre>
+<h3>1.2 Custom Hallucination Scoring Prompt Template</h3>
+<p>Use this raw, deterministic evaluation prompt within custom LLM judges to eliminate non-grounded outputs. It outputs structured JSON conforming to zero-tolerance hallucination boundaries.</p>
+<pre><code>You are an expert algorithmic verification system evaluating context fidelity in an enterprise Retrieval-Augmented Generation pipeline.
+
+EVALUATION SPECIFICATION:
+1. Grounding Audit: Compare every factual claim in the &quot;Generated Answer&quot; against the &quot;Provided Context&quot; blocks.
+2. Contradiction Detection: Flag any claim that directly disputes or subtly mutates facts in the context.
+3. Extrapolation Flagging: Mark any assertion not explicitly asserted in the context as an EXTRAPOLATION, even if factually true in the real world.
+4. Citation Audit: Ensure each assertion contains a valid, matching [Doc X] citation that contains the ground truth supporting that precise statement.
+
+INPUT DATA:
+---------------------
+[Provided Context]:
+{context_str}
+---------------------
+[User Question]:
+{query_str}
+---------------------
+[Generated Answer]:
+{response_str}
+---------------------
+
+OUTPUT INSTRUCTIONS:
+You must respond ONLY with a strict JSON object matching this schema. Do not include markdown code block wrappings (no ```json or ```).
+
+{
+  &quot;claims&quot;: [
+    {
+      &quot;claim_id&quot;: integer,
+      &quot;text&quot;: &quot;Exact substring claim from answer&quot;,
+      &quot;status&quot;: &quot;GROUNDED&quot; | &quot;CONTRADICTION&quot; | &quot;UNSUPPORTED_EXTRAPOLATION&quot;,
+      &quot;citation_valid&quot;: true | false,
+      &quot;context_reference_id&quot;: &quot;Doc X or null&quot;,
+      &quot;reasoning&quot;: &quot;Succinct evidence statement&quot;
+    }
+  ],
+  &quot;aggregate_metrics&quot;: {
+    &quot;total_claims&quot;: integer,
+    &quot;grounded_claims&quot;: integer,
+    &quot;unsupported_claims&quot;: integer,
+    &quot;contradictory_claims&quot;: integer,
+    &quot;faithfulness_score&quot;: float (grounded_claims / total_claims),
+    &quot;pass_validation&quot;: boolean (true if faithfulness_score == 1.0, otherwise false)
+  }
+}
+</code></pre>
+<hr />
+<h2>2. Production Latency Reduction: The P99 Kill-Chain</h2>
+<p>Target operational latency for an enterprise RAG pipeline is <strong>&lt; 1,200 ms total round-trip time (RTT)</strong> at P99 under a concurrency load of 250 requests per second.</p>
+<h3>2.1 Latency Budget Architecture</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Pipeline Stage</th>
+<th style="text-align: left;">P50 SLA (ms)</th>
+<th style="text-align: left;">P95 SLA (ms)</th>
+<th style="text-align: left;">P99 SLA (ms)</th>
+<th style="text-align: left;">Root-Cause Latency Bottleneck</th>
+<th style="text-align: left;">Architectural Mitigation Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Input Guardrails &amp; Intent</strong></td>
+<td style="text-align: left;">15</td>
+<td style="text-align: left;">30</td>
+<td style="text-align: left;">50</td>
+<td style="text-align: left;">Heavy regex trees, sync LLM calls</td>
+<td style="text-align: left;">Small embedding-classifier + Aho-Corasick automaton</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Query Rewriting / HyDE</strong></td>
+<td style="text-align: left;">0</td>
+<td style="text-align: left;">0</td>
+<td style="text-align: left;">0</td>
+<td style="text-align: left;">Chained sync generation steps</td>
+<td style="text-align: left;"><strong>Drop HyDE in critical path</strong>; run speculative async expansion</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Embedding Generation</strong></td>
+<td style="text-align: left;">20</td>
+<td style="text-align: left;">45</td>
+<td style="text-align: left;">70</td>
+<td style="text-align: left;">Remote API network jitter</td>
+<td style="text-align: left;">Localized Triton/ONNX runtime container (<code>bge-large-en-v1.5</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Hybrid Search (Dense+BM25)</strong></td>
+<td style="text-align: left;">35</td>
+<td style="text-align: left;">85</td>
+<td style="text-align: left;">130</td>
+<td style="text-align: left;">Deep unindexed scans, unoptimized HNSW</td>
+<td style="text-align: left;">HNSW <code>ef_search=64</code>, dynamic partition prune, sparse Lucene index</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Cross-Encoder Reranking</strong></td>
+<td style="text-align: left;">60</td>
+<td style="text-align: left;">140</td>
+<td style="text-align: left;">250</td>
+<td style="text-align: left;">Full-depth cross-encoders on Top-100</td>
+<td style="text-align: left;">Flash-Rankers (ONNX), batched inference, prune candidate pool to Top-25</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>LLM Time-to-First-Token</strong></td>
+<td style="text-align: left;">180</td>
+<td style="text-align: left;">350</td>
+<td style="text-align: left;">500</td>
+<td style="text-align: left;">Dense prompt payload, cold worker nodes</td>
+<td style="text-align: left;">Chunk pre-caching (vLLM PagedAttention), context prefix pinning</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>LLM Token Generation</strong></td>
+<td style="text-align: left;">300</td>
+<td style="text-align: left;">500</td>
+<td style="text-align: left;">700</td>
+<td style="text-align: left;">Unbounded output length limits</td>
+<td style="text-align: left;">Strict <code>max_tokens: 350</code>, token streaming directly to UI client</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>TOTAL PIPELINE</strong></td>
+<td style="text-align: left;"><strong>610 ms</strong></td>
+<td style="text-align: left;"><strong>1,150 ms</strong></td>
+<td style="text-align: left;"><strong>1,700 ms</strong></td>
+<td style="text-align: left;">Accumulated sequential latency</td>
+<td style="text-align: left;"><strong>Implement Async Concurrent Execution Fan-Out</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>2.2 Speculative Asynchronous Retrieval Pipeline</h3>
+<p>Eliminate serialization delays by executing dense vector retrieval, lexical keyword search, and cached context lookups concurrently using native <code>asyncio</code>.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Low-Latency Asynchronous Search Dispatcher.
+Executes Dense, Sparse, and Entity lookups concurrently within a strict deadline envelope.
+&quot;&quot;&quot;
+
+import asyncio
+from typing import List, Dict, Any
+
+class LatencyOptimizedDispatcher:
+    def __init__(self, dense_retriever, sparse_retriever, timeout_ms: float = 250.0):
+        self.dense_retriever = dense_retriever
+        self.sparse_retriever = sparse_retriever
+        self.timeout_budget = timeout_ms / 1000.0
+
+    async def _fetch_dense(self, query: str, top_k: int) -&gt; List[Dict[str, Any]]:
+        # Encapsulate client library calls in an async thread pool if non-native
+        return await asyncio.to_thread(self.dense_retriever.search, query, top_k)
+
+    async def _fetch_sparse(self, query: str, top_k: int) -&gt; List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.sparse_retriever.search, query, top_k)
+
+    async def execute_parallel_retrieval(self, query: str, top_k: int = 25) -&gt; Dict[str, Any]:
+        &quot;&quot;&quot;
+        Runs dense and sparse retrieval concurrently. 
+        Guarantees response within strict timeout SLA via cancellation tokens.
+        &quot;&quot;&quot;
+        dense_task = asyncio.create_task(self._fetch_dense(query, top_k))
+        sparse_task = asyncio.create_task(self._fetch_sparse(query, top_k))
+
+        done, pending = await asyncio.wait(
+            [dense_task, sparse_task],
+            timeout=self.timeout_budget,
+            return_when=asyncio.ALL_COMPLETED
+        )
+
+        # Cancel tasks breaching budget
+        for task in pending:
+            task.cancel()
+
+        results = {
+            &quot;dense_results&quot;: dense_task.result() if dense_task in done and not dense_task.cancelled() else [],
+            &quot;sparse_results&quot;: sparse_task.result() if sparse_task in done and not sparse_task.cancelled() else [],
+            &quot;degraded_state&quot;: len(pending) &gt; 0
+        }
+
+        return results
+
+    @staticmethod
+    def reciprocal_rank_fusion(
+        dense_docs: List[Dict[str, Any]], 
+        sparse_docs: List[Dict[str, Any]], 
+        k: int = 60, 
+        max_output: int = 15
+    ) -&gt; List[Dict[str, Any]]:
+        &quot;&quot;&quot;
+        Fuses parallel results in O(N) execution time.
+        &quot;&quot;&quot;
+        scores: Dict[str, float] = {}
+        doc_store: Dict[str, Dict[str, Any]] = {}
+
+        for rank, doc in enumerate(dense_docs):
+            doc_id = doc[&quot;id&quot;]
+            scores[doc_id] = scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
+            doc_store[doc_id] = doc
+
+        for rank, doc in enumerate(sparse_docs):
+            doc_id = doc[&quot;id&quot;]
+            scores[doc_id] = scores.get(doc_id, 0.0) + (1.0 / (k + rank + 1))
+            doc_store[doc_id] = doc
+
+        # Sort descending by cumulative RRF score
+        sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:max_output]
+        return [doc_store[doc_id] for doc_id in sorted_ids]
+</code></pre>
+<h3>2.3 Reranker Batch Optimization and Pruning</h3>
+<p>Using a deep Cross-Encoder on 100 documents introduces up to 800ms of latency. Optimize reranking using quantization, smaller cross-encoders, and dynamic pool truncation:</p>
+<ol>
+<li><strong>Top-K Truncation:</strong> Limit reranker inputs to a maximum of 25-30 candidate documents from the hybrid retrieval stage.</li>
+<li><strong>Dynamic Pruning:</strong> If the score delta between candidate 1 and candidate 10 in the initial retrieval stage exceeds 40%, skip reranking entirely and route directly to the LLM.</li>
+<li><strong>Model Quantization:</strong> Deploy Cross-Encoders using ONNX Runtime with INT8 quantization (<code>bge-reranker-base</code> INT8 reduces inference latency by 3.4x over standard PyTorch FP32 on CPU instances).</li>
+</ol>
+<hr />
+<h2>3. Cache Invalidation &amp; Hybrid Semantic Caching Architecture</h2>
+<p>Semantic caching reduces inference cost and bypasses the retrieval pipeline for common or semantically identical queries. However, dynamic document updates require aggressive cache invalidation systems to prevent serving stale contexts.</p>
+<pre><code>                      ┌──────────────────────┐
+                      │    Incoming Query    │
+                      └──────────┬───────────┘
+                                 │
+                     Compute Query Embedding
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │ Redis Semantic Cache  │
+                     │  (HNSW Vector Index)  │
+                     └──────────┬────────────┘
+                                │
+               Cosine Distance &lt;= 0.08? (Match found)
+                                │
+                 ┌──────────────┴──────────────┐
+                 │                             │
+               YES                             NO
+                 │                             │
+    Validate Namespace Checksum                ▼
+                 │                   Execute Full Pipeline
+         ┌───────┴───────┐           (Hybrid Search -&gt; Rerank -&gt; LLM)
+         │               │                     │
+       VALID          INVALID                  ▼
+         │               │              Write to Redis
+         ▼               ▼              - Embeddings
+    Return Cached   Purge Cache Key     - Context IDs
+      Response      &amp; Fallback to Full  - Namespace Checksum
+                    Pipeline            - TTL = 28800s
+</code></pre>
+<h3>3.1 Redis Semantic Cache with Invalidation Hooks</h3>
+<pre><code class="language-python">&quot;&quot;&quot;
+Redis-Powered Semantic Cache with Namespace Invalidation Engine.
+Dependencies: redis&gt;=5.0.0, numpy
+&quot;&quot;&quot;
+
+import json
+import hashlib
+from typing import Optional, Dict, Any, List
+import numpy as np
+import redis
+from redis.commands.search.query import Query
+from redis.commands.search.field import VectorField, TextField, NumericField
+from redis.commands.search.index_definition import IndexDefinition, IndexType
+
+class ProductionSemanticCache:
+    def __init__(
+        self,
+        redis_host: str = &quot;localhost&quot;,
+        redis_port: int = 6379,
+        redis_password: Optional[str] = None,
+        embedding_dim: int = 1536,
+        similarity_threshold: float = 0.94  # Cosine similarity cutoff
+    ):
+        self.r = redis.Redis(
+            host=redis_host, 
+            port=redis_port, 
+            password=redis_password, 
+            decode_responses=False
+        )
+        self.dim = embedding_dim
+        # Distance metric: Cosine distance = 1 - Cosine Similarity
+        # Distance threshold &lt;= (1.0 - 0.94) = 0.06
+        self.distance_threshold = round(1.0 - similarity_threshold, 4)
+        self.index_name = &quot;idx:semantic_cache&quot;
+        self._init_index()
+
+    def _init_index(self):
+        &quot;&quot;&quot;Initializes the vector search index on the cache layer.&quot;&quot;&quot;
+        try:
+            self.r.ft(self.index_name).info()
+        except redis.ResponseError:
+            schema = (
+                TextField(&quot;query&quot;),
+                TextField(&quot;response&quot;),
+                TextField(&quot;namespace_hash&quot;),
+                NumericField(&quot;created_at&quot;),
+                VectorField(
+                    &quot;embedding&quot;,
+                    &quot;HNSW&quot;,
+                    {
+                        &quot;TYPE&quot;: &quot;FLOAT32&quot;,
+                        &quot;DIM&quot;: self.dim,
+                        &quot;DISTANCE_METRIC&quot;: &quot;COSINE&quot;,
+                        &quot;M&quot;: 16,
+                        &quot;EF_CONSTRUCTION&quot;: 64
+                    }
+                )
+            )
+            definition = IndexDefinition(prefix=[&quot;cache:&quot;], index_type=IndexType.HASH)
+            self.r.ft(self.index_name).create_index(schema, definition=definition)
+
+    @staticmethod
+    def compute_namespace_hash(document_ids: List[str]) -&gt; str:
+        &quot;&quot;&quot;
+        Creates a deterministic hash representing the version of documents 
+        present in the backing knowledge base.
+        &quot;&quot;&quot;
+        sorted_ids = sorted(document_ids)
+        raw = &quot;|&quot;.join(sorted_ids).encode(&quot;utf-8&quot;)
+        return hashlib.sha256(raw).hexdigest()
+
+    def get(self, query_vector: List[float], current_namespace_hash: str) -&gt; Optional[str]:
+        &quot;&quot;&quot;
+        Queries cache using HNSW index. Enforces active namespace validation.
+        &quot;&quot;&quot;
+        query_bytes = np.array(query_vector, dtype=np.float32).tobytes()
+
+        # Search for 1 nearest neighbor
+        search_query = (
+            Query(f&quot;*=&gt;[KNN 1 @embedding $vec AS distance]&quot;)
+            .sort_by(&quot;distance&quot;)
+            .return_fields(&quot;query&quot;, &quot;response&quot;, &quot;namespace_hash&quot;, &quot;distance&quot;)
+            .dialect(2)
+        )
+
+        params = {&quot;vec&quot;: query_bytes}
+        results = self.r.ft(self.index_name).search(search_query, query_params=params)
+
+        if not results.docs:
+            return None
+
+        top_match = results.docs[0]
+        match_distance = float(top_match.distance)
+
+        if match_distance &gt; self.distance_threshold:
+            return None  # Semantic hit missed strict threshold
+
+        # Verify state validity
+        cached_hash = top_match.namespace_hash
+        if cached_hash != current_namespace_hash:
+            # Stale cache detected: purge key asynchronously
+            self.r.delete(top_match.id)
+            return None
+
+        return top_match.response.decode(&quot;utf-8&quot;) if isinstance(top_match.response, bytes) else top_match.response
+
+    def set(
+        self, 
+        query: str, 
+        query_vector: List[float], 
+        response: str, 
+        namespace_hash: str, 
+        ttl_seconds: int = 86400
+    ):
+        &quot;&quot;&quot;
+        Persists a completed response alongside its vector footprint and namespace state.
+        &quot;&quot;&quot;
+        key_id = hashlib.sha256(query.strip().lower().encode(&quot;utf-8&quot;)).hexdigest()
+        cache_key = f&quot;cache:{key_id}&quot;
+        query_bytes = np.array(query_vector, dtype=np.float32).tobytes()
+
+        mapping = {
+            &quot;query&quot;: query,
+            &quot;response&quot;: response,
+            &quot;namespace_hash&quot;: namespace_hash,
+            &quot;embedding&quot;: query_bytes,
+        }
+
+        pipeline = self.r.pipeline()
+        pipeline.hset(cache_key, mapping=mapping)
+        pipeline.expire(cache_key, ttl_seconds)
+        pipeline.execute()
+
+    def invalidate_namespace(self, stale_namespace_hash: str):
+        &quot;&quot;&quot;
+        Hard-purges all entries registered under a modified document namespace.
+        &quot;&quot;&quot;
+        query = Query(f&quot;@namespace_hash:{stale_namespace_hash}&quot;).no_content()
+        results = self.r.ft(self.index_name).search(query)
+
+        if results.docs:
+            pipeline = self.r.pipeline()
+            for doc in results.docs:
+                pipeline.delete(doc.id)
+            pipeline.execute()
+</code></pre>
+<hr />
+<h2>4. Production Incident Response Audit Checklist (P1/P2 Playbooks)</h2>
+<p>When production degradation strikes an enterprise RAG cluster, engineers must triage issues methodically across three isolated failure domains: <strong>Data/Retrieval Layer</strong>, <strong>Orchestration/Network Layer</strong>, and <strong>LLM/Generation Layer</strong>.</p>
+<h3>4.1 Production Emergency Triage Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Incident Profile</th>
+<th style="text-align: left;">Root Causes</th>
+<th style="text-align: left;">Immediate Diagnostic Command / Telemetry Check</th>
+<th style="text-align: left;">Emergency Remediation Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>P1: Catastrophic Context Hallucination Surge</strong> (Faithfulness &lt; 0.60)</td>
+<td style="text-align: left;">1. Vector index drift / dynamic indexing corruption.<br>2. Prompt injection bypass.<br>3. Reranker silently returning non-relevant nodes.</td>
+<td style="text-align: left;">Run manual CLI retrieval audit:<br><code>curl -X POST $SEARCH_SVC/debug/retrieval -d '{"q": "test"}'</code><br>Check vector index segment status.</td>
+<td style="text-align: left;">1. Lock generation model system prompt to <strong>Extractive Grounding Mode</strong>.<br>2. Rollback knowledge index to previous validated snapshot point.<br>3. Bypass reranker: forward Dense Top-5 directly to generation.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P1: P99 Pipeline Timeouts (&gt; 5,000ms)</strong></td>
+<td style="text-align: left;">1. Reranker cross-encoder GPU resource contention (OOM thrashing).<br>2. Redis semantic cache socket starvation.</td>
+<td style="text-align: left;">Check GPU duty cycle &amp; VRAM allocation:<br><code>nvidia-smi --query-compute-apps=pid,used_memory --format=csv</code><br>Check Redis clients: <code>redis-cli info clients</code></td>
+<td style="text-align: left;">1. Drop Cross-Encoder candidate depth from Top-50 down to Top-10.<br>2. Evict semantic cache node read pools.<br>3. Enforce context token limit degradation: truncate retrieval to 2,000 tokens.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P2: Retrieval Silent Dropout</strong> (Context Recall &lt; 0.50)</td>
+<td style="text-align: left;">1. Chunk boundary fragmentation (text split through critical JSON/markdown tables).<br>2. Embedding API version mismatch.</td>
+<td style="text-align: left;">Diff current document ingest chunk config against golden parser baseline:<br><code>git diff deploy/config/parsers.yaml</code></td>
+<td style="text-align: left;">1. Spin up dedicated index replica using hierarchical parent-document chunking (<code>ParentDocumentRetriever</code>).<br>2. Route queries to fallback lexical BM25 index exclusively.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P2: Reranker Memory Exhaustion (OOM Alerts)</strong></td>
+<td style="text-align: left;">Cross-encoder attempting dynamic batch expansion on large context chunks.</td>
+<td style="text-align: left;">Inspect container memory exhaustion events:<br><code>dmesg -T \| grep -i oom-killer</code></td>
+<td style="text-align: left;">1. Set hard chunk truncation (<code>max_length=512</code>) on Cross-Encoder inputs.<br>2. Enforce batch size bound (<code>max_batch_size=16</code>) in inference engine.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>4.2 Comprehensive Incident Response Runbook (Step-by-Step)</h3>
+<p>Follow this end-to-end runbook when responding to alerts regarding context drift, service degradation, or elevated hallucination rates.</p>
+<h1>```</h1>
+<pre><code>                PRODUCTION INCIDENT RUNBOOK: RAG-CRIT-01
+           CONTEXT RECOVERY &amp; MITIGATION OF SILENT FAILS
+</code></pre>
+<p>================================================================================</p>
+<h2>[PHASE 1: TRIAGE &amp; ISOLATION] (Target: &lt; 5 Minutes)</h2>
+<p>[] 1. Identify failure domain:
+     a. Ingest pipeline (writes failing, documents not indexed).
+     b. Search/Retrieval pipeline (queries timing out or returning zero contexts).
+     c. Inference pipeline (LLM hallucinating, failing schema validation, or timing out).</p>
+<p>[] 2. Inspect active circuit breakers:
+     $ curl -H "Authorization: Bearer $ADMIN_TOKEN" https://api.rag.internal/v1/system/circuit-breakers</p>
+<p>[] 3. Review Prometheus/Grafana alerts for anomalous metric thresholds:
+     - rag_retrieval_empty_contexts_total &gt; 1%
+     - rag_context_faithfulness_ratio &lt; 0.80
+     - rag_reranker_latency_seconds_bucket{le="0.5"} dropping sharply</p>
+<h2>[PHASE 2: IMMEDIATE TRAFFIC CONTAINMENT] (Target: &lt; 10 Minutes)</h2>
+<p>[] 1. If latency is spiking:
+     Enable degraded retrieval bypass (skips reranking, uses Top-5 vector search only):
+     $ redis-cli SET "CONFIG:DYNAMIC:BYPASS_RERANKER" "true"</p>
+<p>[] 2. If faithfulness has dropped precipitously:
+     Enforce hyper-strict defensive prompting policy globally:
+     $ redis-cli SET "CONFIG:DYNAMIC:SYSTEM_PROMPT_OVERRIDE" "STRICT_EXTRACTION"</p>
+<pre><code> This forces the generation engine into exact string matching mode:
+ "Answer the question ONLY using the direct facts quoted below. If no direct
+  quote answers the question, output EXACTLY: 'INSUFFICIENT_INFORMATION'."
+</code></pre>
+<p>[] 3. If vector database index shows node corruption or unresponsiveness:
+     Route all search traffic to primary OpenSearch/Elasticsearch BM25 fallback:
+     $ redis-cli SET "CONFIG:DYNAMIC:RETRIEVAL_STRATEGY" "SPARSE_ONLY"</p>
+<h2>[PHASE 3: ROOT CAUSE LOCALIZATION] (Target: &lt; 30 Minutes)</h2>
+<p>[] 1. EMBEDDING DRIFT AUDIT:
+     Validate that the client embedding</p>
+</body>
+</html>

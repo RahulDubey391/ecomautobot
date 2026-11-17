@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Production RAG & Vector Architecture Vault: 50+ Retrieval Pipelines, Chunking Strategies & Eval Systems</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Advanced Corrective RAG (CRAG) &amp; GraphRAG Workflows</h1>
+<p>Building reliable enterprise RAG requires transitioning from naive single-step retrieval to agentic loops capable of active self-reflection, automated query mutation, dynamic fallback, and multi-modal knowledge representation. This module delivers field-tested production blueprints for Corrective RAG (CRAG), high-throughput multi-query expansion, structured tabular extraction pipelines, and hybrid GraphRAG implementations.</p>
+<hr />
+<h2>1. Production Architecture: Corrective RAG (CRAG) Agent</h2>
+<p>Naive RAG pipelines fail catastrophically when initial vector search yields irrelevant or noisy context. The model generates confident hallucinations instead of admitting retrieval failure. Corrective RAG (CRAG) wraps retrieval in an evaluation-and-remediation state machine:</p>
+<pre><code>                  ┌──────────────────────┐
+                  │    User Question     │
+                  └──────────┬───────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │   Vector Retrieval   │
+                  └──────────┬───────────┘
+                             │
+                             ▼
+                  ┌──────────────────────┐
+                  │ Document Evaluator   │
+                  │   (Grading Node)     │
+                  └──────────┬───────────┘
+                             │
+          ┌──────────────────┴──────────────────┐
+          │ Confidence Score                    │
+          ▼                                     ▼
+   [Score &gt;= 0.7]                         [Score &lt; 0.7]
+   ┌─────────────┐                        ┌─────────────┐
+   │ Context     │                        │ Query       │
+   │ Refinement  │                        │ Transformer │
+   └──────┬──────┘                        └──────┬──────┘
+          │                                      │
+          │                                      ▼
+          │                               ┌─────────────┐
+          │                               │ Web / BM25  │
+          │                               │ Fallback    │
+          │                               └──────┬──────┘
+          │                                      │
+          └──────────────────┬───────────────────┘
+                             ▼
+                  ┌──────────────────────┐
+                  │   Final Generator    │
+                  └──────────────────────┘
+</code></pre>
+<h3>1.1 CRAG Graph Implementation (LangGraph)</h3>
+<p>The following state machine executes:
+1. Retrieval of top-$k$ context chunks.
+2. Parallel relevance evaluation with a structured JSON score.
+3. Conditional branching: If any document is relevant, strip irrelevant sentences; if all fail, rewrite the query and query an external fallback provider.</p>
+<pre><code class="language-python">import os
+from typing import List, Literal, TypedDict
+from pydantic import BaseModel, Field
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.documents import Document
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
+
+
+# --- Schemas ---
+
+class GradeHallucinations(BaseModel):
+    &quot;&quot;&quot;Binary score for document relevance check.&quot;&quot;&quot;
+    binary_score: Literal[&quot;yes&quot;, &quot;no&quot;] = Field(
+        description=&quot;Documents are relevant to the question, 'yes' or 'no'&quot;
+    )
+    confidence_score: float = Field(
+        description=&quot;Confidence between 0.0 and 1.0 indicating relevance certainty.&quot;
+    )
+    explanation: str = Field(description=&quot;One-sentence technical reasoning for the grade.&quot;)
+
+
+class AgentState(TypedDict):
+    question: str
+    generation: str
+    documents: List[Document]
+    retry_count: int
+    fallback_needed: bool
+
+
+# --- Nodes ---
+
+llm = ChatOpenAI(model=&quot;gpt-4o-mini&quot;, temperature=0)
+evaluator_llm = llm.with_structured_output(GradeHallucinations)
+
+GRADE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            &quot;system&quot;,
+            &quot;You are an expert enterprise retrieval grader. Evaluate whether the retrieved &quot;
+            &quot;document contains facts directly useful for answering the user question.\n&quot;
+            &quot;Strict grading rubric:\n&quot;
+            &quot;- 'yes': Contains overlapping semantic facts, definitions, or direct figures.\n&quot;
+            &quot;- 'no': Entirely tangentially related, off-topic, or completely generic.&quot;,
+        ),
+        (
+            &quot;human&quot;,
+            &quot;Retrieved Document:\n\n{context}\n\nUser Question: {question}&quot;,
+        ),
+    ]
+)
+
+REWRITE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            &quot;system&quot;,
+            &quot;You are an enterprise search optimizer. Transform the input query into a &quot;
+            &quot;keyword-optimized search engine query. Strip conversational filler. &quot;
+            &quot;Output ONLY the optimized query string.&quot;,
+        ),
+        (&quot;human&quot;, &quot;Original Query: {question}&quot;),
+    ]
+)
+
+GENERATION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            &quot;system&quot;,
+            &quot;You are an enterprise knowledge base assistant. Answer the question using ONLY &quot;
+            &quot;the provided context. If the context does not supply the answer, state that &quot;
+            &quot;the data is unavailable. Do not use outside knowledge.\n\nContext:\n{context}&quot;,
+        ),
+        (&quot;human&quot;, &quot;{question}&quot;),
+    ]
+)
+
+
+def retrieve_documents(state: AgentState):
+    &quot;&quot;&quot;Vector database retrieval mock wrapper.&quot;&quot;&quot;
+    query = state[&quot;question&quot;]
+    # Production call: vectorstore.as_retriever(k=4).invoke(query)
+    # Using deterministic mock for production architecture validation:
+    retrieved_docs = [
+        Document(
+            page_content=&quot;Global Corp Q3 2024 operating income reached $4.2B, an 8% YoY increase.&quot;,
+            metadata={&quot;source&quot;: &quot;q3_report.pdf&quot;, &quot;page&quot;: 12},
+        ),
+        Document(
+            page_content=&quot;The brand guidelines recommend using Helvetica Neue for corporate logos.&quot;,
+            metadata={&quot;source&quot;: &quot;brand_guide.pdf&quot;, &quot;page&quot;: 2},
+        ),
+    ]
+    return {&quot;documents&quot;: retrieved_docs, &quot;fallback_needed&quot;: False}
+
+
+def grade_documents(state: AgentState):
+    &quot;&quot;&quot;Evaluates retrieved chunks and filters out noise.&quot;&quot;&quot;
+    question = state[&quot;question&quot;]
+    docs = state[&quot;documents&quot;]
+    valid_docs: List[Document] = []
+    has_relevant = False
+
+    for doc in docs:
+        result: GradeHallucinations = evaluator_llm.invoke(
+            GRADE_PROMPT.format(context=doc.page_content, question=question)
+        )
+        if result.binary_score == &quot;yes&quot; and result.confidence_score &gt;= 0.70:
+            valid_docs.append(doc)
+            has_relevant = True
+
+    return {
+        &quot;documents&quot;: valid_docs,
+        &quot;fallback_needed&quot;: not has_relevant,
+        &quot;retry_count&quot;: state.get(&quot;retry_count&quot;, 0) + 1,
+    }
+
+
+def query_rewrite_fallback(state: AgentState):
+    &quot;&quot;&quot;Executes when local retrieval yields zero relevant documents.&quot;&quot;&quot;
+    question = state[&quot;question&quot;]
+    rewriter = REWRITE_PROMPT | llm
+    new_query = rewriter.invoke({&quot;question&quot;: question}).content.strip()
+
+    # Fallback to secondary retrieval (e.g., BM25 keyword store or Tavily/Google Search)
+    fallback_doc = Document(
+        page_content=f&quot;Fallback search result for expanded query: '{new_query}'. &quot;
+        &quot;Global Corp announced their total liabilities are $12.1B as of Q3 2024.&quot;,
+        metadata={&quot;source&quot;: &quot;external_api&quot;},
+    )
+    return {&quot;documents&quot;: [fallback_doc], &quot;question&quot;: new_query}
+
+
+def generate(state: AgentState):
+    &quot;&quot;&quot;Synthesizes final answer from verified documents.&quot;&quot;&quot;
+    context = &quot;\n\n&quot;.join([d.page_content for d in state[&quot;documents&quot;]])
+    prompt = GENERATION_PROMPT.format(context=context, question=state[&quot;question&quot;])
+    response = llm.invoke(prompt)
+    return {&quot;generation&quot;: response.content}
+
+
+# --- Routing Logic ---
+
+def route_evaluation(state: AgentState) -&gt; str:
+    if state[&quot;fallback_needed&quot;]:
+        if state.get(&quot;retry_count&quot;, 0) &gt;= 2:
+            return &quot;generate&quot;  # Terminate early to prevent infinite execution loops
+        return &quot;query_rewrite_fallback&quot;
+    return &quot;generate&quot;
+
+
+# --- Workflow Graph Definition ---
+
+workflow = StateGraph(AgentState)
+
+workflow.add_node(&quot;retrieve&quot;, retrieve_documents)
+workflow.add_node(&quot;grade_documents&quot;, grade_documents)
+workflow.add_node(&quot;query_rewrite_fallback&quot;, query_rewrite_fallback)
+workflow.add_node(&quot;generate&quot;, generate)
+
+workflow.set_entry_point(&quot;retrieve&quot;)
+workflow.add_edge(&quot;retrieve&quot;, &quot;grade_documents&quot;)
+workflow.add_conditional_edges(
+    &quot;grade_documents&quot;,
+    route_evaluation,
+    {
+        &quot;query_rewrite_fallback&quot;: &quot;query_rewrite_fallback&quot;,
+        &quot;generate&quot;: &quot;generate&quot;,
+    },
+)
+workflow.add_edge(&quot;query_rewrite_fallback&quot;, &quot;grade_documents&quot;)
+workflow.add_edge(&quot;generate&quot;, END)
+
+crag_pipeline = workflow.compile()
+</code></pre>
+<hr />
+<h2>2. Multi-Query Expansion &amp; Hypothetical Document Embeddings (HyDE)</h2>
+<p>Complex queries often mismatch the semantic representation of raw reference texts. Two strategies neutralize this vector distance:</p>
+<ol>
+<li><strong>Multi-Query Decomposition:</strong> Splitting complex multi-hop queries into 3–5 search variants, retrieving contexts for each, and unifying them via <strong>Reciprocal Rank Fusion (RRF)</strong>.</li>
+<li><strong>Hypothetical Document Embeddings (HyDE):</strong> Generating a plausible, hallucinated answer chunk and embedding <em>that</em> answer instead of the query, matching target document geometry directly.</li>
+</ol>
+<h3>2.1 Multi-Query Fan-Out with Reciprocal Rank Fusion (RRF)</h3>
+<pre><code>User Query: &quot;What was the EBITDA variance between our APAC and EMEA logistics units?&quot;
+                                  │
+                 ┌────────────────┴────────────────┐
+                 │ Multi-Query Decomposition (LLM)  │
+                 └────────────────┬────────────────┘
+         ┌────────────────────────┼────────────────────────┐
+         ▼                        ▼                        ▼
+ Query 1 (APAC)           Query 2 (EMEA)           Query 3 (EBITDA Variance)
+         │                        │                        │
+         ▼                        ▼                        ▼
+ Vector Search (Rank 1-K) Vector Search (Rank 1-K) Vector Search (Rank 1-K)
+         │                        │                        │
+         └────────────────────────┼────────────────────────┘
+                                  │
+                                  ▼
+                    Reciprocal Rank Fusion (RRF)
+                  RRF Score = Σ [ 1 / (60 + Rank) ]
+                                  │
+                                  ▼
+                         Deduplicated Top-K
+</code></pre>
+<p>The mathematical formula for Reciprocal Rank Fusion is:</p>
+<p>$$RRF(d \in D) = \sum_{m \in M} \frac{1}{k + r_m(d)}$$</p>
+<p>where $k$ is a smoothing constant (standard: $k = 60$), $M$ is the set of retrieval passes, and $r_m(d)$ is the 1-based rank of document $d$ in system $m$.</p>
+<pre><code class="language-python">import asyncio
+from typing import Dict, List, Tuple
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+import numpy as np
+
+
+class MultiQueryRRFEngine:
+    def __init__(self, k_constant: int = 60):
+        self.llm = ChatOpenAI(model=&quot;gpt-4o-mini&quot;, temperature=0.2)
+        self.embeddings = OpenAIEmbeddings(model=&quot;text-embedding-3-small&quot;)
+        self.k_constant = k_constant
+
+    async def generate_query_variants(self, original_query: str, num_variants: int = 4) -&gt; List[str]:
+        prompt = (
+            f&quot;You are an enterprise search specialist. Decompose the following user question &quot;
+            f&quot;into {num_variants} distinct, highly specific sub-queries or semantic alternative queries.\n&quot;
+            f&quot;Focus on extracting standalone entities, domain vocabulary, and isolated comparison metrics.\n&quot;
+            f&quot;Return ONLY the {num_variants} queries separated by newlines, with no bullet points.\n\n&quot;
+            f&quot;Original Question: {original_query}&quot;
+        )
+        response = await self.llm.ainvoke(prompt)
+        variants = [line.strip() for line in response.content.split(&quot;\n&quot;) if line.strip()]
+        return [original_query] + variants[:num_variants]
+
+    async def mock_vector_retrieval(self, query: str, top_k: int = 5) -&gt; List[Tuple[str, str]]:
+        &quot;&quot;&quot;
+        Simulates index lookups. Returns list of (doc_id, text).
+        Replace this method with your actual client call (Pinecone, Qdrant, Milvus).
+        &quot;&quot;&quot;
+        await asyncio.sleep(0.05)  # Simulate I/O latency
+        # Generating deterministic document IDs based on keyword hash simulation
+        results = [
+            (f&quot;doc_{abs(hash(query + str(i))) % 1000}&quot;, f&quot;Context snippet {i} addressing {query}&quot;)
+            for i in range(top_k)
+        ]
+        return results
+
+    def compute_rrf(
+        self, ranked_results: List[List[Tuple[str, str]]]
+    ) -&gt; List[Tuple[str, str, float]]:
+        &quot;&quot;&quot;
+        Applies Reciprocal Rank Fusion across parallel search results.
+        Returns: [(doc_id, doc_text, rrf_score), ...] sorted descending.
+        &quot;&quot;&quot;
+        rrf_scores: Dict[str, float] = {}
+        doc_content_map: Dict[str, str] = {}
+
+        for search_pass in ranked_results:
+            for rank_idx, (doc_id, content) in enumerate(search_pass, start=1):
+                doc_content_map[doc_id] = content
+                incremental_score = 1.0 / (self.k_constant + rank_idx)
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + incremental_score
+
+        sorted_docs = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
+        return [
+            (doc_id, doc_content_map[doc_id], score)
+            for doc_id, score in sorted_docs
+        ]
+
+    async def run(self, query: str, final_top_n: int = 5) -&gt; List[Tuple[str, str, float]]:
+        queries = await self.generate_query_variants(query)
+        tasks = [self.mock_vector_retrieval(q) for q in queries]
+        all_ranks = await asyncio.gather(*tasks)
+        fused_results = self.compute_rrf(all_ranks)
+        return fused_results[:final_top_n]
+</code></pre>
+<h3>2.2 Hypothetical Document Embeddings (HyDE) Pipeline</h3>
+<p>HyDE replaces input vectors with generated context vectors to match the target index topology:</p>
+<pre><code class="language-python">from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.prompts import PromptTemplate
+
+class HyDEPipeline:
+    def __init__(self):
+        self.llm = ChatOpenAI(model=&quot;gpt-4o&quot;, temperature=0.3)
+        self.embeddings = OpenAIEmbeddings(model=&quot;text-embedding-3-small&quot;)
+
+        self.prompt = PromptTemplate(
+            input_variables=[&quot;question&quot;],
+            template=(
+                &quot;You are an enterprise system technical writer. Write an authoritative, &quot;
+                &quot;factual paragraph answering the following question. Do not add introductory phrases &quot;
+                &quot;like 'Here is the answer'. Write as if this text was extracted directly &quot;
+                &quot;from a verified corporate manual or financial disclosure.\n\n&quot;
+                &quot;Question: {question}\n\n&quot;
+                &quot;Passage:&quot;
+            ),
+        )
+        self.chain = self.prompt | self.llm
+
+    def generate_hypothetical_embedding(self, question: str) -&gt; List[float]:
+        # Step 1: Synthesize a plausible hypothetical document
+        hypothetical_doc = self.chain.invoke({&quot;question&quot;: question}).content
+
+        # Step 2: Embed the generated text rather than the user's raw query
+        dense_vector = self.embeddings.embed_query(hypothetical_doc)
+        return dense_vector
+</code></pre>
+<hr />
+<h2>3. Complex Tabular Data Ingestion Engine</h2>
+<p>Chunking structured tabular data (CSV, Excel, financial tables) using raw token-based splitters destroys column-row relationships. Splitting a table mid-row makes quantitative extraction impossible.</p>
+<h3>3.1 Dual-State Multi-Vector Ingestion</h3>
+<p>To index tables reliably:
+1. <strong>Preserve full fidelity:</strong> Render tables as standardized Markdown or HTML.
+2. <strong>Generate Semantic Metadata Summaries:</strong> LLMs summarize the primary insights, totals, schema, and anomalies.
+3. <strong>Multi-Vector Indexing:</strong> Index the <em>summary</em> for vector search. Return the <em>raw table</em> to the LLM context.</p>
+<pre><code>                      Raw Table (CSV / HTML / XLSX)
+                                   │
+                    ┌──────────────┴──────────────┐
+                    ▼                             ▼
+       Deterministic Linearizer       LLM Semantic Summarizer
+       (Row/Col preservation)        (Schema, Key Metrics, Min/Max)
+                    │                             │
+                    │                             ▼
+                    │                  Embedding Pipeline
+                    │                             │
+                    │                             ▼
+                    │                   Vector Store Index
+                    │               (Metadata: parent_doc_id)
+                    │                             │
+                    └──────────────┬──────────────┘
+                                   │
+                                   ▼
+                           Document Store
+             (doc_id: Full Raw Markdown Table context)
+</code></pre>
+<pre><code class="language-python">import io
+import pandas as pd
+from typing import Dict, Any, List
+from langchain_openai import ChatOpenAI
+from langchain_core.documents import Document
+
+
+class ProductionTableIngestionEngine:
+    def __init__(self):
+        self.llm = ChatOpenAI(model=&quot;gpt-4o-mini&quot;, temperature=0)
+
+    def extract_and_linearize_csv(self, file_bytes: bytes) -&gt; str:
+        &quot;&quot;&quot;Parses CSV and generates a uniform, dense Markdown table.&quot;&quot;&quot;
+        df = pd.read_csv(io.BytesIO(file_bytes))
+        df = df.dropna(how=&quot;all&quot;)
+        df.columns = [str(c).strip().replace(&quot;\n&quot;, &quot; &quot;) for c in df.columns]
+        return df.to_markdown(index=False)
+
+    def generate_table_summary(self, markdown_table: str, metadata_context: str) -&gt; str:
+        &quot;&quot;&quot;
+        Creates dense, searchable semantic summaries of tabular data
+        specifically targeting vector similarity alignment.
+        &quot;&quot;&quot;
+        prompt = (
+            &quot;You are a quantitative data analyst. Provide a comprehensive semantic summary &quot;
+            &quot;for the following corporate table so that an internal search engine can retrieve it.\n&quot;
+            &quot;Include:\n&quot;
+            &quot;1. The table's primary topic, metrics, and entities.\n&quot;
+            &quot;2. Notable maximums, minimums, aggregate totals, and date ranges.\n&quot;
+            &quot;3. The explicit list of all column headers and their units.\n\n&quot;
+            f&quot;Context: {metadata_context}\n\n&quot;
+            f&quot;Table Data:\n{markdown_table}\n\n&quot;
+            &quot;Summary Output:&quot;
+        )
+        response = self.llm.invoke(prompt)
+        return response.content
+
+    def process_table_for_index(
+        self, table_csv_bytes: bytes, file_name: str, sheet_name: str = &quot;Sheet1&quot;
+    ) -&gt; Dict[str, Any]:
+        &quot;&quot;&quot;
+        Returns two objects:
+        1. Search Document (Summary to be embedded into the Vector DB)
+        2. Storage Document (Raw Markdown table to place in context upon match)
+        &quot;&quot;&quot;
+        markdown_representation = self.extract_and_linearize_csv(table_csv_bytes)
+        context_hint = f&quot;Source Document: {file_name}, Sheet/Section: {sheet_name}&quot;
+
+        table_summary = self.generate_table_summary(
+            markdown_representation, context_hint
+        )
+
+        doc_id = f&quot;table_{abs(hash(file_name + sheet_name + markdown_representation[:50]))}&quot;
+
+        # Embedding target document
+        search_document = Document(
+            page_content=table_summary,
+            metadata={
+                &quot;doc_id&quot;: doc_id,
+                &quot;type&quot;: &quot;table_summary&quot;,
+                &quot;source&quot;: file_name,
+                &quot;sheet&quot;: sheet_name,
+            },
+        )
+
+        # Parent retrieval document
+        storage_document = {
+            &quot;doc_id&quot;: doc_id,
+            &quot;raw_table&quot;: markdown_representation,
+            &quot;source&quot;: file_name,
+            &quot;sheet&quot;: sheet_name,
+        }
+
+        return {
+            &quot;search_document&quot;: search_document,
+            &quot;storage_document&quot;: storage_document,
+        }
+</code></pre>
+<hr />
+<h2>4. Hybrid Knowledge Graph (GraphRAG) Integration</h2>
+<p>Vector searches isolate matching chunks but cannot trace indirect relationships, multi-hop dependencies, or organizational hierarchies. GraphRAG pairs high-dimensional embeddings with explicit knowledge graph traversals.</p>
+<pre><code>       User Question: &quot;Which suppliers of Battery Cell X have facilities in regions with water risk?&quot;
+                                                  │
+                 ┌────────────────────────────────┴────────────────────────────────┐
+                 │ Hybrid Extraction &amp; Translation Engine                         │
+                 └────────────────┬───────────────────────────────────────────────┘
+                                  │
+         ┌────────────────────────┴────────────────────────┐
+         ▼                                                 ▼
+   Dense Vector Search                             Cypher Query Generation
+  (Similarity lookup)                             (Deterministic Structural Graph)
+         │                                                 │
+         │ (e.g., Doc chunks describing                    MATCH (p:Product {name: 'Battery Cell X'})
+         │  suppliers and water risks)                           -[:SUPPLIED_BY]-&gt;(s:Supplier)
+         │                                                 MATCH (s)-[:OPERATES_IN]-&gt;(r:Region)
+         │                                                 WHERE r.water_risk = 'High'
+         │                                                 RETURN s.name, r.name
+         │                                                 │
+         └────────────────────────┬────────────────────────┘
+                                  │
+                                  ▼
+                     Context Stitching Engine
+         - Graph Structure: Verified factual relationships
+         - Vector Text: Semantic color, nuance, prose quotes
+                                  │
+                                  ▼
+                         Generator (LLM)
+</code></pre>
+<h3>4.1 Automated Cypher Extraction Prompt &amp; Schema</h3>
+<p>This prompt transforms natural-language queries into read-only Cypher commands while enforcing schema constraints:</p>
+<pre><code class="language-python">from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+
+
+class CypherQueryGeneration(BaseModel):
+    cypher_statement: str = Field(
+        description=&quot;The read-only Cypher query to execute against Neo4j. Zero write operations permitted.&quot;
+    )
+    entities_extracted: List[str] = Field(
+        description=&quot;List of primary business entities identified in query.&quot;
+    )
+
+
+GRAPH_SCHEMA = &quot;&quot;&quot;
+Node Types and Properties:
+- Organization {name: STRING, ticker: STRING, sector: STRING}
+- Facility {name: STRING, location: STRING, water_risk_index: FLOAT}
+- Product {name: STRING, sku: STRING}
+- Supplier {name: STRING, tier: INTEGER}
+
+Relationship Types:
+- (:Supplier)-[:SUPPLIES]-&gt;(:Product)
+- (:Supplier)-[:OPERATES_FACILITY]-&gt;(:Facility)
+- (:Organization)-[:ACQUIRED]-&gt;(:Organization)
+- (:Organization)-[:OWNS]-&gt;(:Product)
+&quot;&quot;&quot;
+
+CYPHER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            &quot;system&quot;,
+            f&quot;You are a Neo4j Cypher and Graph Database expert. Translate the user query into &quot;
+            f&quot;an optimized, read-only Cypher statement conforming exactly to this graph schema:\n&quot;
+            f&quot;{GRAPH_SCHEMA}\n&quot;
+            f&quot;Guidelines:\n&quot;
+            f&quot;- Use case-insensitive matching where applicable (e.g., toLower(n.name) CONTAINS toLower('...')).\n&quot;
+            f&quot;- Do not mutate the database (no CREATE, MERGE, SET, DELETE).\n&quot;
+            f&quot;- Always return clear variable names with a limit of 25 results.&quot;,
+        ),
+        (&quot;human&quot;, &quot;User Question: {question}&quot;),
+    ]
+)
+</code></pre>
+<h3>4.2 Production Hybrid Vector + Neo4j Graph Retrieval</h3>
+<p>This implementation queries Neo4j via Cypher alongside a local vector store, then merges both sources into a unified context payload:</p>
+<pre><code class="language-python">import os
+from typing import Dict, Any, List
+from neo4j import GraphDatabase
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.documents import Document
+
+
+class HybridGraphRAGPipeline:
+    def __init__(self, neo4j_uri: str, neo4j_user: str, neo4j_pass: str):
+        self.driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_pass))
+        self.embeddings = OpenAIEmbeddings(model=&quot;text-embedding-3-small&quot;)
+        self.llm = ChatOpenAI(model=&quot;gpt-4o&quot;, temperature=0)
+
+    def close(self):
+        self.driver.close()
+
+    def execute_graph_query(self, cypher_statement: str) -&gt; List[Dict[str, Any]]:
+        &quot;&quot;&quot;Executes Cypher read transactions safely.&quot;&quot;&quot;
+        with self.driver.session() as session:
+            def _read_tx(tx):
+                result = tx.run(cypher_statement)
+                return [record.data() for record in result]
+            return session.execute_read(_read_tx)
+
+    def execute_vector_retrieval(self, query: str, top_k: int = 3) -&gt; List[Document]:
+        &quot;&quot;&quot;
+        Executes dense vector search.
+        In a production implementation, leverage Neo4j's native vector index:
+        `CALL db.index.vector.queryNodes('chunk_vector_index', $top_k, $query_embedding)`
+        &quot;&quot;&quot;
+        # Mock snippet for demonstration
+        return [
+            Document(
+                page_content=&quot;Supplier Apex Industrial has historically had water scarcity challenges at its Nevada facility.&quot;,
+                metadata={&quot;source&quot;: &quot;risk_audit_2023.pdf&quot;, &quot;page&quot;: 44},
+            )
+        ]
+
+    def stitch_hybrid_context(
+        self, graph_data: List[Dict[str, Any]], text_docs: List[Document]
+    ) -&gt; str:
+        &quot;&quot;&quot;Merges structured graph relationships and unstructured text chunks.&quot;&quot;&quot;
+        context_parts = []
+
+        context_parts.append(&quot;=== STRUCTURED GRAPH RELATIONSHIPS ===&quot;)
+        if graph_data:
+            for record in graph_data:
+                context_parts.append(str(record))
+        else:
+            context_parts.append(&quot;No explicit structural relationships found in graph.&quot;)
+
+        context_parts.append(&quot;\n=== SEMANTIC RELEVANT TEXT EXCERPTS ===&quot;)
+        for i, doc in enumerate(text_docs, start=1):
+            src = doc.metadata.get(&quot;source&quot;, &quot;unknown&quot;)
+            pg = doc.metadata.get(&quot;page&quot;, &quot;?&quot;)
+            context_parts.append(f&quot;[{i}] (Source: {src}, Page: {pg}):\n{doc.page_content}&quot;)
+
+        return &quot;\n&quot;.join(context_parts)
+
+    def query(self, question: str) -&gt; str:
+        # Step 1: Generate Cypher query
+        structured_generator = self.llm.with_structured_output(CypherQueryGeneration)
+        query_analysis: CypherQueryGeneration = structured_generator.invoke(
+            CYPHER_PROMPT.format(question=question)
+        )
+
+        # Step 2: Fetch graph data
+        try:
+            graph_data = self.execute_graph_query(query_analysis.cypher_statement)
+        except Exception as e:
+            # Fallback for invalid Cypher syntax
+            graph_data = [{&quot;error&quot;: f&quot;Graph query execution failed: {str(e)}&quot;}]
+
+        # Step 3: Fetch vector data
+        vector_docs = self.execute_vector_retrieval(question)
+
+        # Step 4: Stitch context together
+        complete_context = self.stitch_hybrid_context(graph_data, vector_docs)
+
+        # Step 5: Generate answer
+        final_generation_prompt = (
+            &quot;You are a GraphRAG Enterprise Copilot. Synthesize an authoritative answer to the question &quot;
+            &quot;using both the structured graph entities and unstructured documents provided below. &quot;
+            &quot;Highlight both direct operational connections from the graph and qualitative factors from the text.\n\n&quot;
+            f&quot;Context Payload:\n{complete_context}\n\n&quot;
+            f&quot;Question: {question}\n\n&quot;
+            &quot;Final Production Response:&quot;
+        )
+
+        response = self.llm.invoke(final_generation_prompt)
+        return response.content
+</code></pre>
+<hr />
+<h2>5. Enterprise Production Readiness &amp; Fallback Matrix</h2>
+<p>Production deployments must isolate failures across every retrieval path. The table below outlines root causes, automated fallbacks, and maximum latency envelopes:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Failure Vector</th>
+<th style="text-align: left;">Detection Signal</th>
+<th style="text-align: left;">Automated Mitigation Routing</th>
+<th style="text-align: left;">Maximum Latency SLA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Complete Retrieval Nullity</strong></td>
+<td style="text-align: left;">Evaluator returns <code>binary_score: no</code> for all top-$k$ docs.</td>
+<td style="text-align: left;">Re-write query via LLM fan-out, trigger BM25 sparse keyword fallback, query cold-tier storage.</td>
+<td style="text-align: left;">&lt; 2,200 ms</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Cypher Syntax Failure</strong></td>
+<td style="text-align: left;">Neo4j engine raises <code>CypherSyntaxError</code> or <code>UnknownRelationship</code>.</td>
+<td style="text-align: left;">Catch exception, fall back to pure dense-vector retrieval, queue Cypher prompt log for fine-tuning.</td>
+<td style="text-align: left;">&lt; 600 ms</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tabular Schema Mismatch</strong></td>
+<td style="text-align: left;">LLM Hallucinates column totals due to irregular whitespace or broken tokens.</td>
+<td style="text-align: left;">Ingest raw HTML/Markdown fallback format, route to deterministic Code Interpreter / DuckDB query engine.</td>
+<td style="text-align: left;">&lt; 3,500 ms</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>High Latency Degradation</strong></td>
+<td style="text-align: left;">Upstream vector DB $P_{99}$ latency exceeds 1,500 ms threshold.</td>
+<td style="text-align: left;">Circuit-breaker drops reranking node; switches to high-speed cached hybrid index; disables HyDE.</td>
+<td style="text-align: left;">&lt; 800 ms</td>
+</tr>
+</tbody>
+</table>
+<h3>5.1 Deployment Configuration Checklist (Production YAML)</h3>
+<p>Save this configuration as <code>rag_production_config.yaml</code> to govern agent timeouts, thresholds, and fallback parameters across runtime nodes:</p>
+<p>```yaml
+version: "2.4"
+system_metadata:
+  environment: "production"
+  pipeline_id: "agentic_crag_graph_hybrid_v1"</p>
+<p>nodes:
+  evaluator:
+    model: "gpt-4o-mini"
+    temperature: 0.0
+    timeout_ms: 1200
+    confidence_threshold: 0.70
+    max_retries_on_relevance_failure: 2</p>
+<p>hyde_engine:
+    enabled: true
+    model: "gpt-4o-mini"
+    temperature: 0.3
+    max_tokens: 200
+    skip_on_latency_alert: true</p>
+<p>rrf_fanout:
+    enabled: true
+    num_query_variants: 3
+    k_constant: 60
+    per_query_top_k: 5
+    concurrency_limit: 5</p>
+</body>
+</html>
