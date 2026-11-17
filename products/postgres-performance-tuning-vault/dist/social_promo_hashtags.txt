@@ -1,0 +1,7 @@
+🚀 Just launched: The PostgreSQL Performance & Production Vault: 60+ Indexing Recipes, Query Tuning Blueprints & High-Scale Patterns
+
+Stop slow queries and lock contention: 60+ battle-tested indexing strategies, EXPLAIN ANALYZE rubrics, connection pooling configs, and zero-downtime migration playbooks.
+
+👉 Grab it here: https://gumroad.com/l/postgres-performance-tuning-vault
+
+#Postgresql #Database #SqlTuning #Backend #Performance #SoftwareEng #Devops #Sysadmin #DatabaseDesign #IndieHacker

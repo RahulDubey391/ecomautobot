@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The PostgreSQL Performance & Production Vault: 60+ Indexing Recipes, Query Tuning Blueprints & High-Scale Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: PostgreSQL Health Audit Rubric, pg_stat Views &amp; Triage Swipe File</h1>
+<p>Maintaining a high-throughput, low-latency PostgreSQL instance requires moving past generic metrics and implementing precise, view-level diagnostics. This deliverable serves as your production battle-plan: a formal engineering rubric for instance health, an open-source SQL diagnostic toolkit, an incident response Standard Operating Procedure (SOP) for active outages, and declarative Prometheus alert rules ready for production deployment.</p>
+<hr />
+<h2>1. The PostgreSQL Production Health Rubric</h2>
+<p>Use this health rubric during routine weekly database reviews, capacity planning cycles, or performance health audits.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric</th>
+<th style="text-align: left;">Healthy Range</th>
+<th style="text-align: left;">Warning Threshold</th>
+<th style="text-align: left;">Critical Emergency Value</th>
+<th style="text-align: left;">Exact Diagnostic Query / Extraction Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Buffer Cache Hit Ratio</strong></td>
+<td style="text-align: left;">$\ge 99.0\%$ (OLTP)<br>$\ge 90.0\%$ (OLAP)</td>
+<td style="text-align: left;">$95.0\% - 98.9\%$</td>
+<td style="text-align: left;">$&lt; 95.0\%$ (OLTP)<br>$&lt; 85.0\%$ (OLAP)</td>
+<td style="text-align: left;"><code>SELECT sum(heap_blks_hit) / nullif(sum(heap_blks_hit) + sum(heap_blks_read), 0) * 100 AS ratio FROM pg_statio_user_tables;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Index Usage Ratio</strong></td>
+<td style="text-align: left;">$\ge 95.0\%$ on tables $&gt; 10\text{k}$ rows</td>
+<td style="text-align: left;">$80.0\% - 94.9\%$</td>
+<td style="text-align: left;">$&lt; 80.0\%$</td>
+<td style="text-align: left;"><code>SELECT relname, 100.0 * idx_scan / nullif(seq_scan + idx_scan, 0) AS idx_pct FROM pg_stat_user_tables WHERE (seq_scan + idx_scan) &gt; 1000;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Transaction ID Age (XID Wraparound)</strong></td>
+<td style="text-align: left;">$&lt; 200\text{M}$ transactions</td>
+<td style="text-align: left;">$200\text{M} - 800\text{M}$ transactions</td>
+<td style="text-align: left;">$&gt; 1.0\text{B}$ transactions (Emergency Vacuum Required)</td>
+<td style="text-align: left;"><code>SELECT datname, age(datfrozenxid) FROM pg_database WHERE datallowconn ORDER BY 2 DESC;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Table Dead Tuple Ratio (Bloat)</strong></td>
+<td style="text-align: left;">$&lt; 5.0\%$ dead tuples</td>
+<td style="text-align: left;">$5.0\% - 19.9\%$</td>
+<td style="text-align: left;">$\ge 20.0\%$ dead tuples</td>
+<td style="text-align: left;"><code>SELECT relname, n_dead_tup, n_live_tup, round(n_dead_tup::numeric / nullif(n_live_tup + n_dead_tup, 0) * 100, 2) AS dead_pct FROM pg_stat_user_tables;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Active Lock Wait Duration</strong></td>
+<td style="text-align: left;">$0\text{ ms}$ sustained lock wait</td>
+<td style="text-align: left;">$&gt; 1000\text{ ms}$ wait</td>
+<td style="text-align: left;">$&gt; 5000\text{ ms}$ (Query Queue Building)</td>
+<td style="text-align: left;"><code>SELECT max(now() - state_change) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active';</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Replication Physical Lag</strong></td>
+<td style="text-align: left;">$&lt; 16\text{ MB}$ or $&lt; 1\text{ sec}$</td>
+<td style="text-align: left;">$16\text{ MB} - 1\text{ GB}$ / $1\text{s} - 30\text{s}$</td>
+<td style="text-align: left;">$&gt; 1\text{ GB}$ or $&gt; 30\text{s}$ (Replica Stale/Failing)</td>
+<td style="text-align: left;"><code>SELECT client_addr, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes FROM pg_stat_replication;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Connection Pool Saturation</strong></td>
+<td style="text-align: left;">$&lt; 70\%$ of <code>max_connections</code></td>
+<td style="text-align: left;">$70\% - 89\%$</td>
+<td style="text-align: left;">$\ge 90\%$ (Exhaustion Imminent)</td>
+<td style="text-align: left;"><code>SELECT count(*)::float / (SELECT setting::float FROM pg_settings WHERE name = 'max_connections') * 100 FROM pg_stat_activity;</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Temp File Spills</strong></td>
+<td style="text-align: left;">$0\text{ temp files / sec}$</td>
+<td style="text-align: left;">$&gt; 0\text{ files}$, total size $&lt; 1\text{GB}/ \text{hr}$</td>
+<td style="text-align: left;">Total size $&gt; 10\text{ GB} / \text{hr}$</td>
+<td style="text-align: left;"><code>SELECT temp_files, pg_size_pretty(temp_bytes) FROM pg_stat_database WHERE datname = current_database();</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Comprehensive <code>pg_stat_*</code> Diagnostic SQL Toolkit</h2>
+<p>Execute these production-safe queries directly against your primary database instance to isolate bottlenecks.</p>
+<h3>2.1 Cache Hit Ratio (Buffer Pool Efficiency)</h3>
+<h4>Global Instance Cache Hit Ratio</h4>
+<pre><code class="language-sql">SELECT
+    round(100.0 * sum(heap_blks_hit) / NULLIF(sum(heap_blks_hit) + sum(heap_blks_read), 0), 3) AS instance_heap_hit_ratio,
+    round(100.0 * sum(idx_blks_hit) / NULLIF(sum(idx_blks_hit) + sum(idx_blks_read), 0), 3) AS instance_idx_hit_ratio,
+    round(100.0 * (sum(heap_blks_hit) + sum(idx_blks_hit)) / 
+        NULLIF(sum(heap_blks_hit) + sum(heap_blks_read) + sum(idx_blks_hit) + sum(idx_blks_read), 0), 3) AS combined_hit_ratio
+FROM pg_statio_user_tables;
+</code></pre>
+<h4>Worst 10 Tables by Cache Miss Volume (Disk Read Bottlenecks)</h4>
+<pre><code class="language-sql">SELECT
+    schemaname,
+    relname AS table_name,
+    heap_blks_read AS disk_reads,
+    heap_blks_hit AS cache_hits,
+    round(100.0 * heap_blks_hit / NULLIF(heap_blks_hit + heap_blks_read, 0), 2) AS cache_hit_pct,
+    pg_size_pretty(pg_relation_size(relid)) AS table_size
+FROM pg_statio_user_tables
+WHERE heap_blks_read + heap_blks_hit &gt; 5000
+ORDER BY heap_blks_read DESC
+LIMIT 10;
+</code></pre>
+<h3>2.2 Unused, Duplicate, and High-Overhead Index Detection</h3>
+<h4>Completely Unused Indexes (Excluding Primary/Unique Constraints)</h4>
+<pre><code class="language-sql">SELECT
+    s.schemaname,
+    s.relname AS table_name,
+    s.indexrelname AS index_name,
+    s.idx_scan AS number_of_scans,
+    pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size,
+    s.idx_tup_read,
+    s.idx_tup_fetch
+FROM pg_stat_user_indexes s
+JOIN pg_index i ON s.indexrelid = i.indexrelid
+WHERE s.idx_scan = 0
+  AND i.indisunique = FALSE
+  AND i.indisprimary = FALSE
+ORDER BY pg_relation_size(s.indexrelid) DESC;
+</code></pre>
+<h4>Redundant / Duplicate Indexes (Identical Column Definitions)</h4>
+<pre><code class="language-sql">SELECT
+    pg_size_pretty(sum(pg_relation_size(idx))) AS total_wasted_size,
+    array_agg(idx::regclass) AS duplicate_indexes,
+    table_name
+FROM (
+    SELECT
+        indexrelid AS idx,
+        indrelid::regclass AS table_name,
+        (indrelid::text || ' ' || indkey::text || ' ' || indclass::text || ' ' || 
+         coalesce(indpredicate::text, '')) AS key_signature
+    FROM pg_index
+) sub
+GROUP BY table_name, key_signature
+HAVING count(*) &gt; 1
+ORDER BY sum(pg_relation_size(idx)) DESC;
+</code></pre>
+<h4>High-Maintenance Write-Overhead Indexes (Low Read/Write Ratio)</h4>
+<pre><code class="language-sql">SELECT
+    s.schemaname,
+    s.relname AS table_name,
+    s.indexrelname AS index_name,
+    s.idx_scan AS total_reads,
+    (stat.n_tup_ins + stat.n_tup_upd + stat.n_tup_del) AS total_writes,
+    round(s.idx_scan::numeric / NULLIF(stat.n_tup_ins + stat.n_tup_upd + stat.n_tup_del, 0), 4) AS read_to_write_ratio,
+    pg_size_pretty(pg_relation_size(s.indexrelid)) AS index_size
+FROM pg_stat_user_indexes s
+JOIN pg_stat_user_tables stat ON s.relid = stat.relid
+JOIN pg_index i ON s.indexrelid = i.indexrelid
+WHERE (stat.n_tup_ins + stat.n_tup_upd + stat.n_tup_del) &gt; 100000
+  AND s.idx_scan &lt; 1000
+  AND i.indisunique = FALSE
+  AND i.indisprimary = FALSE
+ORDER BY read_to_write_ratio ASC;
+</code></pre>
+<h3>2.3 Heavyweight <code>pg_stat_statements</code> Deep-Dive</h3>
+<p><em>Prerequisite: <code>pg_stat_statements</code> must be loaded in <code>shared_preload_libraries</code>.</em></p>
+<h4>Top 10 Queries by Cumulative Execution Time (Total Burn Rate)</h4>
+<pre><code class="language-sql">SELECT
+    queryid,
+    left(query, 100) AS truncated_query,
+    calls,
+    round(total_exec_time::numeric / 1000, 2) AS total_exec_time_sec,
+    round(mean_exec_time::numeric, 2) AS mean_exec_ms,
+    round(stddev_exec_time::numeric, 2) AS stddev_exec_ms,
+    round(100.0 * total_exec_time / sum(total_exec_time) OVER (), 2) AS percent_total_time,
+    rows
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+</code></pre>
+<h4>Top 10 High-Variance Queries (Unstable Execution Plans)</h4>
+<pre><code class="language-sql">SELECT
+    queryid,
+    left(query, 100) AS truncated_query,
+    calls,
+    round(mean_exec_time::numeric, 2) AS mean_ms,
+    round(stddev_exec_time::numeric, 2) AS stddev_ms,
+    round((stddev_exec_time / NULLIF(mean_exec_time, 0))::numeric, 2) AS coefficient_of_variation
+FROM pg_stat_statements
+WHERE calls &gt; 500
+ORDER BY coefficient_of_variation DESC
+LIMIT 10;
+</code></pre>
+<h4>Top 10 Queries by Direct Disk I/O Bottleneck (Shared Buffer Misses)</h4>
+<pre><code class="language-sql">SELECT
+    queryid,
+    left(query, 100) AS truncated_query,
+    calls,
+    shared_blks_read AS disk_blocks_read,
+    shared_blks_hit AS cache_blocks_hit,
+    round(100.0 * shared_blks_hit / NULLIF(shared_blks_hit + shared_blks_read, 0), 2) AS query_cache_hit_pct,
+    round((blk_read_time + blk_write_time)::numeric, 2) AS total_io_time_ms
+FROM pg_stat_statements
+WHERE shared_blks_read &gt; 0
+ORDER BY shared_blks_read DESC
+LIMIT 10;
+</code></pre>
+<h3>2.4 Dead Tuples, Autovacuum Health, and Table Bloat Estimation</h3>
+<h4>Autovacuum Lag and Dead Tuple Accumulation</h4>
+<pre><code class="language-sql">SELECT
+    schemaname,
+    relname AS table_name,
+    n_live_tup,
+    n_dead_tup,
+    round(100.0 * n_dead_tup / NULLIF(n_live_tup + n_dead_tup, 0), 2) AS dead_tuple_pct,
+    last_vacuum,
+    last_autovacuum,
+    vacuum_count,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE n_dead_tup &gt; 10000
+ORDER BY dead_tuple_pct DESC;
+</code></pre>
+<h4>Real Table and Index Bloat Estimator</h4>
+<pre><code class="language-sql">WITH constants AS (
+    SELECT current_setting('block_size')::numeric AS bs, 23 AS hdr, 8 AS ma
+),
+table_estimates AS (
+    SELECT
+        schemaname, tableName, tblpages, reclen,
+        ceil((cc.reltuples * reclen) / (bs - hdr)) AS est_pages
+    FROM (
+        SELECT
+            schemaname,
+            tablename AS tableName,
+            c.reltuples,
+            c.relpages AS tblpages,
+            SUM((1 - null_frac) * avg_width) + 24 AS reclen
+        FROM pg_stats s
+        JOIN pg_class c ON s.tablename = c.relname
+        JOIN pg_namespace n ON c.relnamespace = n.oid AND s.schemaname = n.nspname
+        WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema')
+        GROUP BY schemaname, tablename, c.reltuples, c.relpages
+    ) cc, constants
+)
+SELECT
+    schemaname,
+    tableName,
+    pg_size_pretty((tblpages * 8192)::bigint) AS real_size,
+    pg_size_pretty((CASE WHEN tblpages &gt; est_pages THEN (tblpages - est_pages) * 8192 ELSE 0 END)::bigint) AS estimated_bloat,
+    round(100.0 * (CASE WHEN tblpages &gt; est_pages THEN (tblpages - est_pages) ELSE 0 END) / NULLIF(tblpages, 0), 2) AS bloat_pct
+FROM table_estimates
+WHERE tblpages &gt; 100
+ORDER BY (tblpages - est_pages) DESC
+LIMIT 15;
+</code></pre>
+<hr />
+<h2>3. Incident Response Triage SOP &amp; Command Matrix</h2>
+<h3>Emergency Triage Flowchart</h3>
+<pre><code>                 +-----------------------------------+
+                 | P0/P1 High Latency / Lock Outage  |
+                 +-----------------------------------+
+                                   |
+                                   v
+             [ Execute Query 3.1: Active Lock Tree ]
+                                   |
+       +---------------------------+---------------------------+
+       |                                                       |
+       v                                                       v
+[ Blocking Root Found? ]                             [ No Locks, CPU/IO Maxed ]
+       |                                                       |
+       +-----------------------+                               v
+       |                       |                    [ Query 2.3: `pg_stat_statements` ]
+       v                       v                               |
+[ Read Query ]         [ DDL / Long Transaction ]              v
+       |                       |                    [ Cancel Top Resource Consumer ]
+       v                       v                               |
+[ pg_cancel_backend ]   [ pg_terminate_backend ]               v
+                                                    [ Tune Work Mem / Set Limits ]
+</code></pre>
+<hr />
+<h3>Triage Step-by-Step Operations Guide</h3>
+<h4>Step 1: Detect Root Blocking Backend (Lock Tree Resolution)</h4>
+<p>Do <strong>not</strong> randomly kill backends. Use this recursive query to map the exact dependency tree of blocked processes down to the single root offender.</p>
+<pre><code class="language-sql">WITH RECURSIVE lock_tree AS (
+    SELECT
+        blocking_l.pid AS blocking_pid,
+        blocked_l.pid AS blocked_pid,
+        blocked_a.query AS blocked_query,
+        blocking_a.query AS blocking_query,
+        1 AS depth
+    FROM pg_catalog.pg_locks blocked_l
+    JOIN pg_catalog.pg_stat_activity blocked_a ON blocked_a.pid = blocked_l.pid
+    JOIN pg_catalog.pg_locks blocking_l 
+        ON blocking_l.locktype = blocked_l.locktype
+        AND blocking_l.database IS NOT DISTINCT FROM blocked_l.database
+        AND blocking_l.relation IS NOT DISTINCT FROM blocked_l.relation
+        AND blocking_l.page IS NOT DISTINCT FROM blocked_l.page
+        AND blocking_l.tuple IS NOT DISTINCT FROM blocked_l.tuple
+        AND blocking_l.virtualxid IS NOT DISTINCT FROM blocked_l.virtualxid
+        AND blocking_l.transactionid IS NOT DISTINCT FROM blocked_l.transactionid
+        AND blocking_l.classid IS NOT DISTINCT FROM blocked_l.classid
+        AND blocking_l.objid IS NOT DISTINCT FROM blocked_l.objid
+        AND blocking_l.objsubid IS NOT DISTINCT FROM blocked_l.objsubid
+        AND blocking_l.pid != blocked_l.pid
+    JOIN pg_catalog.pg_stat_activity blocking_a ON blocking_a.pid = blocking_l.pid
+    WHERE NOT blocked_l.granted
+)
+SELECT 
+    l.blocking_pid,
+    l.blocking_query,
+    l.blocked_pid,
+    l.blocked_query,
+    l.depth
+FROM lock_tree l
+ORDER BY l.depth ASC;
+</code></pre>
+<h4>Step 2: Gracefully Interrupt or Terminate the Root Offender</h4>
+<p>If the root blocker is a long-running read query, issue a soft cancellation:</p>
+<pre><code class="language-sql">-- Attempt graceful query cancellation (SIGINT)
+SELECT pg_cancel_backend(12345);
+</code></pre>
+<p>If the root blocker is an abandoned <code>idle in transaction</code> process, an unindexed migration, or does not respond to <code>pg_cancel_backend</code> within 10 seconds, forcefully terminate the process:</p>
+<pre><code class="language-sql">-- Force connection termination (SIGTERM)
+SELECT pg_terminate_backend(12345);
+</code></pre>
+<h4>Step 3: Mitigation of Sudden Connection Exhaustion</h4>
+<p>If the application pool exhausts <code>max_connections</code>, dynamically drop idle connections before restarting application servers:</p>
+<pre><code class="language-sql">-- Terminate all connections idling for longer than 5 minutes
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE state = 'idle in transaction' 
+  AND state_change &lt; now() - INTERVAL '5 minutes';
+</code></pre>
+<h4>Step 4: Emergency Non-Blocking Vacuum for Severe Bloat or XID Age Escalation</h4>
+<p>When XID age exceeds $800\text{M}$ or dead tuple accumulation locks table access, execute a non-blocking parallel vacuum scoped strictly to the impacted table:</p>
+<pre><code class="language-sql">-- Never run plain VACUUM FULL during production traffic (it takes an AccessExclusiveLock).
+-- Use optimized VACUUM ANALYZE with maximum worker parallelization.
+SET LOCAL vacuum_cost_limit = 2000;
+VACUUM (VERBOSE, ANALYZE, BUFFER_USAGE_LIMIT '512MB') public.orders;
+</code></pre>
+<h4>Step 5: Temporary Session-Level Workaround for Query Spills</h4>
+<p>If an active emergency query is spilling heavily to disk and causing massive I/O degradation, apply a session-level operational override without restarting PostgreSQL:</p>
+<pre><code class="language-sql">-- Temporarily bump work_mem for the current maintenance connection
+SET local work_mem = '512MB';
+-- Apply query statement timeout to prevent unbounded queries from running over 10 seconds
+SET local statement_timeout = '10000ms';
+</code></pre>
+<hr />
+<h2>4. Automated Monitoring &amp; Alerting Configuration Rules</h2>
+<p>Deploy this complete, valid <code>alerts.yml</code> file directly into your Prometheus / Alertmanager infrastructure (configured for <code>postgres_exporter</code>).</p>
+<p>```yaml
+groups:
+  - name: postgresql_production_alerts
+    rules:</p>
+<pre><code>  - alert: PostgresqlCacheHitRatioDegraded
+    expr: &gt;
+      (
+        sum(rate(pg_stat_database_blks_hit[5m])) 
+        / 
+        nullif(sum(rate(pg_stat_database_blks_hit[5m])) + sum(rate(pg_stat_database_blks_read[5m])), 0)
+      ) * 100 &lt; 95
+    for: 5m
+    labels:
+      severity: warning
+      tier: database
+    annotations:
+      summary: "PostgreSQL Instance Buffer Cache Hit Ratio Low"
+      description: "Cache hit ratio for database '{{ $labels.datname }}' on {{ $labels.instance }} has dropped to {{ $value | printf \"%.2f\" }}%. Disk I/O is escalating."
+
+  - alert: PostgresqlXIDWraparoundCritical
+    expr: &gt;
+      (
+        max(pg_database_datfrozenxid_age) by (instance, datname)
+      ) &gt; 800000000
+    for: 0m
+    labels:
+      severity: critical
+      page: true
+      tier: database
+    annotations:
+      summary: "CRITICAL: Transaction ID Wraparound Risk Imminent"
+      description: "Database '{{ $labels.datname }}' on {{ $labels.instance }} has reached an XID age of {{ $value }} transactions. Autovacuum is falling behind. System outage imminent without immediate manual intervention."
+
+  - alert: PostgresqlSevereLockWaitEscalation
+    expr: &gt;
+      sum(pg_stat_activity_count{wait_event_type="Lock", state="active"}) by (instance) &gt; 5
+    for: 1m
+    labels:
+      severity: critical
+      page: true
+      tier: database
+    annotations:
+      summary: "Active Lock Contention Escalation"
+      description: "Instance {{ $labels.instance }} has {{ $value }} concurrent queries blocked waiting on locks for more than 60 seconds."
+
+  - alert: PostgresqlReplicationLagCritical
+    expr: &gt;
+      pg_replication_lag_bytes &gt; 1073741824
+    for: 2m
+    labels:
+      severity: critical
+      tier: database
+    annotations:
+      summary: "PostgreSQL Streaming Replication Lag High"
+      description: "Replication lag on replica {{ $labels.instance }} (application: {{ $labels.application_name }}) exceeds 1 GB (current: {{ $value | humanizeBytes }})."
+
+  - alert: PostgresqlConnectionExhaustionImminent
+    expr: &gt;
+      (
+        sum(pg_stat_activity_count{state!="idle"}) by (instance)
+        /
+        sum(pg_settings_max_connections) by (instance)
+      ) * 100 &gt; 85
+    for: 3m
+    labels:
+      severity: warning
+      tier: database
+    annotations:
+      summary: "PostgreSQL Connection Pool Near Capacity"
+      description: "Active connections on {{ $labels.instance }} reached {{ $value | printf \"%.2f\" }}% of max_connections. Consider connection pooler limits."
+
+  - alert: PostgresqlExcessiveTempFileSpills
+    expr: &gt;
+      rate(pg_stat_database_temp_bytes[10m]) &gt; 104857600
+    for: 5m
+    labels:
+      severity: warning
+      tier: database
+    annotations:
+      summary: "High Volume Temp File Spill Detected"
+      description: "Database '{{ $labels.datname }}' on {{ $labels.instance }} is spilling disk temp files at a rate of {{ $value | humanizeBytes }}/sec. Increase work_mem for heavy queries."
+</code></pre>
+</body>
+</html>

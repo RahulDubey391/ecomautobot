@@ -1,0 +1,43 @@
+{
+  "slug": "postgres-performance-tuning-vault",
+  "name": "The PostgreSQL Performance & Production Vault: 60+ Indexing Recipes, Query Tuning Blueprints & High-Scale Patterns",
+  "price_cents": 1900,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "postgres-performance-tuning-vault",
+  "custom_summary": "Stop slow queries and lock contention: 60+ battle-tested indexing strategies, EXPLAIN ANALYZE rubrics, connection pooling configs, and zero-downtime migration playbooks.",
+  "category": "software",
+  "tags": [
+    "postgresql",
+    "database",
+    "sql tuning",
+    "backend",
+    "performance",
+    "software eng",
+    "devops",
+    "sysadmin",
+    "database design",
+    "indie hacker"
+  ],
+  "hashtags": [
+    "#Postgresql",
+    "#Database",
+    "#SqlTuning",
+    "#Backend",
+    "#Performance",
+    "#SoftwareEng",
+    "#Devops",
+    "#Sysadmin",
+    "#DatabaseDesign",
+    "#IndieHacker"
+  ],
+  "gumroad_product_id": "5vnbLXZX7t4LISB5XG_lVA==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/postgres-performance-tuning-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/1331682522cf5a9aba8863fa6a254fc1/original/postgres-performance-tuning-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/9ftc18yjiy1ya9bih3sdniccfa1c"
+}

@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The PostgreSQL Performance & Production Vault: 60+ Indexing Recipes, Query Tuning Blueprints & High-Scale Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: PgBouncer Pooling, Lock Contention &amp; Zero-Downtime Migrations</h1>
+<p>High-concurrency PostgreSQL instances fail under load for two primary reasons: connection thrashing exhausting backend memory, and unmanaged exclusive locks stalling the transaction pipeline. This module provides drop-in infrastructure configurations for PgBouncer, a deterministic diagnostics engine for lock contention, and battle-tested DDL migration scripts designed for tables exceeding 10,000,000 rows.</p>
+<hr />
+<h2>1. Production-Grade PgBouncer Deployment</h2>
+<p>PostgreSQL forks a separate backend OS process for each client connection, allocating between 2 MB and 10 MB of memory per connection depending on <code>work_mem</code> and cached query plans. Beyond 200–500 direct connections, OS context-switching overhead causes CPU saturation and throughput collapse.</p>
+<h3>1.1 Complete <code>pgbouncer.ini</code> (Transaction Pooling Mode)</h3>
+<p>This configuration is optimized for a dedicated 4-to-8 vCPU connection-pooling instance handling up to 10,000 incoming client connections routed to an underlying PostgreSQL 14, 15, or 16 primary.</p>
+<pre><code class="language-ini">[databases]
+; Syntax: dbname = host=... port=... dbname=... auth_user=... pool_size=...
+production_db = host=10.0.1.10 port=5432 dbname=production_db auth_user=pgbouncer_auth
+
+[pgbouncer]
+; Administrative settings
+logfile = /var/log/postgresql/pgbouncer.log
+pidfile = /var/run/postgresql/pgbouncer.pid
+listen_addr = 0.0.0.0
+listen_port = 6432
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+auth_query = SELECT usename, passwd FROM pgbouncer_auth.lookup_user($1)
+admin_users = pgbouncer_admin
+stats_users = monitoring_user,datadog
+
+; Connection Pool Configuration
+pool_mode = transaction
+max_client_conn = 10000
+default_pool_size = 80
+min_pool_size = 20
+reserve_pool_size = 10
+reserve_pool_timeout = 3.0
+max_db_connections = 120
+
+; Connection Lifecycles and Timeouts
+server_lifetime = 3600
+server_idle_timeout = 600
+server_connect_timeout = 15
+server_login_retry = 5
+client_idle_timeout = 0
+client_login_timeout = 60
+query_timeout = 0
+query_wait_timeout = 120
+cancel_wait_timeout = 10
+
+; Memory and Buffer Management
+pkt_buf = 4096
+max_packet_size = 2147483648
+listen_backlog = 4096
+
+; TCP Tuning
+tcp_defer_accept = 1
+tcp_socket_buffer = 0
+tcp_keepalive = 1
+tcp_keepcnt = 5
+tcp_keepidle = 30
+tcp_keepintvl = 10
+
+; TLS Configuration
+client_tls_sslmode = require
+client_tls_key_file = /etc/ssl/private/pgbouncer.key
+client_tls_cert_file = /etc/ssl/certs/pgbouncer.crt
+server_tls_sslmode = verify-full
+server_tls_ca_file = /etc/ssl/certs/internal-ca.crt
+
+; Protocol and Prepared Statements (PgBouncer 1.21+)
+max_prepared_statements = 250
+server_reset_query = DISCARD ALL
+server_check_query = SELECT 1
+server_check_delay = 30
+</code></pre>
+<h3>1.2 User Authentication Configuration (<code>userlist.txt</code> &amp; SCRAM-SHA-256)</h3>
+<p>To avoid hardcoding passwords inside static configuration files across container redeployments, route authentication through a secured auth function.</p>
+<h4>PostgreSQL Auth Schema Setup (Run on PostgreSQL Primary)</h4>
+<pre><code class="language-sql">CREATE SCHEMA IF NOT EXISTS pgbouncer_auth;
+
+CREATE OR REPLACE FUNCTION pgbouncer_auth.lookup_user(in_user text)
+RETURNS TABLE (usename name, passwd text) 
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT s.usename, s.passwd
+    FROM pg_shadow s
+    WHERE s.usename = in_user;
+END;
+$$ LANGUAGE plpgsql;
+
+REVOKE ALL ON SCHEMA pgbouncer_auth FROM PUBLIC;
+REVOKE ALL ON FUNCTION pgbouncer_auth.lookup_user(text) FROM PUBLIC;
+
+CREATE USER pgbouncer_auth WITH PASSWORD 'GenerateStrongPasswordHere123!';
+GRANT USAGE ON SCHEMA pgbouncer_auth TO pgbouncer_auth;
+GRANT EXECUTE ON FUNCTION pgbouncer_auth.lookup_user(text) TO pgbouncer_auth;
+</code></pre>
+<h4>PgBouncer Bootstrap File (<code>/etc/pgbouncer/userlist.txt</code>)</h4>
+<p>Only the <code>pgbouncer_auth</code> lookup user needs to exist statically inside the local file:</p>
+<pre><code class="language-text">&quot;pgbouncer_auth&quot; &quot;SCRAM-SHA-256$4096:5x...==$1w...:2y...&quot;
+&quot;pgbouncer_admin&quot; &quot;SCRAM-SHA-256$4096:8z...==$9q...:4a...&quot;
+</code></pre>
+<h3>1.3 Pooling Modes Comparison Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Operational Capability</th>
+<th style="text-align: left;">Session Pooling</th>
+<th style="text-align: left;">Transaction Pooling</th>
+<th style="text-align: left;">Statement Pooling</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Connection Binding Scope</strong></td>
+<td style="text-align: left;">Lifetime of TCP connection</td>
+<td style="text-align: left;">Lifetime of single <code>BEGIN...COMMIT</code> block</td>
+<td style="text-align: left;">Single SQL statement</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Max Scale of App Clients</strong></td>
+<td style="text-align: left;">Low (Bound by PG <code>max_connections</code>)</td>
+<td style="text-align: left;">Very High (10k+ clients mapped to 50–100 backends)</td>
+<td style="text-align: left;">Ultra High (Read-only distributed workloads)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Named Prepared Statements</strong></td>
+<td style="text-align: left;">Full native support</td>
+<td style="text-align: left;">Supported in PgBouncer 1.21+ (<code>max_prepared_statements</code>)</td>
+<td style="text-align: left;">Broken (Fails on execution)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong><code>SET LOCAL</code> Variables</strong></td>
+<td style="text-align: left;">Fully persistent across queries</td>
+<td style="text-align: left;">Valid only inside explicit transaction blocks</td>
+<td style="text-align: left;">Broken / Ignored</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Advisory Locks</strong></td>
+<td style="text-align: left;">Supported</td>
+<td style="text-align: left;">Broken (Lock stays bound to PG backend process)</td>
+<td style="text-align: left;">Broken</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong><code>LISTEN</code> / <code>NOTIFY</code></strong></td>
+<td style="text-align: left;">Supported</td>
+<td style="text-align: left;">Not supported</td>
+<td style="text-align: left;">Not supported</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Temporary Tables</strong></td>
+<td style="text-align: left;">Supported</td>
+<td style="text-align: left;">Leaks state to next client / Throws errors</td>
+<td style="text-align: left;">Leaks state / Throws errors</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Lock Contention Diagnostics and Profiling</h2>
+<p>High-throughput systems suffer cascaded downtime when slow read queries hold shared locks, blocking DDL or write operations that require exclusive locks. This results in an immediate queue buildup that consumes all available database connection slots.</p>
+<h3>2.1 Complete PostgreSQL Lock Compatibility Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Requested Mode \ Existing Mode</th>
+<th style="text-align: center;">Access Share</th>
+<th style="text-align: center;">Row Share</th>
+<th style="text-align: center;">Row Exclusive</th>
+<th style="text-align: center;">Share Update Exclusive</th>
+<th style="text-align: center;">Share</th>
+<th style="text-align: center;">Share Row Exclusive</th>
+<th style="text-align: center;">Exclusive</th>
+<th style="text-align: center;">Access Exclusive</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Access Share</strong> (<code>SELECT</code>)</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Row Share</strong> (<code>SELECT FOR UPDATE</code>)</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Row Exclusive</strong> (<code>UPDATE</code>, <code>DELETE</code>)</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Share Update Exclusive</strong> (<code>VACUUM</code>, <code>ANALYZE</code>, <code>CREATE INDEX CONCURRENTLY</code>)</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Share</strong> (<code>CREATE INDEX</code>)</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Share Row Exclusive</strong></td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Exclusive</strong></td>
+<td style="text-align: center;">OK</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Access Exclusive</strong> (<code>ALTER TABLE</code>, <code>DROP</code>)</td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+<td style="text-align: center;"><strong>CONFLICT</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>2.2 Blocking Lock Diagnostic Engine</h3>
+<p>Run this diagnostic query to inspect root blockers, chained victims, wait times, and exact queries causing queue stalls:</p>
+<pre><code class="language-sql">WITH RECURSIVE lock_tree AS (
+    SELECT 
+        pg_blocking_pids(blocked_act.pid) AS direct_blockers,
+        blocked_act.pid AS blocked_pid,
+        blocked_act.usename AS blocked_user,
+        blocked_act.client_addr AS blocked_client,
+        blocked_act.query AS blocked_query,
+        blocked_act.wait_event_type,
+        blocked_act.wait_event,
+        now() - blocked_act.query_start AS blocked_query_duration,
+        now() - blocked_act.xact_start AS blocked_xact_duration,
+        1 AS depth
+    FROM pg_stat_activity blocked_act
+    WHERE cardinality(pg_blocking_pids(blocked_act.pid)) &gt; 0
+
+    UNION ALL
+
+    SELECT 
+        pg_blocking_pids(blocker_act.pid) AS direct_blockers,
+        blocker_act.pid AS blocked_pid,
+        blocker_act.usename AS blocked_user,
+        blocker_act.client_addr AS blocked_client,
+        blocker_act.query AS blocked_query,
+        blocker_act.wait_event_type,
+        blocker_act.wait_event,
+        now() - blocker_act.query_start AS blocked_query_duration,
+        now() - blocker_act.xact_start AS blocked_xact_duration,
+        lt.depth + 1
+    FROM pg_stat_activity blocker_act
+    JOIN lock_tree lt ON blocker_act.pid = ANY(lt.direct_blockers)
+    WHERE blocker_act.pid &lt;&gt; ALL(lt.direct_blockers)
+)
+SELECT 
+    DISTINCT ON (blocked_pid)
+    depth,
+    direct_blockers AS root_cause_pids,
+    blocked_pid,
+    blocked_user,
+    blocked_client,
+    wait_event_type || ':' || wait_event AS wait_reason,
+    round(EXTRACT(EPOCH FROM blocked_query_duration)::numeric, 2) AS query_duration_sec,
+    round(EXTRACT(EPOCH FROM blocked_xact_duration)::numeric, 2) AS xact_duration_sec,
+    LEFT(REGEXP_REPLACE(blocked_query, '\s+', ' ', 'g'), 120) AS clean_query
+FROM lock_tree
+ORDER BY blocked_pid, depth DESC;
+</code></pre>
+<h3>2.3 Automated Blocker Mitigation Script</h3>
+<p>This procedure isolates and cancels backend connections holding locks on a critical target table for longer than an explicit threshold.</p>
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE public.terminate_blockers_on_relation(
+    target_table_name text,
+    max_duration interval DEFAULT interval '10 seconds',
+    dry_run boolean DEFAULT true
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    target_oid oid;
+    blocker_record RECORD;
+BEGIN
+    SELECT c.oid INTO target_oid
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' 
+      AND c.relname = target_table_name;
+
+    IF target_oid IS NULL THEN
+        RAISE EXCEPTION 'Table % not found', target_table_name;
+    END IF;
+
+    FOR blocker_record IN
+        SELECT 
+            a.pid,
+            a.usename,
+            a.query,
+            now() - a.query_start AS runtime,
+            l.mode
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON l.pid = a.pid
+        WHERE l.relation = target_oid
+          AND a.pid &lt;&gt; pg_backend_pid()
+          AND (now() - a.query_start) &gt; max_duration
+          AND a.state IN ('active', 'idle in transaction')
+    LOOP
+        IF dry_run THEN
+            RAISE NOTICE '[DRY RUN] Would terminate PID % (User: %, Mode: %, Runtime: %): %',
+                blocker_record.pid, blocker_record.usename, blocker_record.mode, 
+                blocker_record.runtime, blocker_record.query;
+        ELSE
+            RAISE WARNING 'Terminating PID % (Runtime: %)', 
+                blocker_record.pid, blocker_record.runtime;
+            PERFORM pg_terminate_backend(blocker_record.pid);
+        END IF;
+    END LOOP;
+END;
+$$;
+</code></pre>
+<hr />
+<h2>3. Deadlock Prevention and Engine Mitigation</h2>
+<p>Deadlocks occur when two or more transactions hold locks that the other transactions need to proceed, forming a cyclical dependency graph. PostgreSQL breaks deadlocks via its background engine worker after <code>deadlock_timeout</code> expires (default: 1 second), forcibly rolling back one of the transactions.</p>
+<h3>3.1 PostgreSQL Engine Configuration for Deadlock Tracing</h3>
+<p>Add these settings directly to <code>postgresql.conf</code>:</p>
+<pre><code class="language-ini"># Deadlock Detection and Logging Settings
+deadlock_timeout = 100ms
+log_lock_waits = on
+log_recovery_conflict_waits = on
+log_line_prefix = '%m [%p:%l] user=%u,db=%d,app=%a,client=%h '
+</code></pre>
+<h3>3.2 Mitigation Pattern: Deterministic Sort Ordering</h3>
+<p>The most frequent source of application deadlocks is multi-row record updates executed in non-deterministic orders across concurrent application threads.</p>
+<h4>The Problematic Application Pattern</h4>
+<pre><code class="language-sql">-- Thread A (Updating Batch X)
+UPDATE accounts SET balance = balance - 100 WHERE id = 42;
+UPDATE accounts SET balance = balance + 100 WHERE id = 99;
+
+-- Concurrent Thread B (Updating Batch Y)
+UPDATE accounts SET balance = balance - 50 WHERE id = 99;
+UPDATE accounts SET balance = balance + 50 WHERE id = 42;
+-- Result: Deadlock detected if transactions interleave.
+</code></pre>
+<h4>The Production-Safe Blueprint (Deterministic <code>SELECT FOR UPDATE</code>)</h4>
+<p>Before running batch updates, enforce strict, ascending row-level lock acquisition using an array or subquery with an explicit <code>ORDER BY</code>:</p>
+<pre><code class="language-sql">BEGIN;
+
+-- Lock rows in strict ascending key order
+WITH target_accounts AS (
+    SELECT id
+    FROM accounts
+    WHERE id IN (42, 99)
+    ORDER BY id ASC
+    FOR UPDATE
+)
+SELECT count(*) FROM target_accounts;
+
+-- Proceed with batch updates safely
+UPDATE accounts 
+SET balance = balance - 100 
+WHERE id = 42;
+
+UPDATE accounts 
+SET balance = balance + 100 
+WHERE id = 99;
+
+COMMIT;
+</code></pre>
+<hr />
+<h2>4. Zero-Downtime DDL Migration Playbook (10M+ Rows)</h2>
+<p>Any direct DDL operation (<code>ALTER TABLE</code>, <code>ADD COLUMN</code>, <code>ADD CONSTRAINT</code>) requests an <code>ACCESS EXCLUSIVE</code> lock. If a long-running analytical query or batch update is active, the DDL command queues up behind it, blocking <strong>all</strong> subsequent reads and writes to that table until it executes.</p>
+<h3>4.1 Safe DDL Migration Wrapper Standard</h3>
+<p>Every migration executed on a production database with over 10M rows must be wrapped within a scoped transaction envelope containing strict timeouts and dynamic back-off retries.</p>
+<pre><code class="language-sql">-- Standard Production DDL Envelope Template
+SET lock_timeout = '2s';
+SET statement_timeout = '30s';
+
+-- Step 1: Attempt non-blocking alter
+DO $$
+DECLARE
+    attempts int := 0;
+    max_attempts CONSTANT int := 5;
+    success boolean := false;
+BEGIN
+    WHILE NOT success AND attempts &lt; max_attempts LOOP
+        BEGIN
+            attempts := attempts + 1;
+
+            -- Place target DDL statement here:
+            ALTER TABLE orders ADD COLUMN notes text;
+
+            success := true;
+        EXCEPTION WHEN lock_not_available THEN
+            IF attempts &gt;= max_attempts THEN
+                RAISE EXCEPTION 'Failed to acquire lock after % attempts', max_attempts;
+            END IF;
+            RAISE NOTICE 'Lock unavailable, sleeping before retry %...', attempts;
+            PERFORM pg_sleep(3.0 * attempts);
+        END;
+    END LOOP;
+END;
+$$;
+
+RESET lock_timeout;
+RESET statement_timeout;
+</code></pre>
+<hr />
+<h3>4.2 Pattern A: Safe Index Creation &amp; Replacement</h3>
+<p>Direct <code>CREATE INDEX</code> acquires a <code>SHARE</code> lock, blocking all <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> queries on a 10M+ row table for the entire duration of the build (often 10–60+ minutes).</p>
+<h4>Step-by-Step Safe Execution</h4>
+<ol>
+<li>Build index concurrently (takes <code>SHARE UPDATE EXCLUSIVE</code> lock, allows concurrent DML).</li>
+<li>Catch and drop invalid indexes if interrupted.</li>
+</ol>
+<pre><code class="language-sql">-- Step 1: Create index concurrently (MUST run outside a transaction block)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_customer_id_created_at
+ON orders (customer_id, created_at DESC);
+
+-- Step 2: Validate the index was successfully built and is not marked invalid
+DO $$
+DECLARE
+    is_valid boolean;
+BEGIN
+    SELECT indisvalid INTO is_valid
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    WHERE c.relname = 'idx_orders_customer_id_created_at';
+
+    IF is_valid IS NOT TRUE THEN
+        RAISE EXCEPTION 'Index build failed or marked INVALID. Run DROP INDEX CONCURRENTLY.';
+    END IF;
+END;
+$$;
+</code></pre>
+<p>If an error occurs during build, an invalid index record remains, consuming disk space and degrading write performance. Recover using:</p>
+<pre><code class="language-sql">DROP INDEX CONCURRENTLY IF EXISTS idx_orders_customer_id_created_at;
+</code></pre>
+<hr />
+<h3>4.3 Pattern B: Safe <code>NOT NULL</code> Column Additions</h3>
+<p>Prior to PostgreSQL 11, adding a column with a default value rewrote the entire table. In PostgreSQL 11+, non-volatile default values update only catalog metadata instantly. However, adding <code>NOT NULL</code> without a default value still requires a full-table table-scan with an <code>ACCESS EXCLUSIVE</code> lock.</p>
+<pre><code class="language-sql">-- Safe Step 1: Add the column as NULLABLE (Instant metadata operation)
+SET lock_timeout = '2s';
+ALTER TABLE orders ADD COLUMN fulfillment_status varchar(32);
+RESET lock_timeout;
+
+-- Safe Step 2: Add check constraint marked as NOT VALID (Instant metadata operation)
+SET lock_timeout = '2s';
+ALTER TABLE orders 
+    ADD CONSTRAINT chk_orders_fulfillment_status_not_null 
+    CHECK (fulfillment_status IS NOT NULL) NOT VALID;
+RESET lock_timeout;
+
+-- Safe Step 3: Validate constraint concurrently (Acquires SHARE UPDATE EXCLUSIVE - Writes permitted)
+ALTER TABLE orders VALIDATE CONSTRAINT chk_orders_fulfillment_status_not_null;
+
+-- Safe Step 4 (Optional - Postgres 12+): Transition constraint to standard NOT NULL
+-- Since the CHECK constraint proves all rows are valid, this runs instantly.
+SET lock_timeout = '2s';
+ALTER TABLE orders ALTER COLUMN fulfillment_status SET NOT NULL;
+ALTER TABLE orders DROP CONSTRAINT chk_orders_fulfillment_status_not_null;
+RESET lock_timeout;
+</code></pre>
+<hr />
+<h3>4.4 Pattern C: Zero-Downtime Data Backfill Engine</h3>
+<p>Updating 10,000,000 rows in a single <code>UPDATE</code> statement creates huge write amplification, generates gigabytes of WAL logs, exhausts <code>max_locks_per_transaction</code>, blocks concurrent vacuuming, and induces massive replica lag.</p>
+<p>Use a keyset-pagination, batched-loop worker that explicitly releases locks after each chunk and throttles execution:</p>
+<pre><code class="language-sql">DO $$
+DECLARE
+    batch_size CONSTANT int := 5000;
+    current_min_id bigint;
+    current_max_id bigint;
+    rows_updated int;
+    total_updated bigint := 0;
+BEGIN
+    SELECT min(id) INTO current_min_id FROM orders;
+    SELECT max(id) INTO current_max_id FROM orders;
+
+    RAISE NOTICE 'Starting batch update from ID % to %', current_min_id, current_max_id;
+
+    WHILE current_min_id &lt;= current_max_id LOOP
+        WITH batch AS (
+            SELECT id 
+            FROM orders
+            WHERE id &gt;= current_min_id 
+              AND id &lt; (current_min_id + batch_size)
+              AND fulfillment_status IS NULL
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE orders o
+        SET fulfillment_status = 'pending_processing'
+        FROM batch b
+        WHERE o.id = b.id;
+
+        GET DIAGNOSTICS rows_updated = ROW_COUNT;
+        total_updated := total_updated + rows_updated;
+
+        -- Commit changes, release row locks, clean dead tuples
+        COMMIT;
+
+        -- Log progress and sleep briefly to allow replication stream to catch up
+        RAISE NOTICE 'Processed chunk up to ID %. Total rows updated: %', 
+            (current_min_id + batch_size), total_updated;
+
+        current_min_id := current_min_id + batch_size;
+        PERFORM pg_sleep(0.05); -- 50ms pause to throttle disk I/O and replication lag
+    END LOOP;
+
+    RAISE NOTICE 'Backfill complete. Total records updated: %', total_updated;
+END;
+$$;
+</code></pre>
+<hr />
+<h3>4.5 Pattern D: Safe Foreign Key Addition</h3>
+<p>A naive <code>ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY</code> triggers a full-table validation scan while holding an <code>ACCESS EXCLUSIVE</code> lock on the child table and a <code>SHARE ROW EXCLUSIVE</code> lock on the parent table.</p>
+<pre><code class="language-sql">-- Step 1: Add the Foreign Key constraint without validating existing rows
+SET lock_timeout = '2s';
+ALTER TABLE orders 
+    ADD CONSTRAINT fk_orders_customer_id 
+    FOREIGN KEY (customer_id) 
+    REFERENCES customers(id) 
+    NOT VALID;
+RESET lock_timeout;
+
+-- Step 2: Validate existing rows concurrently
+-- Acquires only SHARE UPDATE EXCLUSIVE: Writes to both tables proceed unimpeded.
+ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_customer_id;
+</code></pre>
+<hr />
+<h3>4.6 Pattern E: Live Column Type Conversion (e.g., <code>INT</code> to <code>BIGINT</code>)</h3>
+<p>Changing a column type directly via <code>ALTER TABLE orders ALTER COLUMN user_id TYPE bigint</code> requires an <code>ACCESS EXCLUSIVE</code> lock and rewrites the entire physical table, locking out users for hours on a 10M+ row dataset. </p>
+<p>Use the <strong>Dual-Write Expansion &amp; Contraction Pattern</strong>:</p>
+<pre><code class="language-sql">-- =========================================================================
+-- PHASE 1: EXPANSION (Add new column &amp; create synchronizing trigger)
+-- =========================================================================
+
+-- 1.1 Add new column (metadata-only update)
+SET lock_timeout = '2s';
+ALTER TABLE orders ADD COLUMN user_id_v2 bigint;
+RESET lock_timeout;
+
+-- 1.2 Create trigger function to mirror real-time writes
+CREATE OR REPLACE FUNCTION public.sync_orders_user_id()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+AS $$
+BEGIN
+    NEW.user_id_v2 := NEW.user_id;
+    RETURN NEW;
+END;
+$$;
+
+-- 1.3 Apply trigger to maintain dual writes
+SET lock_timeout = '2s';
+CREATE OR REPLACE TRIGGER trg_sync_orders_user_id
+BEFORE INSERT OR UPDATE OF user_id ON orders
+FOR EACH ROW
+EXECUTE FUNCTION public.sync_orders_user_id();
+RESET lock_timeout;
+
+-- =========================================================================
+-- PHASE 2: HISTORICAL BACKFILL (Run concurrently in background)
+-- =========================================================================
+DO $$
+DECLARE
+    batch_size CONSTANT int := 10000;
+    max_id bigint;
+    start_id bigint;
+BEGIN
+    SELECT min(id), max(id) INTO start_id, max_id FROM orders;
+
+    WHILE start_id &lt;= max_id LOOP
+        UPDATE orders
+        SET user_id_v2 = user_id
+        WHERE id &gt;= start_id 
+          AND id &lt; (start_id + batch_size) 
+          AND user_id_v2 IS NULL;
+
+        COMMIT;
+        start_id := start_id + batch_size;
+        PERFORM pg_sleep(0.02);
+    END LOOP;
+END;
+$$;
+
+-- =========================================================================
+-- PHASE 3: INDEX CREATION &amp; CONSTRAINTS (Concurrently)
+-- =========================================================================
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_user_id_v2 ON orders(user_id_v2);
+
+-- =========================================================================
+-- PHASE 4: ATOMIC SWAP
+-- =========================================================================
+-- Note: Re-point your application queries to user_id_v2 prior to this step,
+-- or execute atomic name swapping under an explicit lock envelope:
+
+SET lock_timeout = '2s';
+BEGIN;
+    -- Drop synchronization trigger
+    DROP TRIGGER trg_sync_orders_user_id ON orders;
+    DROP FUNCTION public.sync_orders_user_id();
+
+    -- Atomic rename swap
+    ALTER TABLE orders RENAME COLUMN user_id TO user_id_old;
+    ALTER TABLE orders RENAME COLUMN user_id_v2 TO user_id;
+
+    -- Rename index to original name standard
+    ALTER INDEX idx_orders_user_id_v2 RENAME TO idx_orders_user_id;
+COMMIT;
+RESET lock_timeout;
+
+-- =========================================================================
+-- PHASE 5: CONTRACTION (Cleanup after application verification)
+-- =========================================================================
+-- Dropping the column does not lock reads/writes on PostgreSQL 11+
+SET lock_timeout = '2s';
+ALTER TABLE orders DROP COLUMN user_id_old;
+RESET lock_timeout;
+</code></pre>
+<hr />
+<h2>5. Production Zero-Downtime Migration Checklist</h2>
+<p>Execute this verification sequence prior to applying any schema changes on production tables exceeding 10,000,000 rows:</p>
+<p>```
+[ ] 1. ENVIRONMENT VALIDATION
+    [ ] Migration has run against an obfuscated production replica of equal scale.
+    [ ] WAL generation rates and replication lag limits have been calculated.
+    [ ] Target table bloat levels checked via pg_stat_user_tables (live vs dead tuples).</p>
+<p>[ ] 2. LOCK SAFETY PROTOCOL
+    [ ] Explicit SET lock_timeout = '2s' is defined at the start of every migration step.
+    [ ] Explicit SET statement_timeout is configured.
+    [ ] No direct table-rewriting operations exist in the migration transaction.
+    [ ] Long-running analytical/ETL queries are paused during the deployment window.</p>
+<p>[ ] 3. INDEXES &amp; CONSTRAINTS
+    [ ] All new indexes specify CONCURRENTLY.
+    [ ] All Foreign Keys and CHECK constraints specify NOT VALID.
+    [ ] VALIDATE CONSTRAINT is executed in a separate, decoupled step.
+    [ ] Verification step queries pg_index.indisvalid to confirm build integrity.</p>
+<p>[ ] 4. BATCHED DATA MANIPULATION
+    [ ] Data backfills execute via deterministic keyset batches (&lt;10,000 rows per loop).
+    [ ] Dynamic COMMIT statements exist inside loop bodies to release table/row locks.
+    [ ] Throttling sleep delay (pg_sleep) is present to prevent I/O and replication bottlenecks.</p>
+<p>[ ] 5. ROLLBACK &amp; OBSERVABILITY
+    [ ] Active monitor running: blocking locks diagnostic query (Section 2.2).
+    [ ] Clean DROP INDEX CONCURRENTLY command is prepared if the index build fails.
+    [ ] PgBouncer connection queue wait times (SHOW POOLS) are monitored in real-time.</p>
+</body>
+</html>
