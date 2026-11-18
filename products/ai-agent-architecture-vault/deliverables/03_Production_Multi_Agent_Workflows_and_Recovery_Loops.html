@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The AI Agent Architecture Vault: 50+ Multi-Agent Systems, Tool-Calling Pipelines & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: 25+ Multi-Agent Workflows, Swarms &amp; Self-Correction Loops</h1>
+<p>Production multi-agent systems fail when they rely on unconstrained natural language dialogues between agents. High-reliability agent systems operate as deterministic state machines that leverage Large Language Models (LLMs) strictly for bounded extraction, synthesis, and routing decisions. </p>
+<p>This module provides the architectural patterns, state transition schemas, self-correction algorithms, and executable implementation code required to deploy mission-critical swarms and recovery loops.</p>
+<hr />
+<h2>1. Architecture Topology &amp; State Machine Primitives</h2>
+<p>Multi-agent topologies must balance autonomy with deterministic constraints. Every workflow in this module is anchored to one of four topological primitives:</p>
+<pre><code>1. Hierarchical Supervisor:
+   [Supervisor] ---&gt; [Worker A]
+        |        ---&gt; [Worker B]
+        +------------ [Worker C]
+
+2. Sequential Assembly Line:
+   [Ingress] -&gt; [Agent 1] -&gt; [Validation Gate] -&gt; [Agent 2] -&gt; [Egress]
+                                    | (Fail)
+                                    v
+                             [Self-Correction]
+
+3. Fan-Out / Fan-In Swarm:
+   [Dispatcher] ---&gt; [Worker 1] ---\
+                ---&gt; [Worker 2] ---&gt; [Aggregator / Consensus]
+                ---&gt; [Worker 3] ---/
+
+4. Human-in-the-Loop Escalation:
+   [Agent] &lt;--&gt; [Verification Loop]
+                     | (Confidence &lt; Threshold OR Policy Exception)
+                     v
+             [Human Triage Queue]
+</code></pre>
+<h3>1.1 Multi-Agent Topology Routing Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Topology Pattern</th>
+<th style="text-align: left;">Primary Use Case</th>
+<th style="text-align: left;">State Persistence</th>
+<th style="text-align: left;">Failure Mode</th>
+<th style="text-align: left;">Recovery Strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Hierarchical Supervisor</strong></td>
+<td style="text-align: left;">Complex planning with open-ended execution paths</td>
+<td style="text-align: left;">Centralized State Graph</td>
+<td style="text-align: left;">Worker deadlocks, Supervisor hallucinations</td>
+<td style="text-align: left;">Supervisor task timeout + dynamic re-assignment</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sequential Assembly Line</strong></td>
+<td style="text-align: left;">Document pipelines, code generation &amp; linting</td>
+<td style="text-align: left;">Monotonic Context Accumulator</td>
+<td style="text-align: left;">Pipeline poison pills, cascading drift</td>
+<td style="text-align: left;">Node-level validation gates + rollback to prior checkpoint</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Fan-Out / Fan-In Swarm</strong></td>
+<td style="text-align: left;">High-throughput web research, distributed diff analysis</td>
+<td style="text-align: left;">Ephemeral worker state, shared reducer</td>
+<td style="text-align: left;">Straggler workers, conflicting extractions</td>
+<td style="text-align: left;">Quorum-based consensus, outlier rejection</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Escalate-to-Human</strong></td>
+<td style="text-align: left;">Financial actions, sensitive customer ops</td>
+<td style="text-align: left;">Append-only audit log with interrupt status</td>
+<td style="text-align: left;">False negatives on risk classification</td>
+<td style="text-align: left;">Deterministic heuristic tripwires bypassing LLM triage</td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 State Transition Circuit Breaker Specification</h3>
+<p>When an agent enters an error state (e.g., tool execution error, schema validation failure, infinite semantic loop), the execution engine must not re-prompt blindly. It routes through this deterministic circuit breaker:</p>
+<pre><code>[Agent Execution State]
+         |
+    (Tool/Schema Error)
+         v
++-------------------------------+
+| Check Retry Budget (Max: 3)   |
++-------------------------------+
+  |                           |
+  | (Attempts &lt; 3)            | (Attempts &gt;= 3)
+  v                           v
++-----------------------+   +------------------------------------+
+| Error Classification: |   | TRIP CIRCUIT:                      |
+| 1. Syntax/Schema      |   | 1. Write state snapshot to DLQ     |
+| 2. Logic/Precondition |   | 2. Revert DB / state changes       |
+| 3. Environment/API    |   | 3. Return Fallback OR Escalate     |
++-----------------------+   +------------------------------------+
+  |
+  v
++------------------------------------+
+| Inject Deterministic Repair Prompt |
+| + Schema Diff / Compiler Trace     |
++------------------------------------+
+  |
+  v
+[Re-Execute Step]
+</code></pre>
+<hr />
+<h2>2. Blueprint 1: Autonomous Research Swarm (Fan-Out / Fan-In)</h2>
+<p>This blueprint coordinates an Orchestrator that breaks down an ambiguous research question into isolated sub-hypotheses, parallelizes worker scraping agents, enforces fact-checking, and generates a structured research dossier.</p>
+<pre><code>                              [Research Orchestrator]
+                                         |
+               +-------------------------+-------------------------+
+               | (Sub-Task 1)            | (Sub-Task 2)            | (Sub-Task 3)
+               v                         v                         v
+        [Domain Worker A]         [Domain Worker B]         [Domain Worker C]
+               |                         |                         |
+        (Raw Findings)            (Raw Findings)            (Raw Findings)
+               +-------------------------+-------------------------+
+                                         |
+                                         v
+                            [Fact-Checking Verification Gate]
+                                         |
+                                 (Pass Verification)
+                                         v
+                               [Synthesis Reducer]
+</code></pre>
+<h3>2.1 Lead Orchestrator System Prompt &amp; Schema</h3>
+<pre><code class="language-yaml">role: &quot;Lead Research Orchestrator&quot;
+objective: &quot;Deconstruct research requests into independent, non-overlapping search hypotheses.&quot;
+execution_rules:
+  - &quot;Produce exactly between 2 and 4 sub-tasks based on topic complexity.&quot;
+  - &quot;Every task must target an orthogonal dimension (e.g., Architecture, Benchmarks, Failure Modes).&quot;
+  - &quot;Explicitly define required search vectors and acceptance criteria for each worker.&quot;
+  - &quot;Return output matching the orchestrator_schema exactly.&quot;
+</code></pre>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;http://json-schema.org/draft-07/schema#&quot;,
+  &quot;title&quot;: &quot;OrchestratorDecompositionPlan&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;research_objective&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;sub_tasks&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;task_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;target_dimension&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;directed_queries&quot;: {
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;items&quot;: { &quot;type&quot;: &quot;string&quot; }
+          },
+          &quot;required_evidence_keys&quot;: {
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;items&quot;: { &quot;type&quot;: &quot;string&quot; }
+          }
+        },
+        &quot;required&quot;: [&quot;task_id&quot;, &quot;target_dimension&quot;, &quot;directed_queries&quot;, &quot;required_evidence_keys&quot;]
+      }
+    }
+  },
+  &quot;required&quot;: [&quot;research_objective&quot;, &quot;sub_tasks&quot;]
+}
+</code></pre>
+<h3>2.2 Sub-Agent Worker System Prompts</h3>
+<h4>Domain Search Worker</h4>
+<pre><code class="language-markdown">You are a Targeted Search Worker. You receive a task ID, a targeted dimension, and directed search queries.
+Your responsibilities:
+1. Emulate execution of targeted search queries against available search APIs.
+2. Extract exact technical claims, system performance metrics, and implementation trade-offs.
+3. Reject marketing prose, generic definitions, and circular commentary.
+4. Output your extractions in the required structured evidence format.
+
+Output Format:
+```json
+{
+  &quot;task_id&quot;: &quot;&lt;TASK_ID&gt;&quot;,
+  &quot;dimension&quot;: &quot;&lt;DIMENSION&gt;&quot;,
+  &quot;extracted_evidence&quot;: [
+    {
+      &quot;source_url&quot;: &quot;https://...&quot;,
+      &quot;claim&quot;: &quot;Specific performance metric or architecture constraint&quot;,
+      &quot;confidence_score&quot;: 0.95,
+      &quot;raw_quote&quot;: &quot;Exact substring from source&quot;
+    }
+  ]
+}
+</code></pre>
+<pre><code>
+#### Fact-Checking Verification Agent
+```markdown
+You are an Adversarial Fact-Checker. You evaluate extracted evidence from Workers before aggregation.
+Verification Rules:
+1. Check if the claim is fully supported by the raw quote. If the raw quote does not explicitly support the claim, set `verified: false`.
+2. Check for numeric consistency across sources. If source A states latency is 10ms and source B states 100ms for the same setup, flag as `CONTRADICTION`.
+3. If more than 30% of claims fail verification, reject the batch and flag the worker output for re-querying.
+
+Output Format:
+```json
+{
+  &quot;batch_passed&quot;: true,
+  &quot;invalid_claims&quot;: [],
+  &quot;retained_evidence&quot;: [
+    {
+      &quot;claim&quot;: &quot;Verified statement&quot;,
+      &quot;source_url&quot;: &quot;https://...&quot;,
+      &quot;verification_notes&quot;: &quot;Quote strictly supports claim.&quot;
+    }
+  ]
+}
+</code></pre>
+<pre><code>
+### 2.3 Deterministic Python Orchestrator Implementation
+
+```python
+import asyncio
+from typing import List, Dict, Any
+from pydantic import BaseModel, Field
+
+class SubTask(BaseModel):
+    task_id: str
+    target_dimension: str
+    directed_queries: List[str]
+    required_evidence_keys: List[str]
+
+class DecompositionPlan(BaseModel):
+    research_objective: str
+    sub_tasks: List[SubTask]
+
+class RawEvidence(BaseModel):
+    source_url: str
+    claim: str
+    confidence_score: float
+    raw_quote: str
+
+class WorkerResult(BaseModel):
+    task_id: str
+    dimension: str
+    extracted_evidence: List[RawEvidence]
+
+class VerifiedEvidence(BaseModel):
+    claim: str
+    source_url: str
+    verification_notes: str
+
+class VerificationResult(BaseModel):
+    batch_passed: bool
+    retained_evidence: List[VerifiedEvidence]
+    invalid_claims: List[str]
+
+# --- Mock LLM Interface Callers (Replace with your direct model provider client) ---
+
+async def call_orchestrator(query: str) -&gt; DecompositionPlan:
+    # Simulates decomposition of user prompt into structured tasks
+    return DecompositionPlan(
+        research_objective=query,
+        sub_tasks=[
+            SubTask(
+                task_id=&quot;task_1&quot;,
+                target_dimension=&quot;Engine Architecture&quot;,
+                directed_queries=[&quot;vLLM PagedAttention architecture paper&quot;, &quot;TGI continuous batching spec&quot;],
+                required_evidence_keys=[&quot;memory_allocation&quot;, &quot;throughput_multiplier&quot;]
+            ),
+            SubTask(
+                task_id=&quot;task_2&quot;,
+                target_dimension=&quot;Latency Benchmarks&quot;,
+                directed_queries=[&quot;vLLM vs TGI token latency Llama 3 70B A100&quot;],
+                required_evidence_keys=[&quot;ttft&quot;, &quot;tpot&quot;]
+            )
+        ]
+    )
+
+async def execute_worker_node(sub_task: SubTask) -&gt; WorkerResult:
+    # Simulates worker fan-out: search execution + extraction
+    await asyncio.sleep(0.1) # Network I/O simulation
+    return WorkerResult(
+        task_id=sub_task.task_id,
+        dimension=sub_task.target_dimension,
+        extracted_evidence=[
+            RawEvidence(
+                source_url=&quot;https://arxiv.org/abs/2309.06180&quot;,
+                claim=&quot;PagedAttention reduces KV cache fragmentation to below 4%.&quot;,
+                confidence_score=0.98,
+                raw_quote=&quot;KV cache memory fragmentation is reduced to under 4% in production workloads.&quot;
+            )
+        ]
+    )
+
+async def execute_verification_gate(worker_results: List[WorkerResult]) -&gt; List[VerifiedEvidence]:
+    # Aggregates across all workers and executes verification
+    verified_pool: List[VerifiedEvidence] = []
+    for wr in worker_results:
+        for ev in wr.extracted_evidence:
+            # Deterministic check: Raw quote must contain the core subject of the claim
+            if &quot;under 4%&quot; in ev.raw_quote and &quot;fragmentation&quot; in ev.claim.lower():
+                verified_pool.append(
+                    VerifiedEvidence(
+                        claim=ev.claim,
+                        source_url=ev.source_url,
+                        verification_notes=&quot;Claim substantiated by exact substring matching.&quot;
+                    )
+                )
+    return verified_pool
+
+async def execute_reducer_synthesis(objective: str, evidence: List[VerifiedEvidence]) -&gt; str:
+    # Synthesis over verified nodes only
+    summary_lines = [f&quot;- {e.claim} (Source: {e.source_url})&quot; for e in evidence]
+    return f&quot;# Research Report: {objective}\n\n## Verified Key Findings\n&quot; + &quot;\n&quot;.join(summary_lines)
+
+# --- Orchestration Runner ---
+
+async def run_autonomous_research_swarm(objective: str) -&gt; str:
+    # Step 1: Decomposition
+    plan = await call_orchestrator(objective)
+
+    # Step 2: Fan-Out Execution
+    worker_coroutines = [execute_worker_node(task) for task in plan.sub_tasks]
+    worker_outputs: List[WorkerResult] = await asyncio.gather(*worker_coroutines)
+
+    # Step 3: Verification Gate
+    verified_evidence = await execute_verification_gate(worker_outputs)
+
+    if not verified_evidence:
+        raise RuntimeError(&quot;Quality Gate Failed: No claims survived verification.&quot;)
+
+    # Step 4: Fan-In Synthesis
+    final_report = await execute_reducer_synthesis(plan.research_objective, verified_evidence)
+    return final_report
+
+if __name__ == &quot;__main__&quot;:
+    report = asyncio.run(run_autonomous_research_swarm(&quot;Production LLM Inference Optimization 2024&quot;))
+    print(report)
+</code></pre>
+<hr />
+<h2>3. Blueprint 2: Self-Correcting SQL Query Generator &amp; Execution Loop</h2>
+<p>This blueprint implements a multi-step generator-reflector-executor loop. If a database query fails compilation, engine-level execution, or fails empty-result invariants, the system traps the database error and enters a bounded repair cycle.</p>
+<pre><code>       [User Natural Language Query]
+                     |
+                     v
+      +------------------------------+
+      |  Schema Introspection Context |
+      +------------------------------+
+                     |
+                     v
+          [SQL Generator Agent]
+                     |
+                     v
+            (Run in Sandboxed DB)
+                     |
+          +----------+----------+
+          |                     |
+     (Success)               (Engine/Syntax Error)
+          |                     |
+          v                     v
+    [Row Count Check]    [Diagnostic Error Formatter]
+          |                     |
+     (Rows &gt; 0)                 v
+          |              [SQL Fixer Agent]
+          |                     |
+          |                     +---- (Attempts &lt; 3) ----+
+          |                     |                         |
+          |                     v                         |
+          |              (Attempts &gt;= 3)                  |
+          |                     |                         |
+          |                     v                         |
+          |             [Circuit Breaker]                 |
+          |             (Return Error Context)            |
+          |                                               |
+          +-----------------------------------------------+
+</code></pre>
+<h3>3.1 SQL Fixer Agent System Prompt</h3>
+<pre><code class="language-markdown">You are a Database Reliability Engineer specializing in SQL dialect error correction.
+You receive:
+1. The target schema (DDL).
+2. The user's semantic request.
+3. The previously failed SQL query.
+4. The exact database runtime error string or empty-result warning.
+
+Your Operational Invariants:
+1. Correct dialect-specific syntax errors (e.g., SQLite vs PostgreSQL window functions).
+2. Fix joins missing appropriate foreign keys.
+3. Never invent column names; use ONLY columns present in the provided DDL.
+4. If an ambiguous column name error occurs, qualify all columns with their table or alias.
+5. If the runtime error indicates type mismatch, introduce explicit `CAST()` operations.
+
+You must respond ONLY with the corrected query wrapped in an ```sql code block. No explanations.
+</code></pre>
+<h3>3.2 Complete Self-Correction Loop Implementation</h3>
+<pre><code class="language-python">import sqlite3
+import re
+from typing import Optional, Tuple, Dict, Any
+
+class SQLiteSelfCorrectionEngine:
+    def __init__(self, db_connection: sqlite3.Connection):
+        self.conn = db_connection
+        self.max_retries = 3
+
+    def get_schema_context(self) -&gt; str:
+        cursor = self.conn.cursor()
+        cursor.execute(&quot;SELECT sql FROM sqlite_master WHERE type='table';&quot;)
+        tables = cursor.fetchall()
+        return &quot;\n&quot;.join([t[0] for t in tables if t[0] is not None])
+
+    def execute_query_safely(self, query: str) -&gt; Tuple[bool, Optional[list], Optional[str]]:
+        cursor = self.conn.cursor()
+        try:
+            # Deterministic Guard: Disallow mutations in extraction pipeline
+            clean_query = query.strip().upper()
+            if any(clean_query.startswith(verb) for verb in [&quot;INSERT&quot;, &quot;UPDATE&quot;, &quot;DELETE&quot;, &quot;DROP&quot;, &quot;ALTER&quot;]):
+                return False, None, &quot;Mutation queries are blocked by policy.&quot;
+
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            if len(rows) == 0:
+                return False, None, &quot;EMPTY_RESULT_SET: Query ran successfully but returned 0 rows. Verify join predicates and WHERE conditions.&quot;
+            return True, rows, None
+        except sqlite3.Error as e:
+            return False, None, f&quot;SQLITE_ENGINE_ERROR: {str(e)}&quot;
+
+    def mock_llm_sql_generator(self, prompt: str, schema: str) -&gt; str:
+        # Intentionally generates a query with a column name error on first pass for demonstration
+        return &quot;SELECT customer_id, order_value, created_at FROM orders WHERE order_total &gt; 500;&quot;
+
+    def mock_llm_sql_fixer(self, failed_query: str, error: str, schema: str) -&gt; str:
+        # Deterministically parses the error and swaps the invalid column
+        if &quot;no such column: order_total&quot; in error or &quot;order_value&quot; in failed_query:
+            return &quot;SELECT customer_id, order_value, created_at FROM orders WHERE order_value &gt; 500;&quot;
+        return failed_query
+
+    def run_query_with_self_correction(self, user_request: str) -&gt; Dict[str, Any]:
+        schema = self.get_schema_context()
+        current_query = self.mock_llm_sql_generator(user_request, schema)
+        attempts = 0
+        execution_trace = []
+
+        while attempts &lt; self.max_retries:
+            attempts += 1
+            success, results, error_msg = self.execute_query_safely(current_query)
+
+            trace_entry = {
+                &quot;attempt&quot;: attempts,
+                &quot;query&quot;: current_query,
+                &quot;success&quot;: success,
+                &quot;error&quot;: error_msg
+            }
+            execution_trace.append(trace_entry)
+
+            if success:
+                return {
+                    &quot;status&quot;: &quot;SUCCESS&quot;,
+                    &quot;final_query&quot;: current_query,
+                    &quot;rows&quot;: results,
+                    &quot;attempts&quot;: attempts,
+                    &quot;trace&quot;: execution_trace
+                }
+
+            # Circuit breaker trip condition
+            if attempts &gt;= self.max_retries:
+                break
+
+            # Self-Correction Step: Inject error into the repair agent
+            current_query = self.mock_llm_sql_fixer(current_query, error_msg, schema)
+
+        return {
+            &quot;status&quot;: &quot;CIRCUIT_BREAKER_TRIPPED&quot;,
+            &quot;final_query&quot;: current_query,
+            &quot;last_error&quot;: error_msg,
+            &quot;attempts&quot;: attempts,
+            &quot;trace&quot;: execution_trace
+        }
+
+# --- Initialization and Verification ---
+
+def init_test_db() -&gt; sqlite3.Connection:
+    conn = sqlite3.connect(&quot;:memory:&quot;)
+    cur = conn.cursor()
+    cur.execute(&quot;&quot;&quot;
+        CREATE TABLE orders (
+            customer_id INTEGER,
+            order_value REAL,
+            created_at TEXT
+        );
+    &quot;&quot;&quot;)
+    cur.execute(&quot;INSERT INTO orders VALUES (1, 650.50, '2024-01-15');&quot;)
+    cur.execute(&quot;INSERT INTO orders VALUES (2, 120.00, '2024-01-16');&quot;)
+    conn.commit()
+    return conn
+
+if __name__ == &quot;__main__&quot;:
+    db = init_test_db()
+    engine = SQLiteSelfCorrectionEngine(db)
+    result = engine.run_query_with_self_correction(&quot;Find all orders over $500&quot;)
+    print(f&quot;Status: {result['status']}, Attempts: {result['attempts']}&quot;)
+    print(f&quot;Final Query: {result['final_query']}&quot;)
+    print(f&quot;Retrieved Rows: {result['rows']}&quot;)
+</code></pre>
+<hr />
+<h2>4. Blueprint 3: Automated GitHub PR Reviewer &amp; Linter Swarm</h2>
+<p>This workflow employs three domain-specific evaluation agents running against a code diff, followed by a Consolidation Gate that outputs deterministic GitHub-compatible review comments and merge verdicts.</p>
+<pre><code>                    [Inbound PR Diff]
+                            |
+        +-------------------+-------------------+
+        |                   |                   |
+        v                   v                   v
+[Security Auditor]  [Performance Critic]  [Style Enforcer]
+        |                   |                   |
+ (Vulnerabilities)   (Complexity Issues)  (Conventions)
+        +-------------------+-------------------+
+                            |
+                            v
+              [Consolidation Gate Evaluator]
+                            |
+         +------------------+------------------+
+         |                                     |
+  (Any Critical Flags)                  (All Flags Minor/None)
+         |                                     |
+         v                                     v
+   Verdict: REQUEST_CHANGES              Verdict: APPROVE
+</code></pre>
+<h3>4.1 Domain-Specific Critic Prompts</h3>
+<h4>1. Security Auditor Agent</h4>
+<pre><code class="language-markdown">Analyze the provided Unified Git Diff strictly for application security vulnerabilities:
+- Injection points (SQL, command, path traversal)
+- Exposure of sensitive credentials, JWT secrets, or hardcoded API keys
+- Insecure direct object references (IDOR)
+- Missing authorization/authentication boundaries
+
+Ignore styling, typing, formatting, and performance nuances.
+Return JSON output only:
+{
+  &quot;agent&quot;: &quot;SecurityAuditor&quot;,
+  &quot;issues_found&quot;: [
+    {
+      &quot;file&quot;: &quot;path/to/file.py&quot;,
+      &quot;line_number&quot;: 42,
+      &quot;severity&quot;: &quot;CRITICAL&quot; | &quot;HIGH&quot; | &quot;MEDIUM&quot; | &quot;LOW&quot;,
+      &quot;rule_id&quot;: &quot;SEC-SQLI-001&quot;,
+      &quot;description&quot;: &quot;Unescaped string formatting in query builder.&quot;,
+      &quot;suggested_patch&quot;: &quot;cursor.execute('SELECT * FROM t WHERE id = ?', (user_id,))&quot;
+    }
+  ]
+}
+</code></pre>
+<h4>2. Performance &amp; Resource Allocation Critic</h4>
+<pre><code class="language-markdown">Analyze the provided Unified Git Diff strictly for runtime efficiency and system resource bottlenecks:
+- O(N^2) or greater complexity algorithms on collections
+- N+1 database queries inside loop contexts
+- Unbounded memory allocations (missing batching/pagination)
+- Thread contention, missing async IO, or unbuffered reads
+
+Return JSON output only:
+{
+  &quot;agent&quot;: &quot;PerformanceCritic&quot;,
+  &quot;issues_found&quot;: [
+    {
+      &quot;file&quot;: &quot;path/to/file.py&quot;,
+      &quot;line_number&quot;: 105,
+      &quot;severity&quot;: &quot;CRITICAL&quot; | &quot;HIGH&quot; | &quot;MEDIUM&quot; | &quot;LOW&quot;,
+      &quot;rule_id&quot;: &quot;PERF-NPLUSONE-004&quot;,
+      &quot;description&quot;: &quot;Database query executed inside a loop across external IDs.&quot;,
+      &quot;suggested_patch&quot;: &quot;Use SELECT ... WHERE id IN (...) before loop.&quot;
+    }
+  ]
+}
+</code></pre>
+<h4>3. Style &amp; Engineering Convention Enforcer</h4>
+<pre><code class="language-markdown">Analyze the provided Unified Git Diff strictly for codebase maintainability and idioms:
+- Missing types or incorrect type hints
+- Function complexity exceeding reasonable bounds (&gt;25 lines, excessive nesting)
+- Non-idiomatic patterns or broken conventions
+
+Return JSON output only:
+{
+  &quot;agent&quot;: &quot;StyleEnforcer&quot;,
+  &quot;issues_found&quot;: [
+    {
+      &quot;file&quot;: &quot;path/to/file.py&quot;,
+      &quot;line_number&quot;: 15,
+      &quot;severity&quot;: &quot;LOW&quot;,
+      &quot;rule_id&quot;: &quot;STYLE-TYPE-MISSING&quot;,
+      &quot;description&quot;: &quot;Function definition lacks return type signature.&quot;,
+      &quot;suggested_patch&quot;: &quot;def parse_payload(data: bytes) -&gt; dict:&quot;
+    }
+  ]
+}
+</code></pre>
+<h3>4.2 Consolidation Gate and Output Formatter</h3>
+<pre><code class="language-python">import json
+from typing import List, Literal
+from pydantic import BaseModel, Field
+
+class CriticIssue(BaseModel):
+    file: str
+    line_number: int
+    severity: Literal[&quot;CRITICAL&quot;, &quot;HIGH&quot;, &quot;MEDIUM&quot;, &quot;LOW&quot;]
+    rule_id: str
+    description: str
+    suggested_patch: str
+
+class AgentReport(BaseModel):
+    agent: str
+    issues_found: List[CriticIssue]
+
+class GitHubReviewPayload(BaseModel):
+    verdict: Literal[&quot;APPROVE&quot;, &quot;REQUEST_CHANGES&quot;, &quot;COMMENT&quot;]
+    summary_body: str
+    inline_comments: List[dict]
+
+class PRReviewConsolidationGate:
+    def __init__(self, block_on_severity: List[str] = None):
+        self.block_on_severity = block_on_severity or [&quot;CRITICAL&quot;, &quot;HIGH&quot;]
+
+    def consolidate(self, reports: List[AgentReport]) -&gt; GitHubReviewPayload:
+        all_issues: List[CriticIssue] = []
+        for report in reports:
+            all_issues.extend(report.issues_found)
+
+        # Evaluation Gate Logic
+        has_blocking_failures = any(
+            issue.severity in self.block_on_severity for issue in all_issues
+        )
+
+        verdict: Literal[&quot;APPROVE&quot;, &quot;REQUEST_CHANGES&quot;, &quot;COMMENT&quot;] = (
+            &quot;REQUEST_CHANGES&quot; if has_blocking_failures else &quot;APPROVE&quot;
+        )
+
+        if not all_issues:
+            return GitHubReviewPayload(
+                verdict=&quot;APPROVE&quot;,
+                summary_body=&quot;All automated critic agents passed with zero issues identified.&quot;,
+                inline_comments=[]
+            )
+
+        # Format GitHub Inline comments
+        inline_comments = []
+        for issue in all_issues:
+            inline_comments.append({
+                &quot;path&quot;: issue.file,
+                &quot;line&quot;: issue.line_number,
+                &quot;body&quot;: (
+                    f&quot;**[{issue.severity}] {issue.rule_id}**: {issue.description}\n\n&quot;
+                    f&quot;```suggestion\n{issue.suggested_patch}\n```&quot;
+                )
+            })
+
+        summary = (
+            f&quot;### Automated Review Summary\n&quot;
+            f&quot;- **Verdict**: {verdict}\n&quot;
+            f&quot;- **Total Issues**: {len(all_issues)}\n&quot;
+            f&quot;- **Blocking Issues**: {sum(1 for i in all_issues if i.severity in self.block_on_severity)}\n&quot;
+        )
+
+        return GitHubReviewPayload(
+            verdict=verdict,
+            summary_body=summary,
+            inline_comments=inline_comments
+        )
+
+# Pipeline Execution Demonstration
+if __name__ == &quot;__main__&quot;:
+    mock_security_report = AgentReport(
+        agent=&quot;SecurityAuditor&quot;,
+        issues_found=[
+            CriticIssue(
+                file=&quot;services/auth.py&quot;,
+                line_number=54,
+                severity=&quot;CRITICAL&quot;,
+                rule_id=&quot;SEC-RAW-EXEC&quot;,
+                description=&quot;Raw database call without bind parameters allows arbitrary injection.&quot;,
+                suggested_patch=&quot;db.session.execute(text('SELECT * FROM users WHERE id = :id'), {'id': uid})&quot;
+            )
+        ]
+    )
+
+    mock_style_report = AgentReport(
+        agent=&quot;StyleEnforcer&quot;,
+        issues_found=[
+            CriticIssue(
+                file=&quot;services/auth.py&quot;,
+                line_number=20,
+                severity=&quot;LOW&quot;,
+                rule_id=&quot;STYLE-DOC-001&quot;,
+                description=&quot;Public service method missing docstring documentation.&quot;,
+                suggested_patch='&quot;&quot;&quot;Authenticate credentials and generate JWT.&quot;&quot;&quot;'
+            )
+        ]
+    )
+
+    gate = PRReviewConsolidationGate()
+    review = gate.consolidate([mock_security_report, mock_style_report])
+    print(f&quot;Action: {review.verdict}&quot;)
+    print(f&quot;Report:\n{review.summary_body}&quot;)
+    print(f&quot;Inline Comment Targets: {len(review.inline_comments)}&quot;)
+</code></pre>
+<hr />
+<h2>5. Blueprint 4: Customer Support Escalate-to-Human Triaging Loop</h2>
+<p>Customer support agents must fail securely. This blueprint establishes a deterministic state machine containing automated risk filters that break out of the LLM conversation loop and construct a human support handoff ticket when sentiment, financial limits, or policy violations occur.</p>
+<pre><code>       [Customer Inbound Message]
+                    |
+                    v
+    [Pre-Execution Deterministic Rules]
+    - Explicit Legal Action Mention?
+    - Repeated Profanity Counter &gt;= 2?
+         |                      |
+      (True)                 (False)
+         |                      |
+         |                      v
+         |            [LLM Support Resolver]
+         |                      |
+         |         (Tool Call: Refund or Query)
+         |                      |
+         |                      v
+         |            [Post-Tool Evaluation]
+         |            - Refund &gt; $200?
+         |            - Tool Execution Error?
+         |            - Confidence &lt; 0.85?
+         |                      |
+         |           +----------+----------+
+         |           |                     |
+         |        (Passed)             (Failed)
+         |           |                     |
+         v           v                     v
+   +--------------------+     +---------------------------+
+   | Return Final Reply |     | ESCALATE TO HUMAN QUEUE   |
+   | to Customer        |     | (Freeze Session Context)  |
+   +--------------------+     +---------------------------+
+</code></pre>
+<h3>5.1 State Machine Context Handoff Schema</h3>
+<p>When an escalation triggers, the agent generates an immutable escalation record containing the execution trace and trigger reason:</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;http://json-schema.org/draft-07/schema#&quot;,
+  &quot;title&quot;: &quot;HumanEscalationTicket&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;ticket_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;customer_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;escalation_trigger&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;FINANCIAL_LIMIT_EXCEEDED&quot;,
+        &quot;LEGAL_THREAT_DETECTED&quot;,
+        &quot;SENTIMENT_DEGRADATION&quot;,
+        &quot;TOOL_FAILURE_EXHAUSTION&quot;,
+        &quot;POLICY_UNCERTAINTY&quot;
+      ]
+    },
+    &quot;trigger_context&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;conversation_history&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;role&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;customer&quot;, &quot;agent&quot;, &quot;system&quot;] },
+          &quot;content&quot;: { &quot;type&quot;: &quot;string&quot; }
+        },
+        &quot;required&quot;: [&quot;role&quot;, &quot;content&quot;]
+      }
+    },
+    &quot;proposed_draft_response&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;system_state&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;session_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+        &quot;active_order_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+        &quot;customer_tier&quot;: { &quot;type&quot;: &quot;string&quot; }
+      },
+      &quot;required&quot;: [&quot;session_id&quot;, &quot;customer_tier&quot;]
+    }
+  },
+  &quot;required&quot;: [
+    &quot;ticket_id&quot;,
+    &quot;customer_id&quot;,
+    &quot;escalation_trigger&quot;,
+    &quot;trigger_context&quot;,
+    &quot;conversation_history&quot;,
+    &quot;system_state&quot;
+  ]
+}
+</code></pre>
+<h3>5.2 Deterministic Triage &amp; Escalation Controller</h3>
+<p>```python
+import uuid
+from typing import Dict, Any, List, Optional
+from pydantic import BaseModel</p>
+<p>class EscalationTripwire(Exception):
+    def <strong>init</strong>(self, trigger: str, context: str):
+        self.trigger = trigger
+        self.context = context</p>
+<p>class Message(BaseModel):
+    role: str
+    content:</p>
+</body>
+</html>

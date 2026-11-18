@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The AI Agent Architecture Vault: 50+ Multi-Agent Systems, Tool-Calling Pipelines & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Agent Topology &amp; Deterministic State Machine Architecture</h1>
+<p>Production agent failures are rarely caused by model intelligence limitations; they are caused by unbounded state spaces, cyclic non-determinism, and fragile state hydration. When an agent loops indefinitely, hallucinates tool arguments, or loses contextual state mid-transaction, the root cause is almost universally an architectural failure: the state machine was treated as an open conversational thread rather than a deterministic, bounded directed graph.</p>
+<p>This module details the architectural topologies, deterministic state transition engines, multi-tiered memory backends, and serialization primitives required to run autonomous multi-agent systems reliably in mission-critical environments.</p>
+<hr />
+<h2>1. Architectural Taxonomies</h2>
+<p>Selecting an agent topology requires balancing latency, reasoning depth, execution cost, and error tolerance. The table below outlines the core trade-offs between the three primary production topologies.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dimension</th>
+<th style="text-align: left;">ReAct Loop</th>
+<th style="text-align: left;">Plan-and-Solve</th>
+<th style="text-align: left;">Hierarchical Supervisor Tree</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Typical End-to-End Latency</strong></td>
+<td style="text-align: left;">Low to Medium ($1.2\text{s} - 8.5\text{s}$)</td>
+<td style="text-align: left;">High ($6.0\text{s} - 25.0\text{s}$)</td>
+<td style="text-align: left;">Variable / Very High ($4.0\text{s} - 60.0\text{s}+$)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Input/Output Token Cost</strong></td>
+<td style="text-align: left;">Linear to step count; compounding context</td>
+<td style="text-align: left;">Front-loaded reasoning; predictable steps</td>
+<td style="text-align: left;">High overhead; duplicated routing contexts</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Error Recovery Dynamics</strong></td>
+<td style="text-align: left;">Step-by-step local self-correction</td>
+<td style="text-align: left;">Requires full or partial replanning phase</td>
+<td style="text-align: left;">Sub-tree isolation; node retry or fallback</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>State Drift Vulnerability</strong></td>
+<td style="text-align: left;">High; context accumulates raw observations</td>
+<td style="text-align: left;">Low; steps execute against atomic sub-states</td>
+<td style="text-align: left;">Lowest; strictly bounded agent contexts</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Maximum Feasible Steps</strong></td>
+<td style="text-align: left;">$5 - 8$ before context saturation</td>
+<td style="text-align: left;">$10 - 25$ structured task units</td>
+<td style="text-align: left;">$50+$ across decomposed sub-agent trees</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Optimal Production Fit</strong></td>
+<td style="text-align: left;">Real-time APIs, ad-hoc queries, retrieval</td>
+<td style="text-align: left;">Multi-step data migrations, ETL, code gen</td>
+<td style="text-align: left;">Enterprise operations, multi-department flows</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>ReAct Loop: Mechanical Realities and Failure Modes</h3>
+<p>The Reasoning + Acting (ReAct) pattern interleaves thought generation with tool invocation. While versatile, naked ReAct implementations suffer from three critical production failure modes:</p>
+<ol>
+<li><strong>The Infinite Oscillation Loop:</strong> The model calls a tool, receives an error or unexpected output, and issues the exact same tool call with the exact same arguments repeatedly.</li>
+<li><strong>Context Bleed / Context Saturation:</strong> Every tool execution observation is appended verbatim to the context window. By step 5, 80% of tokens are historical execution noise, degrading the model's instruction-following precision.</li>
+<li><strong>Action-Observation Desynchronization:</strong> The model generates output text containing an inferred tool result instead of waiting for runtime execution, breaking the parser.</li>
+</ol>
+<h4>Production ReAct Engine Prompt Contract</h4>
+<p>The following system prompt enforces strict parsing determinism, mandatory cycle prevention, and output format isolation:</p>
+<pre><code class="language-text">You are the Core Execution Engine. You solve problems by interleaving explicit reasoning steps with concrete tool actions.
+
+### OPERATIONAL CONSTRAINTS:
+1. You must operate strictly through Thought, Action, and Action Input cycles.
+2. After emitting &quot;Action:&quot; and &quot;Action Input:&quot;, you MUST IMMEDIATELY STOP generating tokens and wait for the runtime environment to supply an &quot;Observation:&quot;.
+3. NEVER fabricate, guess, or hallucinate an &quot;Observation:&quot;. Any token generated after &quot;Action Input:&quot; that attempts to simulate a tool response will trigger an immediate system termination.
+4. You are allotted a MAXIMUM of 6 execution turns. If you reach Turn 5 without a definitive resolution, your next Action MUST be an escalation to fallback or a graceful partial result return.
+5. If an &quot;Observation:&quot; returns an identical error payload twice consecutively, you CANNOT repeat the previous Action. You must modify the parameters or route to an alternative strategy.
+
+### TOOL INVOCATION SCHEMA:
+You have access to the following tools:
+- sql_query(query: str) -&gt; str: Executes a read-only SQL query against the primary read replica.
+- redis_lookup(key: str) -&gt; str: Retrieves a cached session or state string.
+- emit_metric(name: str, value: float) -&gt; bool: Publishes a telemetry data point.
+
+### OUTPUT FORMAT:
+You must strictly follow this exact format:
+
+Thought: [Single-step reasoning explaining why the specific action was selected given previous observations]
+Action: [The exact tool name from the permitted list. No other text on this line.]
+Action Input: [A strictly valid, single-line JSON string containing the arguments mapping to the tool parameter schema]
+Observation: [WAIT FOR RUNTIME INGESTION - DO NOT EMIT]
+
+... (this Thought/Action/Action Input/Observation sequence can repeat up to 5 times)
+
+Thought: [Synthesis of historical observations leading to terminal answer]
+Final Answer: [The direct, comprehensive payload resolving the user query]
+</code></pre>
+<hr />
+<h3>Plan-and-Solve: Deterministic Dynamic Replanning</h3>
+<p>Plan-and-Solve decouples the macro-reasoning (planning) from micro-execution (tool calling). Instead of reasoning on every step, a specialized Planner model generates an initial directed acyclic task list (DAG). An Executor model runs through the tasks sequentially. If an execution step fails or yields surprising results, a Replanner agent is invoked to recalculate remaining tasks.</p>
+<pre><code>       +-----------------------+
+       |   User Goal / Input   |
+       +-----------+-----------+
+                   |
+                   v
+       +-----------------------+
++-----&gt;|     Planner Node      |&lt;-----+
+|      +-----------+-----------+      |
+|                  |                  |
+|                  | (Initial Plan)   |
+|                  v                  |
+|      +-----------------------+      |
+|      |    Execution Node     |      |
+|      |   (Processes Step)    |      |
+|      +-----------+-----------+      |
+|                  |                  |
+|                  v                  |
+|      +-----------------------+      | (Replanning
+|      |    Evaluation Node    |      |  Triggered)
+|      +-----------+-----------+      |
+|             /         \             |
+|   [Needs Replanning]  [Step Valid]  |
++------------+            +-----------+
+                          |
+                 [Plan Finished]
+                          |
+                          v
+               +----------------------+
+               |    Final Synthesis   |
+               +----------------------+
+</code></pre>
+<h4>Production Planner Schema &amp; Prompt</h4>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;title&quot;: &quot;ExecutionPlan&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;goal&quot;: { &quot;type&quot;: &quot;string&quot; },
+    &quot;steps&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;step_id&quot;: { &quot;type&quot;: &quot;integer&quot; },
+          &quot;description&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;assigned_agent&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;DataExtractor&quot;, &quot;TransformEngine&quot;, &quot;ValidationNode&quot;] },
+          &quot;expected_output_type&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;dependent_on_steps&quot;: {
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;items&quot;: { &quot;type&quot;: &quot;integer&quot; }
+          }
+        },
+        &quot;required&quot;: [&quot;step_id&quot;, &quot;description&quot;, &quot;assigned_agent&quot;, &quot;expected_output_type&quot;, &quot;dependent_on_steps&quot;],
+        &quot;additionalProperties&quot;: false
+      }
+    }
+  },
+  &quot;required&quot;: [&quot;goal&quot;, &quot;steps&quot;],
+  &quot;additionalProperties&quot;: false
+}
+</code></pre>
+<hr />
+<h3>Hierarchical Supervisor Trees</h3>
+<p>In a Hierarchical Supervisor topology, child agents are treated as black boxes with their own isolated context windows, memory tiers, and internal state graphs. The Supervisor acts as a router, router gatekeeper, and aggregator.</p>
+<pre><code>                   +----------------------------------+
+                   |       Supervisor Agent Node      |
+                   |   (Decides routing via Enum)     |
+                   +-----------------+----------------+
+                                     |
+         +---------------------------+---------------------------+
+         |                           |                           |
+         v                           v                           v
++-----------------+         +-----------------+         +-----------------+
+|   Sub-Agent A   |         |   Sub-Agent B   |         |   Sub-Agent C   |
+| (DB Operations) |         | (API Operations)|         | (Code Synthesis)|
++--------+--------+         +--------+--------+         +--------+--------+
+         |                           |                           |
+         +---------------------------+---------------------------+
+                                     |
+                                     v
+                   +----------------------------------+
+                   | Aggregation &amp; Verification Node  |
+                   |   (Applies deterministic gates)  |
+                   +----------------------------------+
+</code></pre>
+<h4>Supervisor Router Implementation Contract</h4>
+<p>The Supervisor does not execute tools directly. It evaluates incoming messages against an array of worker descriptors and returns a clean, typed routing decision:</p>
+<pre><code class="language-python">from typing import Literal
+from pydantic import BaseModel, Field
+
+class SupervisorRoute(BaseModel):
+    &quot;&quot;&quot;Routing decision emitted by the Hierarchical Supervisor.&quot;&quot;&quot;
+    reasoning: str = Field(description=&quot;Architectural rationale for worker delegation.&quot;)
+    next_node: Literal[&quot;DBAgent&quot;, &quot;APIAgent&quot;, &quot;CodeAgent&quot;, &quot;FINAL_TRANSACTION&quot;] = Field(
+        description=&quot;The target specialized sub-agent or terminal node.&quot;
+    )
+    task_payload: str = Field(
+        description=&quot;Self-contained execution payload containing all context required by the sub-agent.&quot;
+    )
+    max_budget_usd: float = Field(
+        default=0.05,
+        description=&quot;Strict financial ceiling for the sub-agent execution context.&quot;
+    )
+</code></pre>
+<hr />
+<h2>2. Deterministic State Machine Engine</h2>
+<p>The foundational failure of naive agent implementations is reliance on unbounded conversational flow. High-reliability agents require a strict <strong>Deterministic State Machine (DSM)</strong> where all state transitions, conditional evaluations, loops, and terminations are defined via formal schemas and compile-time graph edges.</p>
+<h3>Production LangGraph Implementation</h3>
+<p>Below is a complete, runnable state machine featuring structured types, reducer-based state mutation, cyclic loop detection, tool routing, and programmatic checkpointing.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Module 1: Production State Machine Implementation
+Framework: LangGraph / Pydantic V2 / TypedDict State Management
+&quot;&quot;&quot;
+
+from __future__ import annotations
+
+import operator
+from typing import Annotated, Any, Dict, List, Literal, Sequence, TypedDict, Union
+from pydantic import BaseModel, Field
+
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage
+)
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+# ============================================================================
+# 1. STATE DEFINITION &amp; REDUCERS
+# ============================================================================
+
+def merge_records(
+    left: Dict[str, Any], 
+    right: Dict[str, Any]
+) -&gt; Dict[str, Any]:
+    &quot;&quot;&quot;Reducer that merges state record keys deterministically.&quot;&quot;&quot;
+    merged = left.copy()
+    merged.update(right)
+    return merged
+
+class MasterAgentState(TypedDict):
+    &quot;&quot;&quot;Strict typed schema for the graph's operational boundary.&quot;&quot;&quot;
+    # Messages use the operator.add reducer to append changes sequentially
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    # Execution records use our custom merge reducer
+    context_data: Annotated[Dict[str, Any], merge_records]
+    current_step: int
+    step_budget: int
+    retry_count: int
+    is_terminal: bool
+    error_trace: Annotated[List[str], operator.add]
+
+# ============================================================================
+# 2. RUNTIME NODE LOGIC
+# ============================================================================
+
+def plan_node(state: MasterAgentState) -&gt; Dict[str, Any]:
+    &quot;&quot;&quot;Evaluates user context and establishes or updates execution plan.&quot;&quot;&quot;
+    current_step = state.get(&quot;current_step&quot;, 0)
+
+    # In production, call your LLM with structured output here.
+    # Simulated execution logic:
+    planner_thought = AIMessage(
+        content=&quot;Action: Planning next phase. Ingested state and verified prerequisites.&quot;
+    )
+
+    return {
+        &quot;messages&quot;: [planner_thought],
+        &quot;current_step&quot;: current_step + 1,
+        &quot;context_data&quot;: {&quot;plan_version&quot;: 1, &quot;target_table&quot;: &quot;customer_records&quot;}
+    }
+
+def executor_node(state: MasterAgentState) -&gt; Dict[str, Any]:
+    &quot;&quot;&quot;Executes the discrete operational step (tool dispatch).&quot;&quot;&quot;
+    current_step = state[&quot;current_step&quot;]
+    retry_count = state.get(&quot;retry_count&quot;, 0)
+
+    # Mock behavior demonstrating deterministic failure recovery
+    if retry_count == 0:
+        # Simulate initial failure to demonstrate recovery cycle
+        return {
+            &quot;retry_count&quot;: retry_count + 1,
+            &quot;error_trace&quot;: [f&quot;Step {current_step}: Timeout connecting to primary partition.&quot;],
+            &quot;messages&quot;: [AIMessage(content=&quot;Tool execution failed: Timeout connecting to primary partition.&quot;)]
+        }
+
+    # Successful execution on retry
+    execution_result = AIMessage(
+        content=&quot;Tool execution successful: Mutated 14 matching customer records.&quot;
+    )
+    return {
+        &quot;messages&quot;: [execution_result],
+        &quot;current_step&quot;: current_step + 1,
+        &quot;context_data&quot;: {&quot;records_mutated&quot;: 14, &quot;mutation_status&quot;: &quot;SUCCESS&quot;},
+        &quot;retry_count&quot;: 0 # Reset retry count upon resolution
+    }
+
+def evaluator_node(state: MasterAgentState) -&gt; Dict[str, Any]:
+    &quot;&quot;&quot;Validates the execution results against the acceptance invariants.&quot;&quot;&quot;
+    data = state.get(&quot;context_data&quot;, {})
+    if data.get(&quot;mutation_status&quot;) == &quot;SUCCESS&quot;:
+        return {
+            &quot;is_terminal&quot;: True,
+            &quot;messages&quot;: [AIMessage(content=&quot;Evaluation confirmed state criteria satisfied.&quot;)]
+        }
+
+    return {
+        &quot;is_terminal&quot;: False,
+        &quot;messages&quot;: [AIMessage(content=&quot;Criteria not met. Re-routing required.&quot;)]
+    }
+
+# ============================================================================
+# 3. CONDITIONAL ROUTING LOGIC
+# ============================================================================
+
+def route_after_executor(
+    state: MasterAgentState
+) -&gt; Literal[&quot;executor_node&quot;, &quot;evaluator_node&quot;, &quot;error_escalation_node&quot;]:
+    &quot;&quot;&quot;Deterministic routing function based on state invariants.&quot;&quot;&quot;
+    # Guard 1: Step budget exceeded
+    if state[&quot;current_step&quot;] &gt;= state[&quot;step_budget&quot;]:
+        return &quot;error_escalation_node&quot;
+
+    # Guard 2: Retry loop active
+    if state.get(&quot;retry_count&quot;, 0) &gt; 0:
+        # If we have failed less than 3 times, retry
+        if state[&quot;retry_count&quot;] &lt;= 2:
+            return &quot;executor_node&quot;
+        return &quot;error_escalation_node&quot;
+
+    return &quot;evaluator_node&quot;
+
+def route_after_evaluator(
+    state: MasterAgentState
+) -&gt; Literal[&quot;plan_node&quot;, &quot;__end__&quot;]:
+    &quot;&quot;&quot;Determines whether the cycle continues or reaches terminal graph end.&quot;&quot;&quot;
+    if state.get(&quot;is_terminal&quot;, False):
+        return &quot;__end__&quot;
+    return &quot;plan_node&quot;
+
+def error_escalation_node(state: MasterAgentState) -&gt; Dict[str, Any]:
+    &quot;&quot;&quot;Graceful degradation node when boundaries or retries are exhausted.&quot;&quot;&quot;
+    fallback_message = AIMessage(
+        content=&quot;CRITICAL: Maximum retry thresholds exceeded. Transaction locked and escalated.&quot;
+    )
+    return {
+        &quot;messages&quot;: [fallback_message],
+        &quot;is_terminal&quot;: True
+    }
+
+# ============================================================================
+# 4. GRAPH ASSEMBLY &amp; COMPILATION
+# ============================================================================
+
+def construct_agent_graph() -&gt; StateGraph:
+    workflow = StateGraph(MasterAgentState)
+
+    # Register Nodes
+    workflow.add_node(&quot;plan_node&quot;, plan_node)
+    workflow.add_node(&quot;executor_node&quot;, executor_node)
+    workflow.add_node(&quot;evaluator_node&quot;, evaluator_node)
+    workflow.add_node(&quot;error_escalation_node&quot;, error_escalation_node)
+
+    # Register Static Edges
+    workflow.set_entry_point(&quot;plan_node&quot;)
+    workflow.add_edge(&quot;plan_node&quot;, &quot;executor_node&quot;)
+    workflow.add_edge(&quot;error_escalation_node&quot;, END)
+
+    # Register Conditional Edges
+    workflow.add_conditional_edges(
+        &quot;executor_node&quot;,
+        route_after_executor,
+        {
+            &quot;executor_node&quot;: &quot;executor_node&quot;,
+            &quot;evaluator_node&quot;: &quot;evaluator_node&quot;,
+            &quot;error_escalation_node&quot;: &quot;error_escalation_node&quot;
+        }
+    )
+
+    workflow.add_conditional_edges(
+        &quot;evaluator_node&quot;,
+        route_after_evaluator,
+        {
+            &quot;__end__&quot;: END,
+            &quot;plan_node&quot;: &quot;plan_node&quot;
+        }
+    )
+
+    return workflow
+
+# Compile graph with thread-level state checkpointing
+memory_checkpointer = MemorySaver()
+compiled_app = construct_agent_graph().compile(checkpointer=memory_checkpointer)
+</code></pre>
+<hr />
+<h2>3. Memory Topology &amp; Persistence Tiering</h2>
+<p>Production agent architecture demands a clear separation of memory tiers based on lifecycle, access speed, and context size. Treating a conversation thread as a monolithic memory store leads to rapid token exhaustion and latency degradation.</p>
+<pre><code>+-----------------------------------------------------------------------------------+
+|                                 APPLICATION RUNTIME                               |
++-----------------------------------------------------------------------------------+
+                                         |
+     +-----------------------------------+-----------------------------------+
+     | (Active Context Window)           | (Checkpoints / Audit)             | (Semantic Retrieval)
+     v                                   v                                   v
++-------------------------+   +-------------------------+   +-------------------------+
+|   TIER 1: WORKING MEM   |   |  TIER 2: RELATIONAL DB  |   |  TIER 3: SEMANTIC STORE |
+| Redis (In-Memory)       |   | Postgres (ACID / JSONB) |   | pgvector / Zep Hybrid   |
+|                         |   |                         |   |                         |
+| - Key-value turn state  |   | - Session checkpointing |   | - Distilled insights    |
+| - Sliding window tokens |   | - Deterministic replay  |   | - Cross-session recall  |
+| - Sub-millisecond read  |   | - System audit log      |   | - Semantic vector search|
+| - TTL: 1 to 24 Hours    |   | - TTL: Permanent/90 Days|   | - TTL: Indefinite       |
++-------------------------+   +-------------------------+   +-------------------------+
+</code></pre>
+<h3>Tier 1: Ephemeral Working Memory (Redis)</h3>
+<p>Redis handles high-frequency updates, intermediate scratchpads, and sliding-window token management. It maintains strict TTLs to eliminate orphaned session storage.</p>
+<pre><code class="language-python">&quot;&quot;&quot;
+Redis Ephemeral State Management Implementation
+Handles sliding-window message compaction and sub-millisecond retrieval.
+&quot;&quot;&quot;
+
+import json
+from typing import List, Dict, Any, Optional
+import redis
+
+class RedisWorkingMemory:
+    def __init__(self, redis_client: redis.Redis, default_ttl_seconds: int = 7200):
+        self.client = redis_client
+        self.ttl = default_ttl_seconds
+
+    def _format_key(self, session_id: str) -&gt; str:
+        return f&quot;agent:working_memory:{session_id}&quot;
+
+    def push_message(self, session_id: str, role: str, content: str, token_cost: int) -&gt; None:
+        key = self._format_key(session_id)
+        payload = json.dumps({
+            &quot;role&quot;: role,
+            &quot;content&quot;: content,
+            &quot;token_cost&quot;: token_cost
+        })
+
+        # Pipeline: Append to list, set expiration atomically
+        pipe = self.client.pipeline()
+        pipe.rpush(key, payload)
+        pipe.expire(key, self.ttl)
+        pipe.execute()
+
+    def get_sliding_context(self, session_id: str, max_tokens: int = 4000) -&gt; List[Dict[str, str]]:
+        &quot;&quot;&quot;
+        Retrieves messages in reverse chronological order until max_tokens budget is met,
+        then returns them in chronological order. Prevents context window overflows.
+        &quot;&quot;&quot;
+        key = self._format_key(session_id)
+        raw_elements = self.client.lrange(key, 0, -1)
+        if not raw_elements:
+            return []
+
+        accumulated_tokens = 0
+        retained_messages: List[Dict[str, str]] = []
+
+        # Walk backwards through the conversation history
+        for raw_item in reversed(raw_elements):
+            item = json.loads(raw_item.decode('utf-8'))
+            item_tokens = item.get(&quot;token_cost&quot;, len(item[&quot;content&quot;]) // 4)
+
+            if accumulated_tokens + item_tokens &gt; max_tokens:
+                break
+
+            retained_messages.append({&quot;role&quot;: item[&quot;role&quot;], &quot;content&quot;: item[&quot;content&quot;]})
+            accumulated_tokens += item_tokens
+
+        retained_messages.reverse()
+        return retained_messages
+
+    def clear(self, session_id: str) -&gt; None:
+        self.client.delete(self._format_key(session_id))
+</code></pre>
+<hr />
+<h3>Tier 2: Relational Audit &amp; Checkpoint State (PostgreSQL)</h3>
+<p>Relational memory captures atomic snapshots of the entire state machine graph at every state transition. This guarantees forensic auditability, deterministic replay capability, and recovery from catastrophic node failures.</p>
+<pre><code class="language-sql">-- DDL: Production Checkpoint &amp; Audit Store for Multi-Agent Systems
+CREATE EXTENSION IF NOT EXISTS &quot;uuid-ossp&quot;;
+
+CREATE TABLE agent_sessions (
+    session_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    root_agent_name VARCHAR(64) NOT NULL,
+    current_status VARCHAR(32) NOT NULL DEFAULT 'INITIALIZED',
+    total_tokens_consumed INT DEFAULT 0,
+    total_cost_usd NUMERIC(10, 6) DEFAULT 0.000000,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE agent_checkpoints (
+    checkpoint_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+    step_number INT NOT NULL,
+    node_name VARCHAR(64) NOT NULL,
+    state_payload JSONB NOT NULL,
+    state_delta JSONB,
+    input_message_id UUID,
+    execution_latency_ms INT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_session_step UNIQUE (session_id, step_number)
+);
+
+CREATE TABLE tool_execution_logs (
+    log_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    checkpoint_id UUID NOT NULL REFERENCES agent_checkpoints(checkpoint_id) ON DELETE CASCADE,
+    tool_name VARCHAR(64) NOT NULL,
+    arguments JSONB NOT NULL,
+    response_payload JSONB,
+    is_error BOOLEAN DEFAULT FALSE,
+    execution_duration_ms INT NOT NULL,
+    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Fast lookup indexes for deterministic replay and state reconstruction
+CREATE INDEX idx_checkpoints_session_step ON agent_checkpoints(session_id, step_number DESC);
+CREATE INDEX idx_checkpoints_state_gin ON agent_checkpoints USING GIN (state_payload);
+CREATE INDEX idx_tool_logs_checkpoint ON tool_execution_logs(checkpoint_id);
+</code></pre>
+<hr />
+<h3>Tier 3: Long-Term Semantic Memory (Postgres + pgvector)</h3>
+<p>Long-term memory must distill operational insights, factual corrections, and episodic summaries from historical sessions, making them accessible to future sessions via vector similarity search.</p>
+<pre><code class="language-sql">-- DDL: Long-Term Semantic Vector Memory Store
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE semantic_episodic_memories (
+    memory_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID REFERENCES agent_sessions(session_id) ON DELETE SET NULL,
+    agent_id VARCHAR(64) NOT NULL,
+    memory_category VARCHAR(32) NOT NULL, -- e.g., 'USER_PREFERENCE', 'FACT', 'FAILURE_MODE'
+    distilled_fact TEXT NOT NULL,
+    embedding vector(1536) NOT NULL, -- OpenAI text-embedding-3-small dimension
+    access_frequency INT DEFAULT 0,
+    last_accessed_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_semantic_memory_vector ON semantic_episodic_memories 
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+CREATE INDEX idx_semantic_memory_category ON semantic_episodic_memories(agent_id, memory_category);
+</code></pre>
+<h4>Production Query: Cosine Similarity with Recency Weighting</h4>
+<pre><code class="language-sql">-- Semantic Memory Retrieval Function
+CREATE OR REPLACE FUNCTION match_episodic_memories(
+    query_embedding vector(1536),
+    match_threshold FLOAT,
+    match_count INT,
+    p_agent_id VARCHAR(64)
+)
+RETURNS TABLE (
+    memory_id UUID,
+    distilled_fact TEXT,
+    similarity FLOAT,
+    adjusted_score FLOAT
+)
+LANGUAGE sql STABLE AS $$
+    SELECT 
+        m.memory_id,
+        m.distilled_fact,
+        (1 - (m.embedding &lt;=&gt; query_embedding)) AS similarity,
+        -- Decay score based on age (10% weight to log-normalized recency)
+        ((1 - (m.embedding &lt;=&gt; query_embedding)) * 0.9) + 
+        (LEAST(1.0, 1.0 / (LOG(EXTRACT(EPOCH FROM (NOW() - m.created_at))/86400 + 2))) * 0.1) AS adjusted_score
+    FROM semantic_episodic_memories m
+    WHERE m.agent_id = p_agent_id
+      AND (1 - (m.embedding &lt;=&gt; query_embedding)) &gt; match_threshold
+    ORDER BY adjusted_score DESC
+    LIMIT match_count;
+$$;
+</code></pre>
+<hr />
+<h2>4. State Graph Serialization &amp; Schema Contracts</h2>
+<p>When state machines cross network boundaries (e.g., executing asynchronous long-running jobs, surviving worker pod restarts, or emitting events over Kafka), internal Python objects must be serialized cleanly. Non-serializable constructs (client references, active database connections, stream iterators) will corrupt your state snapshots if not stripped cleanly.</p>
+<h3>Wire Specification: State Graph Serialization Protocol (JSON Schema)</h3>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;title&quot;: &quot;StateSnapshotWireContract&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;version&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;1.0.0&quot;] },
+    &quot;metadata&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;session_id&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;format&quot;: &quot;uuid&quot; },
+        &quot;graph_id&quot;: { &quot;type&quot;: &quot;string&quot; },
+        &quot;step_index&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;minimum&quot;: 0 },
+        &quot;timestamp_utc&quot;: { &quot;type&quot;: &quot;integer&quot; }
+      },
+      &quot;required&quot;: [&quot;session_id&quot;, &quot;graph_id&quot;, &quot;step_index&quot;, &quot;timestamp_utc&quot;],
+      &quot;additionalProperties&quot;: false
+    },
+    &quot;graph_state&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;properties&quot;: {
+        &quot;active_node&quot;: { &quot;type&quot;: &quot;string&quot; },
+        &quot;retry_budget_remaining&quot;: { &quot;type&quot;: &quot;integer&quot;, &quot;minimum&quot;: 0 },
+        &quot;invariants&quot;: { &quot;type&quot;: &quot;object&quot; },
+        &quot;shared_context&quot;: { &quot;type&quot;: &quot;object&quot; }
+      },
+      &quot;required&quot;: [&quot;active_node&quot;, &quot;retry_budget_remaining&quot;, &quot;invariants&quot;, &quot;shared_context&quot;],
+      &quot;additionalProperties&quot;: false
+    },
+    &quot;history&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;message_type&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;human&quot;, &quot;ai&quot;, &quot;tool&quot;, &quot;system&quot;] },
+          &quot;payload&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;tool_call_id&quot;: { &quot;type&quot;: [&quot;string&quot;, &quot;null&quot;] }
+        },
+        &quot;required&quot;: [&quot;message_type&quot;, &quot;payload&quot;],
+        &quot;additionalProperties&quot;: false
+      }
+    }
+  },
+  &quot;required&quot;: [&quot;version&quot;, &quot;metadata&quot;, &quot;graph_state&quot;, &quot;history&quot;],
+  &quot;additionalProperties&quot;: false
+}
+</code></pre>
+<h3>Production Hydration/Dehydration Engine</h3>
+<p>The following serializer cleanly translates internal state into a spec-compliant wire format, filtering out non-serializable objects and hydrating it back into runtime types.</p>
+<p>```python
+"""
+Deterministic Hydration and Dehydration Engine
+Guarantees clean state serialization over network boundaries and databases.
+"""</p>
+<p>import time
+import uuid
+from typing import Dict, Any, List
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    SystemMessage
+)</p>
+<p>class StateSerializationEngine:
+    @staticmethod
+    def dehydrate(
+        session_id: str,
+        graph_id: str,
+        active_node: str,
+        step_index: int,
+        retry_budget: int,
+        messages: List[BaseMessage],
+        context_data: Dict[str, Any]
+    ) -&gt; Dict[str, Any]:
+        """Dehydrates active runtime state into a sanitized, JSON-compliant payload."""
+        serialized_messages = []
+        for msg in messages:
+            msg_type = "system"
+            tool_id = None
+            if isinstance(msg, HumanMessage):
+                msg_type = "human"
+            elif isinstance(msg, AIMessage):
+                msg_type = "ai"
+            elif isinstance(msg, ToolMessage):
+                msg_type = "tool"
+                tool_id = msg.tool_call_id</p>
+<pre><code>        serialized_messages.append({
+            "message_type": msg_type,
+            "payload": str(msg.content),
+            "tool_call_id": tool_id
+        })
+
+    # Strip non-serializable objects from context_data
+    sanitized_context = {}
+    for k, v in context_data.items():
+        if isinstance(v, (str, int, float, bool, list, dict, type(None))):
+</code></pre>
+</body>
+</html>
