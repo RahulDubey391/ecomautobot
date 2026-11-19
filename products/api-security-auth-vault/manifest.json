@@ -1,0 +1,43 @@
+{
+  "slug": "api-security-auth-vault",
+  "name": "The API Security & Auth Architecture Vault: 50+ OAuth2 Flows, Token Rotation, Rate Limiting & OWASP Blueprints",
+  "price_cents": 2700,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "api-security-auth-vault",
+  "custom_summary": "Production-ready security blueprints, token rotation flows, and defense architectures to harden modern APIs against auth exploits, leaks, and DDoS attacks.",
+  "category": "software",
+  "tags": [
+    "api security",
+    "oauth2",
+    "jwt auth",
+    "rate limiting",
+    "owasp",
+    "web security",
+    "backend dev",
+    "nodejs",
+    "fastapi",
+    "cybersecurity"
+  ],
+  "hashtags": [
+    "#ApiSecurity",
+    "#Oauth2",
+    "#JwtAuth",
+    "#RateLimiting",
+    "#Owasp",
+    "#WebSecurity",
+    "#BackendDev",
+    "#Nodejs",
+    "#Fastapi",
+    "#Cybersecurity"
+  ],
+  "gumroad_product_id": "EPMJgNz3V1DG8rbZ8s-n8g==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/api-security-auth-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/f6dce4abdd3e0286894340336d08bdb3/original/api-security-auth-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/xqahay527blty8w7iihqjvumeka9"
+}

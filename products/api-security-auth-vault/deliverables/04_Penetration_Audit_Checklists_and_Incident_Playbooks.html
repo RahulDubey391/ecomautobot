@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The API Security & Auth Architecture Vault: 50+ OAuth2 Flows, Token Rotation, Rate Limiting & OWASP Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Master Pen-Test Checklist, CI/CD Security Scanners &amp; Incident Playbook</h1>
+<hr />
+<h2>1. 65-Point Pre-Launch API Security Audit Rubric</h2>
+<p>Every production API endpoint must be audited against this 65-point verification matrix prior to deployment. Violations of Category A or B block deployment unconditionally.</p>
+<h3>Category A: Authentication &amp; Identity Assurance (Items 1–15)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>01</strong></td>
+<td>JWT <code>alg: none</code> Rejection</td>
+<td>Attacker changes header to <code>{"alg":"none"}</code> and strips signature to forge admin claims.</td>
+<td><code>jwt_tool.py &lt;TOKEN&gt; -X a</code></td>
+<td>API responds with <code>401 Unauthorized</code>; token rejected.</td>
+</tr>
+<tr>
+<td><strong>02</strong></td>
+<td>Asymmetric-to-Symmetric Key Confusion (RS256 to HS256)</td>
+<td>Public key used as HMAC secret when token header altered to <code>{"alg":"HS256"}</code>.</td>
+<td><code>jwt_tool.py &lt;TOKEN&gt; -S hs256 -k public.pem</code></td>
+<td>Verification fails; server refuses HS256 signatures when configured for RS256/ES256.</td>
+</tr>
+<tr>
+<td><strong>03</strong></td>
+<td>Missing JWT Expiration (<code>exp</code>) Validation</td>
+<td>Replay of intercepted access tokens indefinitely.</td>
+<td><code>curl -H "Authorization: Bearer &lt;EXPIRED_TOKEN&gt;" https://api.domain.com/v1/user</code></td>
+<td>API returns <code>401 Unauthorized</code> with error code <code>TOKEN_EXPIRED</code>.</td>
+</tr>
+<tr>
+<td><strong>04</strong></td>
+<td>Critical Claim Enforcement (<code>iss</code>, <code>aud</code>, <code>nbf</code>)</td>
+<td>Token issued for third-party client accepted by core internal API.</td>
+<td>Forge token with modified <code>aud: "client-b"</code> against endpoint expecting <code>aud: "client-a"</code>.</td>
+<td>API rejects token with <code>401 Unauthorized</code> on audience or issuer mismatch.</td>
+</tr>
+<tr>
+<td><strong>05</strong></td>
+<td>Refresh Token Single-Use &amp; Family Invalidation</td>
+<td>Intercepted refresh token used concurrently by victim and attacker.</td>
+<td>Issue refresh request twice simultaneously: <code>curl -X POST /auth/refresh -d '{"refresh_token":"rt_123"}'</code></td>
+<td>Second request triggers revocation of the entire token family; both tokens invalidated.</td>
+</tr>
+<tr>
+<td><strong>06</strong></td>
+<td>PKCE Enforcement on Public Clients</td>
+<td>Auth code interception via custom URI schemes on mobile/SPA.</td>
+<td>Send auth code exchange without <code>code_verifier</code> or with invalid hash.</td>
+<td>Token endpoint returns <code>400 Bad Request</code> with <code>invalid_grant</code>.</td>
+</tr>
+<tr>
+<td><strong>07</strong></td>
+<td>Strict Redirect URI Matching</td>
+<td>Open redirect exploitation via parameter poisoning (<code>?redirect_uri=https://attacker.com</code>).</td>
+<td>Submit OAuth request with <code>https://api.domain.com/oauth/callback/../../attacker</code>.</td>
+<td>Server rejects request; requires exact byte-for-byte URI whitelist match.</td>
+</tr>
+<tr>
+<td><strong>08</strong></td>
+<td>Client Secret Storage in Native/SPA Apps</td>
+<td>Extraction of hardcoded <code>client_secret</code> via binary disassembly.</td>
+<td>Run <code>strings &lt;binary&gt;</code> or inspect client-side JS bundles.</td>
+<td>Zero hardcoded client secrets; native clients use PKCE without client secrets.</td>
+</tr>
+<tr>
+<td><strong>09</strong></td>
+<td>Mutual TLS (mTLS) for B2B API Channels</td>
+<td>Man-in-the-Middle (MitM) credential theft on server-to-server traffic.</td>
+<td><code>curl -k https://b2b.domain.com/v1/transfers</code> (without client cert).</td>
+<td>Connection rejected at TLS handshake (<code>496 No Cert</code> / TLS Alert 42).</td>
+</tr>
+<tr>
+<td><strong>10</strong></td>
+<td>Session Revocation on Password Reset</td>
+<td>Active sessions persist after credential compromise recovery.</td>
+<td>Issue password reset; submit previously valid access/refresh token to protected route.</td>
+<td>Previously issued tokens rejected; session store purge verified in Redis/DB.</td>
+</tr>
+<tr>
+<td><strong>11</strong></td>
+<td>Weak Ephemeral Key Entropy</td>
+<td>Predictable state or challenge parameters vulnerable to collision.</td>
+<td>Collect 10,000 auth states; run Shannon entropy test (<code>ent</code> utility).</td>
+<td>Entropy score &gt;= 7.999 bits per byte; values generated via cryptographically secure PRNG.</td>
+</tr>
+<tr>
+<td><strong>12</strong></td>
+<td>API Key Leakage via Query Strings</td>
+<td>API keys harvested from access logs, browser history, and proxy servers.</td>
+<td>Send <code>GET /v1/data?api_key=secret123</code>; inspect reverse proxy logs.</td>
+<td>Server rejects query string auth (<code>401</code>); accepts exclusively <code>Authorization</code> or <code>X-API-Key</code> headers.</td>
+</tr>
+<tr>
+<td><strong>13</strong></td>
+<td>Brute-Force Defense on Token Endpoints</td>
+<td>Distributed credential stuffing targeting <code>/oauth/token</code>.</td>
+<td>Execute Hydra: <code>hydra -l user@domain.com -P passlist.txt api.domain.com http-post-form</code></td>
+<td>IP and account locked after 5 failed attempts within 60 seconds; returns <code>429 Too Many Requests</code>.</td>
+</tr>
+<tr>
+<td><strong>14</strong></td>
+<td>Clock Skew Allowance Limit</td>
+<td>Token accepted hours after official expiration due to excessive skew config.</td>
+<td>Craft token with <code>exp</code> = (Current Time - 120 seconds).</td>
+<td>Token rejected; skew tolerance must not exceed 60 seconds.</td>
+</tr>
+<tr>
+<td><strong>15</strong></td>
+<td>Token Binding Verification (DPoP / mTLS)</td>
+<td>Stolen access tokens replayed from unauthenticated network addresses.</td>
+<td>Extract token; replay from a secondary machine without DPoP private key.</td>
+<td>API fails verification with <code>401 Unauthorized</code> (<code>invalid_dpop_proof</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3>Category B: Authorization &amp; Access Control (BOLA/BFLA) (Items 16–30)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>16</strong></td>
+<td>BOLA / IDOR on Resource Identifiers</td>
+<td>Tenant A modifies or reads Tenant B data by swapping UUIDs.</td>
+<td><code>curl -H "Authorization: Bearer &lt;TOKEN_USER_A&gt;" https://api.domain.com/v1/orders/&lt;UUID_TENANT_B&gt;</code></td>
+<td>Server returns <code>404 Not Found</code> or <code>403 Forbidden</code>; no data leakage.</td>
+</tr>
+<tr>
+<td><strong>17</strong></td>
+<td>Function-Level Access (BFLA) on Administrative Routes</td>
+<td>Regular user invokes admin endpoints by guessing URL paths.</td>
+<td><code>curl -H "Authorization: Bearer &lt;TOKEN_REGULAR_USER&gt;" -X DELETE https://api.domain.com/v1/users/&lt;ID&gt;</code></td>
+<td>Returns <code>403 Forbidden</code>; RBAC engine checks claims before route handler execution.</td>
+</tr>
+<tr>
+<td><strong>18</strong></td>
+<td>Multi-Tenant Data Separation at Database Layer</td>
+<td>ORM injection or missing tenant filter leaking shared table records.</td>
+<td>Query API with search terms matching another tenant’s explicit entities.</td>
+<td>Response contains only records explicitly tied to the requester’s <code>tenant_id</code>.</td>
+</tr>
+<tr>
+<td><strong>19</strong></td>
+<td>Step-Up Auth on Sensitive Operations</td>
+<td>Attacker with read-level session executes financial wire transfer.</td>
+<td>Submit <code>POST /v1/transfers</code> using session token lacking MFA verification step.</td>
+<td>Server yields <code>403 Forbidden</code> with header <code>WWW-Authenticate: StepUp factor="mfa"</code>.</td>
+</tr>
+<tr>
+<td><strong>20</strong></td>
+<td>Nested Object Resource ID Injection</td>
+<td>Tampering with sub-resource IDs: <code>/organizations/1/departments/5/employees/99</code>.</td>
+<td>Swap IDs across boundaries: Request Org 1 with Department 8 (owned by Org 2).</td>
+<td>API verifies ownership across the entire hierarchy; returns <code>404 Not Found</code>.</td>
+</tr>
+<tr>
+<td><strong>21</strong></td>
+<td>HTTP Verb Tampering / Bypass</td>
+<td>Endpoint checks permissions for <code>POST</code>, but allows unauthorized <code>PUT</code> or <code>PATCH</code>.</td>
+<td>Change method: <code>curl -X PUT https://api.domain.com/v1/account/role -d '{"role":"admin"}'</code></td>
+<td>Permission checks applied consistently across all verbs; returns <code>405 Method Not Allowed</code> or <code>403</code>.</td>
+</tr>
+<tr>
+<td><strong>22</strong></td>
+<td>Mass Assignment of Privileged Attributes</td>
+<td>Attacker injects <code>"role": "admin"</code> or <code>"is_verified": true</code> in registration payload.</td>
+<td><code>curl -X POST /v1/users -d '{"name":"attacker","role":"admin","credits":99999}'</code></td>
+<td>DB stores only explicit schema-permitted fields (<code>name</code>); privileged keys discarded.</td>
+</tr>
+<tr>
+<td><strong>23</strong></td>
+<td>Path Traversal via API Routing</td>
+<td>Accessing internal microservices through gateway route misconfigurations.</td>
+<td>Request <code>https://api.domain.com/v1/documents/..%2f..%2fadmin%2fconfig</code></td>
+<td>Gateway normalizes path before routing; returns <code>400 Bad Request</code> or <code>404</code>.</td>
+</tr>
+<tr>
+<td><strong>24</strong></td>
+<td>Cross-Tenant Pagination Leakage</td>
+<td>Next-page cursors crafted to disclose records from adjacent tenants.</td>
+<td>Modify base64 cursor string to inject secondary tenant offsets.</td>
+<td>Cursor decryption validates tenant context; returns <code>400 Bad Request</code> on mismatch.</td>
+</tr>
+<tr>
+<td><strong>25</strong></td>
+<td>Unenforced Scope Restrictions</td>
+<td>Token with <code>read:profile</code> scope successfully requests <code>write:billing</code>.</td>
+<td><code>curl -X POST -H "Authorization: Bearer &lt;READ_TOKEN&gt;" https://api.domain.com/v1/billing</code></td>
+<td>Endpoint validates OAuth scopes; returns <code>403 Forbidden</code> (<code>insufficient_scope</code>).</td>
+</tr>
+<tr>
+<td><strong>26</strong></td>
+<td>Bulk Import/Export Authorization Boundaries</td>
+<td>Export endpoints fail to isolate jobs, allowing downloads of others' dumps.</td>
+<td><code>curl -H "Authorization: Bearer &lt;TOKEN_A&gt;" /v1/exports/&lt;JOB_ID_OF_TENANT_B&gt;</code></td>
+<td>Verification confirms export ownership; returns <code>404 Not Found</code>.</td>
+</tr>
+<tr>
+<td><strong>27</strong></td>
+<td>Webhook Subscription Takeover</td>
+<td>User registers endpoint receiving webhook events meant for another tenant.</td>
+<td>Subscribe to event <code>order.created</code> with an external URL; trigger order in foreign tenant.</td>
+<td>System verifies subscription ownership and payload tenant identifier matches subscriber.</td>
+</tr>
+<tr>
+<td><strong>28</strong></td>
+<td>GraphQL Query Traversal / Authorization</td>
+<td>Unauthorized field access by requesting nested internal schema elements.</td>
+<td>Query: <code>{ user { id private_financial_records { balance } } }</code> with standard token.</td>
+<td>Field-level authorization intercepts the query; returns <code>null</code> with a <code>403</code> field error.</td>
+</tr>
+<tr>
+<td><strong>29</strong></td>
+<td>Inverted State Transition Injection</td>
+<td>Moving an order from "Delivered" back to "Created" to re-process payments.</td>
+<td><code>curl -X PATCH /v1/orders/123/status -d '{"status":"PENDING"}'</code></td>
+<td>State machine rejects illegal transitions with <code>422 Unprocessable Entity</code>.</td>
+</tr>
+<tr>
+<td><strong>30</strong></td>
+<td>Context Downgrade via Impersonation Tokens</td>
+<td>Support impersonation token retained to perform actions after session close.</td>
+<td>Issue impersonation session, revoke via admin dashboard, re-execute payload.</td>
+<td>Gateway evaluates real-time token blocklist in Redis; request immediately denied (<code>401</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3>Category C: Input Validation, Schema Enforcement &amp; Injection (Items 31–42)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>31</strong></td>
+<td>Strict JSON Schema Validation</td>
+<td>Malformed types causing unhandled runtime exceptions (e.g., Array instead of String).</td>
+<td>Send <code>{"user_id": ["nested", "array"]}</code> to endpoint expecting scalar string.</td>
+<td>Request fails at gateway/model binding layer with <code>400 Bad Request</code> and structured validation error.</td>
+</tr>
+<tr>
+<td><strong>32</strong></td>
+<td>SQL / NoSQL Injection</td>
+<td>Escape characters in search endpoints altering database logic.</td>
+<td>Inject <code>' OR 1=1 --</code> or <code>{"$gt": ""}</code> into query and body parameters.</td>
+<td>Zero query manipulation; parameterized queries/ORMs handle payload as literal value.</td>
+</tr>
+<tr>
+<td><strong>33</strong></td>
+<td>Command Injection via System Utilities</td>
+<td>Filename parameter passed into image processing wrapper (e.g., ImageMagick).</td>
+<td>Send <code>filename: "image.png; cat /etc/passwd"</code>.</td>
+<td>Input rejected via regex; system executes exclusively via array-based <code>execFile</code> without shell interpolation.</td>
+</tr>
+<tr>
+<td><strong>34</strong></td>
+<td>SSRF (Server-Side Request Forgery)</td>
+<td>Webhook setup pointing to cloud metadata: <code>http://169.254.169.254/latest/meta-data/</code>.</td>
+<td>Provide AWS metadata IP and private subnets (<code>10.0.0.0/8</code>, <code>127.0.0.1</code>) as webhook target.</td>
+<td>IP resolver detects private/link-local addresses; connection rejected prior to socket creation.</td>
+</tr>
+<tr>
+<td><strong>35</strong></td>
+<td>XML External Entity (XXE) Injection</td>
+<td>Uploading XML documents containing external entity declarations.</td>
+<td>Submit payload: <code>&lt;!DOCTYPE foo [&lt;!ENTITY xxe SYSTEM "file:///etc/passwd"&gt;]&gt;</code>.</td>
+<td>XML parser configured with <code>external-general-entities=false</code> and <code>disallow-doctype-decl=true</code>.</td>
+</tr>
+<tr>
+<td><strong>36</strong></td>
+<td>Regular Expression Denial of Service (ReDoS)</td>
+<td>Exponential back-tracking payloads targeting unstructured email/regex filters.</td>
+<td>Send string: <code>"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"</code> to vulnerable validation route.</td>
+<td>Parser executes in constant or polynomial time (&lt;50ms) or terminates via timeout.</td>
+</tr>
+<tr>
+<td><strong>37</strong></td>
+<td>Payload Size Limit Enforcement</td>
+<td>Memory exhaustion via multi-gigabyte HTTP POST bodies.</td>
+<td><code>curl -X POST https://api.domain.com/v1/upload -d @/dev/urandom</code> (chunked transfer).</td>
+<td>Reverse proxy halts payload processing at predefined limit (e.g., <code>10MB</code>); returns <code>413 Payload Too Large</code>.</td>
+</tr>
+<tr>
+<td><strong>38</strong></td>
+<td>Content-Type Spoofing</td>
+<td>Attacker sends JSON payload with <code>Content-Type: text/plain</code> to bypass CORS/WAF.</td>
+<td>Send POST request without <code>application/json</code> header containing raw JSON body.</td>
+<td>Endpoint enforces strict header checks; returns <code>415 Unsupported Media Type</code>.</td>
+</tr>
+<tr>
+<td><strong>39</strong></td>
+<td>HTTP Parameter Pollution (HPP)</td>
+<td>Supplying identical query parameters twice: <code>?user_id=1&amp;user_id=2</code>.</td>
+<td>Execute query with duplicate keys; observe backend framework array binding.</td>
+<td>Gateway rejects or deterministically handles parameters; avoids privilege assignment bypass.</td>
+</tr>
+<tr>
+<td><strong>40</strong></td>
+<td>Unicode Normalization Attacks</td>
+<td>Bypassing blacklists using homoglyphs or multi-byte unicode sequences.</td>
+<td>Send visual equivalents (e.g., Cyrillic 'a') inside critical identifier fields.</td>
+<td>System normalizes input via Unicode Normalization Form C (NFC) prior to validation.</td>
+</tr>
+<tr>
+<td><strong>41</strong></td>
+<td>CSV/Formula Injection via API Exports</td>
+<td>Exporting data containing <code>=cmd|' /C calc'!A0</code> executing code on victim Excel instances.</td>
+<td>Inject spreadsheet operators into name fields: <code>+SUM(1+1)</code>.</td>
+<td>Export sanitization prepends an apostrophe <code>'</code> to any cell starting with <code>=</code>, <code>+</code>, <code>-</code>, or <code>@</code>.</td>
+</tr>
+<tr>
+<td><strong>42</strong></td>
+<td>Zip Slip / Unsafe Archive Decompression</td>
+<td>Archive upload with relative path directory traversal (<code>../../bin/sh</code>).</td>
+<td>Upload zip file generated with <code>evilarc</code> containing traversal file paths.</td>
+<td>Decompressor validates target extraction path resides strictly within the destination directory.</td>
+</tr>
+</tbody>
+</table>
+<h3>Category D: Rate Limiting, Throttling &amp; DoS Protection (Items 43–52)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>43</strong></td>
+<td>Distributed Rate Limiting Consistency</td>
+<td>Bypassing single-node rate limits by rotating requests across cluster nodes.</td>
+<td>Dispatch 200 requests across all load balancer nodes using concurrent workers.</td>
+<td>Global rate limiter backed by Redis returns <code>429 Too Many Requests</code> once ceiling is reached.</td>
+</tr>
+<tr>
+<td><strong>44</strong></td>
+<td>Tier-Based Identity Limiting</td>
+<td>Unauthenticated callers consuming compute budgets allocated for paid tiers.</td>
+<td>Test with: 1) No token, 2) Free tier token, 3) Tier-1 Enterprise token.</td>
+<td>Limits enforced: Anonymous (20 req/min), Free (100 req/min), Enterprise (5000 req/min).</td>
+</tr>
+<tr>
+<td><strong>45</strong></td>
+<td>Tier-1 DoS on Expensive Relational Joins</td>
+<td>Requesting high pagination limits on relational child tables: <code>?limit=100000</code>.</td>
+<td>Request <code>/v1/transactions?limit=1000000&amp;include=audit_logs</code>.</td>
+<td>Server enforces hard maximum limit (e.g., <code>limit=100</code>); invalidates excessive values.</td>
+</tr>
+<tr>
+<td><strong>46</strong></td>
+<td>GraphQL Depth &amp; Complexity Limiting</td>
+<td>Denial of service via deeply nested circular schema requests.</td>
+<td>Query depth &gt; 10: <code>{ author { books { author { books { ... } } } } }</code>.</td>
+<td>Query analyzer rejects graph before execution if complexity/depth threshold is exceeded.</td>
+</tr>
+<tr>
+<td><strong>47</strong></td>
+<td>Rate Limit Bypass via Header Spoofing</td>
+<td>Spoofing client IPs via <code>X-Forwarded-For: 1.1.1.1</code> to reset per-IP quotas.</td>
+<td>Send sequential requests mutating <code>X-Forwarded-For</code> with random public IPs.</td>
+<td>Gateway strips and overwrites <code>X-Forwarded-For</code> from untrusted downstreams; uses true socket IP.</td>
+</tr>
+<tr>
+<td><strong>48</strong></td>
+<td>Slowloris / HTTP Request Smuggling</td>
+<td>Holding connection sockets open indefinitely via slow partial headers/bodies.</td>
+<td>Execute <code>slowhttptest -c 1000 -H -g -o slowhttp -i 10 -r 200 -t GET -u https://api.domain.com</code>.</td>
+<td>Edge/Proxy closes idle connections exceeding timeout thresholds (e.g., 5-10s); maintains availability.</td>
+</tr>
+<tr>
+<td><strong>49</strong></td>
+<td>Out-of-Band Callback Flooding</td>
+<td>Initiating thousands of webhook verifications against an external target.</td>
+<td>Register 1,000 webhook subscriptions in 10 seconds pointing to a victim domain.</td>
+<td>Webhook registration enforces independent rate limits and domain verification checks.</td>
+</tr>
+<tr>
+<td><strong>50</strong></td>
+<td>CPU Exhaustion via Asymmetric Crypto Operations</td>
+<td>Flooding endpoints with invalid SSL renegotiations or malformed large RSA signatures.</td>
+<td>Send rapid burst of malformed JWT signatures forcing expensive RSA verification.</td>
+<td>Gateway rejects malformed envelopes cheaply; throttles failing IPs aggressively.</td>
+</tr>
+<tr>
+<td><strong>51</strong></td>
+<td>Response Buffering Memory Exhaustion</td>
+<td>Forcing server to buffer huge payloads by advertising an ultra-low TCP window.</td>
+<td>Connect with tiny TCP window size while requesting large response payloads.</td>
+<td>Streaming responses pipe directly without unbounded server-side memory buffering.</td>
+</tr>
+<tr>
+<td><strong>52</strong></td>
+<td>Circuit Breaking under Upstream Failure</td>
+<td>Upstream service degradation cascades, exhausting the entire API thread pool.</td>
+<td>Inject 5000ms latency into internal microservice dependency.</td>
+<td>Circuit breaker trips after error threshold; returns immediate <code>503 Service Unavailable</code> with fallback.</td>
+</tr>
+</tbody>
+</table>
+<h3>Category E: Cryptography, Secrets &amp; TLS Configuration (Items 53–60)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>53</strong></td>
+<td>TLS Protocol Version Enforcement</td>
+<td>Downgrade attacks exposing session data (POODLE, BEAST).</td>
+<td><code>testssl.sh -p https://api.domain.com</code></td>
+<td>TLS 1.2 and TLS 1.3 supported exclusively; SSLv2, SSLv3, TLS 1.0, and TLS 1.1 disabled.</td>
+</tr>
+<tr>
+<td><strong>54</strong></td>
+<td>Weak Cipher Suite Deprecation</td>
+<td>Eavesdropping via broken ciphers containing CBC or RC4.</td>
+<td><code>testssl.sh -E https://api.domain.com</code></td>
+<td>Only AEAD ciphers permitted (e.g., <code>ECDHE-ECDSA-AES128-GCM-SHA256</code>, <code>CHACHA20-POLY1305</code>).</td>
+</tr>
+<tr>
+<td><strong>55</strong></td>
+<td>HSTS Header Deployment</td>
+<td>SSL stripping attacks intercepting the initial plaintext connection.</td>
+<td><code>curl -I https://api.domain.com</code></td>
+<td>Returns <code>Strict-Transport-Security: max-age=63072000; includeSubDomains; preload</code>.</td>
+</tr>
+<tr>
+<td><strong>56</strong></td>
+<td>Zero Hardcoded Secrets in Codebases</td>
+<td>Leaked API credentials and database passwords in source code history.</td>
+<td><code>trufflehog git file://. --since-commit HEAD~500</code></td>
+<td>Zero high-entropy strings, private keys, or known token structures identified.</td>
+</tr>
+<tr>
+<td><strong>57</strong></td>
+<td>Symmetric Key Encryption-at-Rest for Sensitive Fields</td>
+<td>Direct database compromise revealing raw PII or client secrets.</td>
+<td>Inspect direct database dump / raw rows in <code>users</code> and <code>credentials</code> tables.</td>
+<td>Sensitive fields encrypted via AES-256-GCM or ChaCha20; ciphertexts include distinct nonces.</td>
+</tr>
+<tr>
+<td><strong>58</strong></td>
+<td>Safe Cryptographic Salt &amp; Work Factor</td>
+<td>Offline rainbow table attacks against dumped user password hashes.</td>
+<td>Inspect hashing algorithm configuration in source code.</td>
+<td>Passwords hashed using Argon2id (<code>m=65536, t=3, p=4</code>) or bcrypt (work factor &gt;= 12).</td>
+</tr>
+<tr>
+<td><strong>59</strong></td>
+<td>Perfect Forward Secrecy (PFS) Enforcement</td>
+<td>Compromise of server private key decrypts past recorded traffic.</td>
+<td>Inspect TLS cipher negotiation list with <code>testssl.sh -f</code>.</td>
+<td>All negotiated cipher suites utilize ephemeral Diffie-Hellman keys (<code>ECDHE</code> / <code>DHE</code>).</td>
+</tr>
+<tr>
+<td><strong>60</strong></td>
+<td>Ephemeral Token Signature Key Rotation</td>
+<td>Stolen private signing key permanently compromises token integrity.</td>
+<td>Query <code>/.well-known/jwks.json</code>; check key rotation automation.</td>
+<td>JWKS endpoint lists multiple active <code>kid</code> records supporting scheduled, seamless rotation.</td>
+</tr>
+</tbody>
+</table>
+<h3>Category F: Logging, Observability &amp; Error Handling (Items 61–65)</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Security Verification Check</th>
+<th>Attack Vector / Exploit Scenario</th>
+<th>Verification Method / CLI Command</th>
+<th>Pass Criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>61</strong></td>
+<td>Zero Token / Password Leakage in Logs</td>
+<td>Tokens harvested by operators or third-party log analytical pipelines.</td>
+<td>Execute request with credentials; search Elasticsearch/CloudWatch logs for the token.</td>
+<td>Zero authorization headers, refresh tokens, passwords, or credit card numbers in logs.</td>
+</tr>
+<tr>
+<td><strong>62</strong></td>
+<td>Production Stack Trace Suppression</td>
+<td>Stack traces reveal internal directory structures, library versions, and credentials.</td>
+<td>Submit broken JSON payload (<code>{"key":</code>) to trigger an internal error.</td>
+<td>Returns standard RFC 7807 problem detail response; zero debug traces or internal code lines exposed.</td>
+</tr>
+<tr>
+<td><strong>63</strong></td>
+<td>W3C Trace Context Propagation</td>
+<td>Inability to trace attacks traversing distributed microservices.</td>
+<td>Send request with <code>traceparent</code> header; check downstream service logs.</td>
+<td>Upstream spans correlate accurately across all downstream internal RPCs and trace events.</td>
+</tr>
+<tr>
+<td><strong>64</strong></td>
+<td>Security Audit Trail Immutability</td>
+<td>Attacker deletes audit records to cover unauthorized access.</td>
+<td>Attempt to update or delete records directly in the audit log collection/table.</td>
+<td>Audit collection has append-only permissions enforced by IAM; updates/deletions fail at the database level.</td>
+</tr>
+<tr>
+<td><strong>65</strong></td>
+<td>Centralized Security Alerting Integration</td>
+<td>High-volume auth failures go unnoticed until system-wide compromise occurs.</td>
+<td>Trigger 100 failed auth calls; check SIEM alert feed (Datadog/Splunk/Wazuh).</td>
+<td>Alert fires within 120 seconds of threshold breach; triggers PagerDuty security incident.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Production-Grade CI/CD Security Automation Pipeline</h2>
+<p>Save this file directly to <code>.github/workflows/api-security-pipeline.yml</code>. It runs on every pull request and push to the <code>main</code> branch, scanning dependencies, static code analysis, and dynamic API contracts.</p>
+<pre><code class="language-yaml">name: Production API Security &amp; Vulnerability Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep-sast:
+    name: Semgrep SAST &amp; Custom Auth Rules
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep:1.68.0
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep SAST &amp; Custom Rules
+        run: |
+          semgrep scan \
+            --config &quot;p/security-audit&quot; \
+            --config &quot;p/owasp-top-ten&quot; \
+            --config &quot;.github/semgrep/rules.yml&quot; \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error
+
+      - name: Upload Semgrep SARIF Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+
+  trivy-sca-and-fs:
+    name: Trivy Dependency &amp; Secrets Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@0.18.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  dast-schemathesis:
+    name: Schemathesis Dynamic API Contract Fuzzing
+    runs-on: ubuntu-latest
+    needs: [semgrep-sast, trivy-sca-and-fs]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install schemathesis
+
+      - name: Build and Boot Local API Service
+        run: |
+          docker compose -f docker-compose.test.yml up -d --build
+          # Wait for API readiness
+          timeout 60s bash -c 'until curl -s http://localhost:8080/health; do sleep 2; done'
+
+      - name: Run Schemathesis Dynamic Attack Suite
+        run: |
+          schemathesis run http://localhost:8080/openapi.json \
+            --base-url=http://localhost:8080 \
+            --checks all \
+            --hypothesis-max-examples=100 \
+            --hypothesis-deadline=1000 \
+            --validate-schema=true \
+            --stateful=links \
+            --exitfirst
+
+      - name: Teardown Services
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+</code></pre>
+<hr />
+<h2>3. Custom Semgrep Rule Pack for Auth &amp; API Vulnerabilities</h2>
+<p>Place this configuration file at <code>.github/semgrep/rules.yml</code>. It defines custom rules that target authorization bypasses, cryptographic misconfigurations, and BOLA patterns during CI/CD checks.</p>
+<p><code>``yaml
+rules:
+  - id: express-route-missing-auth-guard
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: &gt;-
+      Exposed API route detected without an explicit authentication middleware.
+      Ensure</code>requireAuth` or an equivalent middleware is present in the pipeline.
+    patterns:
+      - pattern-either:
+          - pattern: app.$METHOD($ROUTE, (req, res) =&gt; { ... })
+          - pattern: router.$METHOD($ROUTE, (req, res) =&gt; { ... })
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(get|post|put|delete|patch)$
+      - pattern-not: app.$METHOD($ROUTE, $AUTH, ..., (req, res) =&gt; { ... })
+      - pattern-not: router.$METHOD($ROUTE, $AUTH, ..., (req, res) =&gt; { ... })
+      - pattern-not: app.use($AUTH)
+      - pattern-not: router.use($AUTH)</p>
+<ul>
+<li>
+<p>id: insecure-jwt-none-algorithm
+    languages: [javascript, typescript, python, go]
+    severity: ERROR
+    message: &gt;-
+      Insecure JWT verification: explicitly permitting the 'none' algorithm
+      allows signature stripping attacks. Set algorithms explicitly to RS256, ES256, or EdDSA.
+    pattern-either:</p>
+<ul>
+<li>pattern: jwt.verify($TOKEN, $KEY, { algorithms: [..., "none", ...] })</li>
+<li>pattern: jwt.verify($TOKEN, $KEY, { algorithms: [..., "NONE", ...] })</li>
+<li>pattern: jwt.decode($TOKEN, verify=False)</li>
+<li>pattern: jwt.Decode($TOKEN)</li>
+</ul>
+</li>
+<li>
+<p>id: bola-direct-object-id-lookup
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: &gt;-
+      Potential BOLA/IDOR vulnerability: Database lookup uses route parameter directly
+      without incorporating user/tenant context in the WHERE clause.
+    patterns:</p>
+<ul>
+<li>pattern-either:<ul>
+<li>pattern: |
+      const $ID = req.params.id;
+      ...
+      $DB.findUnique({ where: { id: $ID } });</li>
+<li>pattern: |
+      $DB.findOne({ _id: req.params.id });</li>
+</ul>
+</li>
+<li>pattern-not: |
+      $DB.findUnique({ where: { id: req.params.id, userId: req.user.id } });</li>
+<li>pattern-not: |
+      $DB.findUnique({ where: { id: req.params.id, tenantId: req.user.tenantId } });</li>
+</ul>
+</li>
+<li>
+<p>id: hardcoded-jwt-signing-secret
+    languages: [javascript, typescript, python, go]
+    severity: ERROR
+    message: &gt;-
+      High-risk security vulnerability: Hardcoded string literal used as JWT signing secret.
+      Secrets must be loaded from external key stores (AWS KMS, HashiCorp Vault) or environment variables.
+    pattern-either:</p>
+<ul>
+<li>pattern: jwt.sign($PAYLOAD, "...", ...)</li>
+<li>pattern: jwt.verify($TOKEN, "...", ...)</li>
+<li>pattern: jwt.encode($PAYLOAD, "...", ...)</li>
+<li>pattern: jwt.decode($TOKEN, "...", ...)</li>
+<li>pattern: "[]byte(\"...\")"
+paths:</li>
+</ul>
+</li>
+</ul>
+</body>
+</html>

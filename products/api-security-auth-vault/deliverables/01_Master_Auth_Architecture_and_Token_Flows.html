@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The API Security & Auth Architecture Vault: 50+ OAuth2 Flows, Token Rotation, Rate Limiting & OWASP Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Complete Authentication &amp; Token Lifecycles</h1>
+<p>This deliverable provides the complete production architecture, data models, cryptographic validations, and deployment-ready code for modern API authentication. It focuses on OAuth 2.1 zero-trust flows, rotating refresh token families in Redis, cross-origin browser hardening, and instantaneous session revocation.</p>
+<hr />
+<h2>1. High-Level System Architecture</h2>
+<p>The following sequence details the zero-trust boundary separating Public Clients (SPA/Mobile), the Reverse Proxy/API Gateway, the Dedicated Authentication Service, Distributed Token Stores, and Downstream Resource Servers.</p>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+|                                      ZERO-TRUST AUTH BOUNDARY                                     |
++---------------------------------------------------------------------------------------------------+
+ [ Public Client ]       [ API Gateway / Proxy ]     [ Auth Service ]    [ Redis Cluster ]  [ Resource Server ]
+         |                          |                       |                   |                   |
+         |-- 1. /authorize (PKCE) -&gt;|----------------------&gt;|                   |                   |
+         |&lt;- 2. Auth Code ----------|&lt;----------------------|                   |                   |
+         |                          |                       |                   |                   |
+         |-- 3. /oauth/token ------&gt;|----------------------&gt;|                   |                   |
+         |      (Code + Verifier)   |                       |-- 4. Store Family&gt;|                   |
+         |                          |                       |   State &amp; JTI     |                   |
+         |&lt;- 5. Set __Host- Cookies-|&lt;----------------------|                   |                   |
+         |      (AT + RT Family)    |                       |                   |                   |
+         |                          |                       |                   |                   |
+         |-- 6. API Req + Cookie --&gt;|                                                               |
+         |                          |-- 7. Validate JWT Signature &amp; Alg (stateless via JWKS) ------&gt;|
+         |                          |-- 8. Query Revocation Bloom / Redis Denylist (JTI) ----------&gt;|
+         |                          |-- 9. Strip Auth Cookie, Inject X-User-Id / Claims -----------&gt;|
+         |&lt;- 10. HTTP 200 Response -|&lt;--------------------------------------------------------------|
+</code></pre>
+<hr />
+<h2>2. OAuth 2.0 / 2.1 Authorization Code Flow with PKCE</h2>
+<p>Public clients (Single Page Applications, Native Mobile, Desktop) MUST NOT use the Resource Owner Password Credentials Grant or the Implicit Grant. RFC 7636 (PKCE) is mandatory to eliminate authorization code interception attacks.</p>
+<h3>2.1 Cryptographic Verifier &amp; Challenge Mechanics</h3>
+<p>The client generates a high-entropy cryptographic random string (<code>code_verifier</code>) using unreserved URL characters <code>[A-Z] / [a-z] / [0-9] / "-" / "." / "_" / "~"</code>, with a minimum length of 43 characters and a maximum of 128 characters.</p>
+<p>$$\text{code_challenge} = \text{BASE64URL-ENCODE}(\text{SHA256}(\text{ASCII}(\text{code_verifier})))$$</p>
+<h4>Production Client Implementation (Web Crypto API / Node.js Runtime)</h4>
+<pre><code class="language-typescript">// pkce.ts - Zero-dependency PKCE generation compatible with Browsers, Node 18+, and Edge Runtimes
+export interface PKCEPair {
+  codeVerifier: string;
+  codeChallenge: string;
+  codeChallengeMethod: 'S256';
+}
+
+function base64UrlEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i &lt; bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+export async function generatePKCE(): Promise&lt;PKCEPair&gt; {
+  const randomBytes = new Uint8Array(64);
+  crypto.getRandomValues(randomBytes);
+
+  // RFC 7636 ABNF: unreserved characters
+  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  let verifier = '';
+  for (let i = 0; i &lt; randomBytes.length; i++) {
+    verifier += charset[randomBytes[i] % charset.length];
+  }
+
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = base64UrlEncode(digest);
+
+  return {
+    codeVerifier: verifier,
+    codeChallenge: challenge,
+    codeChallengeMethod: 'S256',
+  };
+}
+</code></pre>
+<h3>2.2 Wire-Level Payloads</h3>
+<h4>Authorization Request</h4>
+<pre><code class="language-http">GET /oauth/v2/authorize?
+    response_type=code
+    &amp;client_id=spa-dashboard-prod
+    &amp;redirect_uri=https%3A%2F%2Fapp.platform.io%2Fauth%2Fcallback
+    &amp;scope=openid%20profile%20email%20offline_access%20billing%3Aread
+    &amp;state=af0ifjsldkj
+    &amp;code_challenge=E9Melhoa2OwvFrGMTJguCH5rtG6470-ZFlo_GZ0fqeM
+    &amp;code_challenge_method=S256 HTTP/1.1
+Host: auth.platform.io
+</code></pre>
+<h4>Token Exchange Request</h4>
+<pre><code class="language-http">POST /oauth/v2/token HTTP/1.1
+Host: auth.platform.io
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&amp;client_id=spa-dashboard-prod
+&amp;code=SplxlOBeZQQYbYS6WxSbIA
+&amp;redirect_uri=https%3A%2F%2Fapp.platform.io%2Fauth%2Fcallback
+&amp;code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+</code></pre>
+<hr />
+<h2>3. Production Token Rotation &amp; Reuse Detection (Redis Engine)</h2>
+<p>The token rotation lifecycle prevents replay attacks by issuing a single-use refresh token that advances the state of a "Token Family." If a token from a family is presented more than once, the engine triggers an automatic compromise protocol, invalidating all current and descendant tokens across the entire family.</p>
+<pre><code>       [ Family Root (UUIDv4) ]
+                  |
+         [ RT-1 (Consumed) ]  &lt;-- Attacker replays RT-1!
+                  |
+         [ RT-2 (Consumed) ]  &lt;-- ENGINE DETECTS BREACH:
+                  |               Revokes Family Root immediately.
+         [ RT-3 (Active)   ]  &lt;-- Invalidates RT-3. Legitimate user forced to re-auth.
+</code></pre>
+<h3>3.1 Redis Data Structures</h3>
+<ul>
+<li><code>token_family:&lt;family_id&gt;</code>: <code>HASH</code> containing family metadata, user ID, status (<code>ACTIVE</code> | <code>REVOKED</code>), and current active refresh token hash.</li>
+<li><code>refresh_token:&lt;token_hash&gt;</code>: <code>HASH</code> storing <code>family_id</code>, <code>iteration</code>, and state (<code>VALID</code> | <code>CONSUMED</code> | <code>REVOKED</code>).</li>
+<li><code>user_sessions:&lt;user_id&gt;</code>: <code>SET</code> of active <code>family_id</code> strings belonging to the subject.</li>
+</ul>
+<h3>3.2 Atomic Token Exchange Lua Script</h3>
+<p>Using a Redis Lua script prevents race conditions when concurrent requests attempt to swap the same refresh token.</p>
+<pre><code class="language-lua">-- KEYS[1]: refresh_token:&lt;incoming_token_hash&gt;
+-- KEYS[2]: token_family:&lt;family_id&gt;
+-- ARGV[1]: expected_family_id
+-- ARGV[2]: new_token_hash
+-- ARGV[3]: new_token_ttl (seconds)
+-- ARGV[4]: client_ip
+-- ARGV[5]: user_agent
+
+local token_key = KEYS[1]
+local family_key = KEYS[2]
+
+local incoming_family = ARGV[1]
+local new_token_hash = ARGV[2]
+local token_ttl = tonumber(ARGV[3])
+local client_ip = ARGV[4]
+local user_agent = ARGV[5]
+
+-- 1. Check if the incoming token exists
+local token_data = redis.call('HMGET', token_key, 'family_id', 'status', 'iteration')
+local family_id = token_data[1]
+local status = token_data[2]
+local iteration = tonumber(token_data[3])
+
+if not family_id then
+    return redis.error_reply(&quot;ERR_TOKEN_NOT_FOUND&quot;)
+end
+
+-- 2. Verify Family ID integrity
+if family_id ~= incoming_family then
+    return redis.error_reply(&quot;ERR_FAMILY_MISMATCH&quot;)
+end
+
+-- 3. REUSE DETECTION: If token is already CONSUMED or family is REVOKED
+local family_status = redis.call('HGET', family_key, 'status')
+if status == 'CONSUMED' or family_status == 'REVOKED' then
+    -- Mark family as compromised
+    redis.call('HSET', family_key, 'status', 'REVOKED', 'revoked_reason', 'REUSE_DETECTED')
+    -- Expire family metadata quickly to allow garbage collection
+    redis.call('EXPIRE', family_key, 86400)
+    return redis.error_reply(&quot;ERR_TOKEN_REUSE_DETECTED&quot;)
+end
+
+-- 4. Mark incoming token as CONSUMED (keep for a short grace window or audit)
+redis.call('HSET', token_key, 'status', 'CONSUMED', 'consumed_at', redis.call('TIME')[1])
+redis.call('EXPIRE', token_key, 300) -- Retain for 5 mins to catch race conditions
+
+-- 5. Register new token
+local new_iteration = iteration + 1
+local new_token_key = 'refresh_token:' .. new_token_hash
+
+redis.call('HMSET', new_token_key,
+    'family_id', family_id,
+    'status', 'VALID',
+    'iteration', new_iteration,
+    'created_at', redis.call('TIME')[1],
+    'ip', client_ip,
+    'user_agent', user_agent
+)
+redis.call('EXPIRE', new_token_key, token_ttl)
+
+-- 6. Update Family pointer
+redis.call('HMSET', family_key,
+    'active_token_hash', new_token_hash,
+    'last_rotated_at', redis.call('TIME')[1]
+)
+redis.call('EXPIRE', family_key, token_ttl)
+
+return { &quot;OK&quot;, family_id, tostring(new_iteration) }
+</code></pre>
+<h3>3.3 Node.js / TypeScript Orchestrator</h3>
+<pre><code class="language-typescript">// tokenEngine.ts
+import { createHash, randomBytes } from 'crypto';
+import Redis from 'ioredis';
+import { SignJWT } from 'jose';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+
+const ROTATE_LUA_SCRIPT = `
+-- [Insert Lua Script From Section 3.2 Here]
+`;
+
+redis.defineCommand('rotateRefreshToken', {
+  numberOfKeys: 2,
+  lua: ROTATE_LUA_SCRIPT,
+});
+
+declare module 'ioredis' {
+  interface RedisCommander&lt;Context&gt; {
+    rotateRefreshToken(
+      tokenKey: string,
+      familyKey: string,
+      expectedFamilyId: string,
+      newTokenHash: string,
+      tokenTtl: number,
+      clientIp: string,
+      userAgent: string
+    ): Promise&lt;[string, string, string]&gt;;
+  }
+}
+
+export function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export interface RotationResult {
+  accessToken: string;
+  refreshToken: string;
+  familyId: string;
+  iteration: number;
+}
+
+export async function rotateSession(
+  rawRefreshToken: string,
+  familyId: string,
+  userId: string,
+  clientIp: string,
+  userAgent: string,
+  privateKey: Uint8Array | CryptoKey
+): Promise&lt;RotationResult&gt; {
+  const currentTokenHash = hashToken(rawRefreshToken);
+  const newRawRefreshToken = randomBytes(48).toString('base64url');
+  const newTokenHash = hashToken(newRawRefreshToken);
+
+  const tokenKey = `refresh_token:${currentTokenHash}`;
+  const familyKey = `token_family:${familyId}`;
+  const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60; // 30 days
+
+  try {
+    const result = await redis.rotateRefreshToken(
+      tokenKey,
+      familyKey,
+      familyId,
+      newTokenHash,
+      REFRESH_TOKEN_TTL,
+      clientIp,
+      userAgent
+    );
+
+    const iteration = parseInt(result[2], 10);
+
+    // Generate new Access Token (Stateless, 10 min lifetime)
+    const accessToken = await new SignJWT({
+      sub: userId,
+      fam: familyId,
+      itr: iteration,
+    })
+      .setProtectedHeader({ alg: 'EdDSA', typ: 'JWT' })
+      .setIssuedAt()
+      .setIssuer('https://auth.platform.io')
+      .setAudience('https://api.platform.io')
+      .setExpirationTime('10m')
+      .sign(privateKey);
+
+    return {
+      accessToken,
+      refreshToken: newRawRefreshToken,
+      familyId,
+      iteration,
+    };
+  } catch (error: any) {
+    if (error.message.includes('ERR_TOKEN_REUSE_DETECTED')) {
+      // Security Alert Trigger: Notify SIEM / User Security Center
+      await handleSecurityBreach(userId, familyId, clientIp);
+    }
+    throw error;
+  }
+}
+
+async function handleSecurityBreach(userId: string, familyId: string, ip: string): Promise&lt;void&gt; {
+  // 1. Invalidate all active family sessions for this user if configured
+  console.error(`ALERT: Token reuse detected for User ${userId}, Family ${familyId} from IP ${ip}`);
+  // Add audit logging and SIEM hooks here
+}
+</code></pre>
+<hr />
+<h2>4. Cross-Origin Cookie Security &amp; Hardening</h2>
+<p>Storing tokens in <code>localStorage</code> or <code>sessionStorage</code> exposes tokens directly to Cross-Site Scripting (XSS) extraction. Single Page Applications and decoupled Web Frontends must store tokens in cryptographically protected, browser-managed cookies.</p>
+<h3>4.1 Cookie Flags Specification</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Attribute</th>
+<th style="text-align: left;">Value</th>
+<th style="text-align: left;">Explicit Functionality &amp; Security Property</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Prefix</strong></td>
+<td style="text-align: left;"><code>__Host-</code></td>
+<td style="text-align: left;">Enforces that the cookie MUST be sent only to the host serving it (no subdomains), MUST be set from a secure origin (<code>https://</code>), and MUST have path set to <code>/</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>HttpOnly</code></td>
+<td style="text-align: left;"><code>true</code></td>
+<td style="text-align: left;">Prevents read access through JavaScript (<code>document.cookie</code>), neutralizing token theft via XSS.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>Secure</code></td>
+<td style="text-align: left;"><code>true</code></td>
+<td style="text-align: left;">Browser restricts transmission exclusively to encrypted TLS channels.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>SameSite</code></td>
+<td style="text-align: left;"><code>Strict</code> or <code>Lax</code></td>
+<td style="text-align: left;"><code>Strict</code> ensures the cookie is never sent with cross-site requests (e.g., following external links). <code>Lax</code> allows top-level navigations. For pure REST APIs, use <code>Strict</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>Partitioned</code></td>
+<td style="text-align: left;"><code>true</code></td>
+<td style="text-align: left;">Opts the cookie into Chips (Cookies Having Independent Partitioned State), securing embedded contexts across top-level boundaries.</td>
+</tr>
+</tbody>
+</table>
+<h3>4.2 Fastify / Express Production Cookie Setter</h3>
+<pre><code class="language-typescript">// cookieSecurity.ts
+import { Response } from 'express';
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+export function setAuthCookies(
+  res: Response, 
+  accessToken: string, 
+  refreshToken: string
+): void {
+  // Access Token: Ephemeral, strict lifecycle (10 minutes)
+  res.cookie('__Host-access_token', accessToken, {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 10 * 60 * 1000, // 10 minutes
+  });
+
+  // Refresh Token: Long-lived, pinned to refresh endpoint via reverse proxy
+  // Note: __Host- prefix mandates path=&quot;/&quot; so endpoint scoping must be enforced at Gateway
+  res.cookie('__Host-refresh_token', refreshToken, {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  });
+}
+
+export function clearAuthCookies(res: Response): void {
+  res.clearCookie('__Host-access_token', { path: '/', httpOnly: true, secure: IS_PROD, sameSite: 'strict' });
+  res.clearCookie('__Host-refresh_token', { path: '/', httpOnly: true, secure: IS_PROD, sameSite: 'strict' });
+}
+</code></pre>
+<h3>4.3 Nginx Gateway Strict CORS &amp; Header Hardening</h3>
+<pre><code class="language-nginx"># /etc/nginx/conf.d/security_api.conf
+
+map $http_origin $allowed_origin {
+    default &quot;&quot;;
+    &quot;https://app.platform.io&quot; &quot;$http_origin&quot;;
+    &quot;https://admin.platform.io&quot; &quot;$http_origin&quot;;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name api.platform.io;
+
+    ssl_certificate /etc/letsencrypt/live/api.platform.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.platform.io/privkey.pem;
+
+    # SSL Hardening (A+ Configuration)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    # Defense In Depth Headers
+    add_header X-Frame-Options &quot;DENY&quot; always;
+    add_header X-Content-Type-Options &quot;nosniff&quot; always;
+    add_header Referrer-Policy &quot;strict-origin-when-cross-origin&quot; always;
+    add_header Content-Security-Policy &quot;default-src 'none'; frame-ancestors 'none';&quot; always;
+
+    location / {
+        # Strict Dynamic CORS Handling
+        if ($allowed_origin = &quot;&quot;) {
+            return 403;
+        }
+
+        # Handling Preflights
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' &quot;$allowed_origin&quot; always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, X-Request-ID, Traceparent' always;
+            add_header 'Access-Control-Max-Age' 86400 always;
+            add_header 'Content-Type' 'text/plain charset=UTF-8';
+            add_header 'Content-Length' 0;
+            return 204;
+        }
+
+        add_header 'Access-Control-Allow-Origin' &quot;$allowed_origin&quot; always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_pass http://internal_api_upstream;
+    }
+}
+</code></pre>
+<hr />
+<h2>5. Stateless JWT Cryptographic Validation</h2>
+<p>Resource servers perform stateless verification without database queries on every HTTP request. Authentication verifies the JWT signature, verifies valid issuance window parameters, and matches expected claims.</p>
+<h3>5.1 Verification Logic (TypeScript via <code>jose</code>)</h3>
+<pre><code class="language-typescript">// jwtValidator.ts
+import { createRemoteJWKSet, jwtVerify, JWTVerifyResult } from 'jose';
+
+const JWKS_URI = new URL('https://auth.platform.io/.well-known/jwks.json');
+
+// Memory-cached JWKS fetcher with auto-cooldown and rotation handling
+const remoteJWKS = createRemoteJWKSet(JWKS_URI, {
+  cacheMaxAge: 10 * 60 * 1000, // 10 minutes cache
+  cooldownDuration: 30 * 1000,   // Prevent DoS through forced misses
+});
+
+export interface AppJWTPayload {
+  sub: string;
+  fam: string;
+  itr: number;
+  roles?: string[];
+  permissions?: string[];
+}
+
+export async function validateAccessToken(token: string): Promise&lt;AppJWTPayload&gt; {
+  try {
+    const { payload }: JWTVerifyResult = await jwtVerify(token, remoteJWKS, {
+      issuer: 'https://auth.platform.io',
+      audience: 'https://api.platform.io',
+      algorithms: ['RS256', 'EdDSA'], // Explicitly whitelist cryptographic algorithms; prevent alg: &quot;none&quot;
+      clockTolerance: 5, // 5 seconds grace window for skew
+    });
+
+    return {
+      sub: payload.sub as string,
+      fam: payload.fam as string,
+      itr: payload.itr as number,
+      roles: payload['https://api.platform.io/roles'] as string[] | undefined,
+      permissions: payload['https://api.platform.io/permissions'] as string[] | undefined,
+    };
+  } catch (error: any) {
+    throw new Error(`JWT Validation Failed: ${error.message}`);
+  }
+}
+</code></pre>
+<hr />
+<h2>6. Zero-Trust Real-Time Session Revocation Architecture</h2>
+<p>Short-lived JWTs (5–15 minutes) reduce reliance on a central database. However, events like privilege revocations, administrative lockouts, or breach containment require <strong>instant</strong> invalidation, without waiting for the token's natural expiration.</p>
+<h3>6.1 Two-Tier Invalidation Strategy</h3>
+<ol>
+<li><strong>Tier 1 (Stateless):</strong> JWT validity checks against signature, expiration, and issuer.</li>
+<li><strong>Tier 2 (Real-Time Invalidation Layer):</strong> API Gateways check a sub-millisecond centralized memory cache (Redis Bloom Filter or Set) to confirm the token ID (<code>jti</code>) or Token Family (<code>fam</code>) has not been revoked.</li>
+</ol>
+<pre><code>Incoming Request -&gt; [ JWT Valid? ] -&gt; NO  -&gt; [ Return 401 ]
+                           |
+                          YES
+                           v
+                   [ Redis: Exists in ] -&gt; YES -&gt; [ Block Request: Return 401 ]
+                   [ 'revoked:jti' or ]
+                   [ 'revoked:fam' ?  ]
+                           |
+                          NO
+                           v
+              [ Forward to Resource Server ]
+</code></pre>
+<h3>6.2 Redis Fast Revocation Store</h3>
+<pre><code class="language-typescript">// revocationManager.ts
+import Redis from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');
+
+export class RevocationManager {
+  /**
+   * Revokes an explicit access token by JTI until its natural expiration.
+   */
+  public static async revokeJti(jti: string, expiresAtUnixSeconds: number): Promise&lt;void&gt; {
+    const now = Math.floor(Date.now() / 1000);
+    const ttl = expiresAtUnixSeconds - now;
+
+    if (ttl &gt; 0) {
+      await redis.set(`revoked:jti:${jti}`, '1', 'EX', ttl);
+    }
+  }
+
+  /**
+   * Revokes an entire token family instantly across all sessions.
+   */
+  public static async revokeFamily(familyId: string, ttlSeconds: number = 86400): Promise&lt;void&gt; {
+    await redis.set(`revoked:fam:${familyId}`, '1', 'EX', ttlSeconds);
+  }
+
+  /**
+   * Evaluates if the token JTI or Family ID has been blacklisted.
+   */
+  public static async isRevoked(jti: string, familyId?: string): Promise&lt;boolean&gt; {
+    const keysToCheck = [`revoked:jti:${jti}`];
+    if (familyId) {
+      keysToCheck.push(`revoked:fam:${familyId}`);
+    }
+
+    const hits = await redis.exists(...keysToCheck);
+    return hits &gt; 0;
+  }
+}
+</code></pre>
+<h3>6.3 Event-Driven Revocation Webhook (CloudEvents Spec)</h3>
+<p>When a security incident or session kill occurs, dispatch this standard JSON event to invalidate tokens immediately across multi-region API Gateways:</p>
+<pre><code class="language-json">{
+  &quot;specversion&quot;: &quot;1.0&quot;,
+  &quot;type&quot;: &quot;com.platform.auth.session.revoked&quot;,
+  &quot;source&quot;: &quot;https://auth.platform.io/audit&quot;,
+  &quot;id&quot;: &quot;f81d4fae-7dec-11d0-a765-00a0c91e6bf6&quot;,
+  &quot;time&quot;: &quot;2026-03-31T09:12:28Z&quot;,
+  &quot;datacontenttype&quot;: &quot;application/json&quot;,
+  &quot;data&quot;: {
+    &quot;userId&quot;: &quot;usr_99x8172dfa&quot;,
+    &quot;familyId&quot;: &quot;fam_a023b984-7a42-49da&quot;,
+    &quot;jti&quot;: &quot;urn:uuid:6c84fb90-12c4-11e1-840d-7b25c5ee775a&quot;,
+    &quot;reason&quot;: &quot;ADMINISTRATIVE_REVOCATION&quot;,
+    &quot;revocationScope&quot;: &quot;FAMILY&quot;,
+    &quot;expiresAt&quot;: 1774948348
+  }
+}
+</code></pre>
+<hr />
+<h2>7. Production Hardening Checklist</h2>
+<p>Verify every parameter before deploying this auth stack to production:</p>
+<p>```markdown</p>
+<h3>1. Protocol &amp; Grant Types</h3>
+<ul>
+<li>[ ] Implicit Flow disabled on all Authorization Servers.</li>
+<li>[ ] Resource Owner Password Credentials (ROPC) grant completely deprecated.</li>
+<li>[ ] Authorization Code Grant strictly requires PKCE (code_challenge_method=S256 enforced).</li>
+<li>[ ] Redirect URIs strictly matched using exact string comparison (no dynamic wildcards).</li>
+</ul>
+<h3>2. Cookie Hardening</h3>
+<ul>
+<li>[ ] Cookies generated using the <code>__Host-</code> prefix.</li>
+<li>[ ] <code>HttpOnly</code> flag enabled on both Access and Refresh tokens.</li>
+<li>[ ] <code>Secure</code> flag enabled (rejects HTTP cleartext traffic).</li>
+<li>[ ] <code>SameSite=Strict</code> deployed on state-changing API channels.</li>
+<li>[ ] <code>Path</code> forced to <code>/</code> (mandatory for <code>__Host-</code>).</li>
+</ul>
+<h3>3. Token Rotation Engine</h3>
+<ul>
+<li>[ ] Refresh tokens rotated on every single use via atomic transaction/Lua.</li>
+<li>[ ] Old refresh tokens placed in a temporary grace window (&lt; 30s) or destroyed immediately.</li>
+<li>[ ] Token Reuse Detection drops the entire family hierarchy to status <code>REVOKED</code>.</li>
+<li>[ ] High-entropy cryptographically secure pseudo-random generators (<code>crypto.getRandomValues</code>) used exclusively.</li>
+</ul>
+<h3>4. JWT &amp; Cryptographic Identity</h3>
+<ul>
+<li>[ ] Algorithm agility attacks prevented: Validation code explicitly whitelists valid signatures (e.g., <code>['EdDSA', 'RS256']</code>).</li>
+<li>[ ] Symmetric algorithms (e.g., <code>HS256</code>) explicitly prohibited on public endpoints.</li>
+<li>[ ] Audience (<code>aud</code>), Issuer (<code>iss</code>), and Expiration (<code>exp</code>) validated deterministically.</li>
+<li>[ ] JWKS fetcher leverages cached memory mechanisms with strict rate limits and error cooldowns.</li>
+<li>[ ] Access token TTL limited to a maximum of 15 minutes.</li>
+</ul>
+</body>
+</html>

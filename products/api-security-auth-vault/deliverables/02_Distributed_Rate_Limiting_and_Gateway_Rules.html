@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The API Security & Auth Architecture Vault: 50+ OAuth2 Flows, Token Rotation, Rate Limiting & OWASP Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Distributed Rate Limiting, DDoS &amp; Bot Defense Blueprints</h1>
+<p>Distributed rate limiting and volumetric defense systems protect stateful backends from cascading failure, credential stuffing, scraping, and application-layer (L7) denial of service. This module provides battle-tested architectures, atomic Redis Lua scripts, edge gateway rules (Envoy, NGINX, Cloudflare Workers), and anomaly detection heuristics designed to handle multi-gigabit traffic spikes while maintaining sub-millisecond evaluation latency.</p>
+<hr />
+<h2>1. Algorithm Selection &amp; Topologies</h2>
+<p>Selecting the wrong rate-limiting algorithm causes memory exhaustion in cache clusters or lets traffic bursts bypass controls.</p>
+<h3>1.1 Comparative Engineering Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Algorithm</th>
+<th style="text-align: left;">Redis Memory per Client Key</th>
+<th style="text-align: left;">Accuracy Under Jitter</th>
+<th style="text-align: left;">Burst Handling Capability</th>
+<th style="text-align: left;">Redis Computational Complexity</th>
+<th style="text-align: left;">Recommended Target Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Fixed Window</strong></td>
+<td style="text-align: left;">~64 bytes (String counter + TTL)</td>
+<td style="text-align: left;">Low (2x burst at boundary)</td>
+<td style="text-align: left;">Poor (traffic spikes at reset)</td>
+<td style="text-align: left;">$O(1)$ (<code>INCR</code>, <code>EXPIRE</code>)</td>
+<td style="text-align: left;">Basic internal microservice throttling</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Token Bucket</strong></td>
+<td style="text-align: left;">~128 bytes (Hash: tokens + timestamp)</td>
+<td style="text-align: left;">High</td>
+<td style="text-align: left;">Excellent (allows configured burst)</td>
+<td style="text-align: left;">$O(1)$ (Math calculations in Lua)</td>
+<td style="text-align: left;">Public API tiers, metered developer endpoints</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Leaky Bucket</strong></td>
+<td style="text-align: left;">~128 bytes (Hash: water level + timestamp)</td>
+<td style="text-align: left;">High</td>
+<td style="text-align: left;">None (smooths traffic to fixed rate)</td>
+<td style="text-align: left;">$O(1)$ (Math calculations in Lua)</td>
+<td style="text-align: left;">Data ingestion pipelines, webhook delivery queues</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sliding Window Log</strong></td>
+<td style="text-align: left;">Variable ($O(N)$ entries, ~40 bytes/request)</td>
+<td style="text-align: left;">Absolute (100% precision)</td>
+<td style="text-align: left;">Absolute enforcement</td>
+<td style="text-align: left;">$O(\log N + M)$ (<code>ZREMRANGE</code>, <code>ZCARD</code>)</td>
+<td style="text-align: left;">Zero-tolerance endpoints: <code>/auth/login</code>, <code>/billing/charge</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sliding Window Counter</strong></td>
+<td style="text-align: left;">~160 bytes (Hash: current/previous buckets)</td>
+<td style="text-align: left;">Approximation (~99.5% accuracy)</td>
+<td style="text-align: left;">Very Good (smoothed approximation)</td>
+<td style="text-align: left;">$O(1)$ (Weighted sum in Lua)</td>
+<td style="text-align: left;">High-volume public edge APIs ($&gt;100\text{k RPS}$)</td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 Defense-in-Depth Tiered Architecture</h3>
+<p>Rate limiting must not be centralized into a single bottleneck. Implement defenses in a four-tier architecture:</p>
+<pre><code>[ Ingress Internet ]
+        │
+        ▼
+[ Tier 1: Cloudflare Edge / Anycast WAF ]
+  - Layer 3/4 SYN/UDP Flood Absorption
+  - JA3/JA4 Fingerprint Dropping
+  - ASN/Country/IP Reputation Filtering
+  - Coarse Volumetric Limiting (Static Thresholds)
+        │
+        ▼
+[ Tier 2: Edge Reverse Proxy (NGINX / Envoy Gateway) ]
+  - TLS Termination &amp; HTTP/2/3 Decompression
+  - Local In-Memory Rate Limiting (Token Bucket per Worker)
+  - Uniform Resource Identifier (URI) Normalization &amp; Route Classification
+        │
+        ▼
+[ Tier 3: Distributed Rate Limiting Cluster (Redis + Lua Engine) ]
+  - Global Cross-Region Identity Tracking (Tenant ID, User ID, API Key)
+  - Sliding Window Log &amp; Token Bucket Execution
+  - Dynamic Sliding Penalties (Exponential Backoff Tracking)
+        │
+        ▼
+[ Tier 4: Application Core Services ]
+  - Concurrency Limiting (Sempahores/Connection Pools)
+  - Database Circuit Breakers
+</code></pre>
+<hr />
+<h2>2. Production-Grade Redis Lua Scripts</h2>
+<p>Atomic execution inside Redis is mandatory to prevent race conditions during distributed reads, updates, and writes. Non-atomic implementations (e.g., separate <code>GET</code> then <code>INCR</code>) allow concurrency windows where thousands of requests bypass quotas.</p>
+<h3>2.1 High-Precision Sliding Window Log (ZSET Engine)</h3>
+<p>This script maintains a sorted set of microsecond timestamps. It guarantees zero boundary bursts at the cost of memory per request.</p>
+<p><strong>File: <code>sliding_window_log.lua</code></strong></p>
+<pre><code class="language-lua">-- KEYS[1]: Rate limit tracking key (e.g., ratelimit:sliding:usr_10928301)
+-- ARGV[1]: Current UNIX timestamp in milliseconds (with microsecond fraction if available)
+-- ARGV[2]: Window size in milliseconds (e.g., 60000 for 1 minute)
+-- ARGV[3]: Maximum allowed requests within window
+-- ARGV[4]: Unique Request ID (prevents collision if timestamps match)
+
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local request_id = ARGV[4]
+
+local clear_before = now - window
+
+-- 1. Evict entries outside the sliding window
+redis.call('ZREMRANGEBYSCORE', key, '-inf', clear_before)
+
+-- 2. Fetch current number of requests inside window
+local current_requests = redis.call('ZCARD', key)
+
+-- 3. Check if current count exceeds maximum allowed limit
+if current_requests &lt; limit then
+    -- Record this request with score as timestamp and member as timestamp:request_id
+    local member = now .. &quot;:&quot; .. request_id
+    redis.call('ZADD', key, now, member)
+    -- Set TTL to ensure key expires if client goes dormant
+    redis.call('PEXPIRE', key, window)
+
+    -- Return: 1 = Allowed, Current Count, Remaining Tokens, Reset Time (ms)
+    return {1, current_requests + 1, limit - (current_requests + 1), math.ceil(window / 1000)}
+else
+    -- Fetch the oldest entry still inside window to calculate exact retry delay
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retry_after = 0
+    if oldest[2] then
+        retry_after = math.ceil((tonumber(oldest[2]) + window - now) / 1000)
+        if retry_after &lt; 1 then retry_after = 1 end
+    end
+
+    -- Return: 0 = Rejected, Current Count, Remaining Tokens, Retry-After (seconds)
+    return {0, current_requests, 0, retry_after}
+end
+</code></pre>
+<h3>2.2 Memory-Optimized Sliding Window Counter</h3>
+<p>This script avoids storing every request ID. It approximates the sliding window using a weighted sum of the current and previous discrete sub-windows, keeping memory fixed at ~160 bytes per identifier.</p>
+<p><strong>File: <code>sliding_window_counter.lua</code></strong></p>
+<pre><code class="language-lua">-- KEYS[1]: Base key for the counter (e.g., ratelimit:swc:api_prod_9918)
+-- ARGV[1]: Current UNIX timestamp in seconds
+-- ARGV[2]: Window size in seconds (e.g., 60)
+-- ARGV[3]: Maximum allowed requests within window
+
+local base_key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+
+-- Determine current bucket and previous bucket IDs
+local current_bucket = math.floor(now / window)
+local previous_bucket = current_bucket - 1
+
+local current_key = base_key .. &quot;:&quot; .. current_bucket
+local previous_key = base_key .. &quot;:&quot; .. previous_bucket
+
+-- Fetch counts from current and previous buckets
+local current_count = tonumber(redis.call('GET', current_key) or &quot;0&quot;)
+local previous_count = tonumber(redis.call('GET', previous_key) or &quot;0&quot;)
+
+-- Calculate the position within the current window (0.0 to 1.0)
+local time_into_current_bucket = now % window
+local weight = (window - time_into_current_bucket) / window
+local estimated_count = math.floor(previous_count * weight + current_count)
+
+if estimated_count &lt; limit then
+    -- Atomically increment current bucket
+    redis.call('INCR', current_key)
+    -- Ensure expiration covers the lifecycle of two full windows
+    redis.call('EXPIRE', current_key, window * 2)
+
+    local remaining = limit - (estimated_count + 1)
+    return {1, estimated_count + 1, remaining, window - time_into_current_bucket}
+else
+    local retry_after = window - time_into_current_bucket
+    if retry_after &lt; 1 then retry_after = 1 end
+    return {0, estimated_count, 0, retry_after}
+end
+</code></pre>
+<h3>2.3 Token Bucket with Burst Capacity Handling</h3>
+<p>This script implements continuous rate refill with burst allowances. It is ideal for metered APIs where sustained volume must conform to an SLA, but low-latency bursts are allowed.</p>
+<p><strong>File: <code>token_bucket.lua</code></strong></p>
+<pre><code class="language-lua">-- KEYS[1]: Bucket key (e.g., ratelimit:tb:tenant_org_44a)
+-- ARGV[1]: Max bucket capacity (burst limit)
+-- ARGV[2]: Refill rate in tokens per millisecond
+-- ARGV[3]: Current UNIX timestamp in milliseconds
+-- ARGV[4]: Cost in tokens for the incoming request (typically 1)
+
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local requested = tonumber(ARGV[4])
+
+-- Retrieve current state [1: tokens, 2: last_refill_timestamp]
+local data = redis.call('HMGET', key, 'tokens', 'last_updated')
+
+local tokens
+local last_updated
+
+if not data[1] then
+    -- Cold start: Bucket starts full
+    tokens = capacity
+    last_updated = now
+else
+    tokens = tonumber(data[1])
+    last_updated = tonumber(data[2])
+end
+
+-- Calculate generated tokens since last evaluation
+local elapsed = now - last_updated
+if elapsed &gt; 0 then
+    local generated = elapsed * refill_rate
+    tokens = math.min(capacity, tokens + generated)
+    last_updated = now
+end
+
+-- Evaluate allowance
+if tokens &gt;= requested then
+    tokens = tokens - requested
+    redis.call('HMSET', key, 'tokens', tokens, 'last_updated', last_updated)
+    -- Keep key alive for time required to refill from 0 to capacity
+    local ttl_ms = math.ceil(capacity / refill_rate)
+    redis.call('PEXPIRE', key, ttl_ms)
+
+    return {1, math.floor(tokens), 0}
+else
+    -- Reject request and compute backoff duration until requested tokens become available
+    local missing_tokens = requested - tokens
+    local retry_after_ms = math.ceil(missing_tokens / refill_rate)
+    local retry_after_seconds = math.ceil(retry_after_ms / 1000)
+    if retry_after_seconds &lt; 1 then retry_after_seconds = 1 end
+
+    return {0, math.floor(tokens), retry_after_seconds}
+end
+</code></pre>
+<hr />
+<h2>3. Gateway Implementations</h2>
+<h3>3.1 Envoy Proxy Distributed Rate Limit Filter</h3>
+<p>Envoy decouples enforcement from state by calling an out-of-process gRPC rate limit service (<code>ratelimit</code>).</p>
+<h4>Envoy Filter Configuration Snippet (v3 API)</h4>
+<pre><code class="language-yaml">http_filters:
+  - name: envoy.filters.http.ratelimit
+    typed_config:
+      &quot;@type&quot;: type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+      domain: internal-api-gateway
+      stage: 0
+      request_type: external
+      timeout: 20ms
+      failure_mode_deny: false
+      rate_limited_as_resource_exhausted: true
+      enable_x_ratelimit_headers: DRAFT_VERSION_03
+      rate_limit_service:
+        transport_api_version: V3
+        grpc_service:
+          envoy_grpc:
+            cluster_name: ratelimit_service_cluster
+
+clusters:
+  - name: ratelimit_service_cluster
+    type: STRICT_DNS
+    lb_policy: ROUND_ROBIN
+    http2_protocol_options: {}
+    connect_timeout: 0.25s
+    load_assignment:
+      cluster_name: ratelimit_service_cluster
+      endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: ratelimit.infrastructure.internal
+                    port_value: 8081
+</code></pre>
+<h4>Envoy Route Descriptors</h4>
+<p>Configure which requests trigger rate checks inside the route configuration:</p>
+<pre><code class="language-yaml">route_config:
+  name: api_routes
+  virtual_hosts:
+    - name: api_service
+      domains: [&quot;api.production.domain.com&quot;]
+      routes:
+        - match:
+            prefix: &quot;/v1/auth/&quot;
+          route:
+            cluster: auth_backend
+            rate_limits:
+              - stage: 0
+                actions:
+                  - request_headers:
+                      header_name: &quot;:path&quot;
+                      descriptor_key: route_path
+                  - remote_address: {}
+        - match:
+            prefix: &quot;/v1/&quot;
+          route:
+            cluster: api_backend
+            rate_limits:
+              - stage: 0
+                actions:
+                  - request_headers:
+                      header_name: &quot;X-Tenant-ID&quot;
+                      descriptor_key: tenant_id
+</code></pre>
+<h4>Ratelimit Service Runtime Rules (<code>config.yaml</code>)</h4>
+<pre><code class="language-yaml">domain: internal-api-gateway
+descriptors:
+  # Route 1: Auth path strict IP rate limiting
+  - key: route_path
+    value: /v1/auth/
+    descriptors:
+      - key: remote_address
+        rate_limit:
+          unit: minute
+          requests_per_unit: 10
+
+  # Route 2: Tenant-level tiered rate limits
+  - key: tenant_id
+    descriptors:
+      - key: tier_free
+        rate_limit:
+          unit: hour
+          requests_per_unit: 1000
+      - key: tier_enterprise
+        rate_limit:
+          unit: second
+          requests_per_unit: 500
+</code></pre>
+<h3>3.2 NGINX High-Throughput Dual-Zone Configuration</h3>
+<p>This configuration uses a two-zone approach: a fast in-memory connection/burst smoother on the edge, combined with an authenticated identity limiter.</p>
+<pre><code class="language-nginx">http {
+    # Extract Real IP when behind an L4/L7 load balancer or Cloudflare
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from 172.16.0.0/12;
+    set_real_ip_from 192.168.0.0/16;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+
+    # Exemption Map for internal health probes and monitoring agents
+    map $http_x_internal_token $limit_bypass {
+        &quot;SecretTelemetryProbeTokenString4490&quot; 0;
+        default 1;
+    }
+
+    # Binary IP Mapping for Memory Efficiency (10MB handles ~160,000 active sessions)
+    map $limit_bypass $limitable_ip {
+        0 &quot;&quot;;
+        1 $binary_remote_addr;
+    }
+
+    # Extract authenticated Tenant/Key or fall back to client IP
+    map $http_authorization $client_identity {
+        &quot;&quot; $limitable_ip;
+        default $http_authorization;
+    }
+
+    # Global IP Concurrency Limit (Prevents socket starvation attacks)
+    limit_conn_zone $limitable_ip zone=ip_conn_pool:10m;
+
+    # API Request Rate Limits
+    # Zone 1: Strict Per-IP Zone for unauthenticated/auth endpoints (5 RPS baseline)
+    limit_req_zone $limitable_ip zone=strict_auth_zone:20m rate=5r/s;
+
+    # Zone 2: Per-Identity Public API Zone (100 RPS baseline)
+    limit_req_zone $client_identity zone=standard_api_zone:50m rate=100r/s;
+
+    # RFC 6585 compliance status code
+    limit_req_status 429;
+    limit_conn_status 429;
+
+    server {
+        listen 443 ssl http2;
+        server_name api.production.domain.com;
+
+        # TLS parameters omitted for brevity
+
+        # Max 50 concurrent open TCP connections per single IP
+        limit_conn ip_conn_pool 50;
+
+        # Endpoint 1: Auth/Password attempts - zero tolerance burst
+        location ~ ^/v[0-9]+/auth/ {
+            limit_req zone=strict_auth_zone burst=5 nodelay;
+
+            proxy_pass http://upstream_auth_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        # Endpoint 2: Standard platform API - allows dynamic 50-request burst
+        location / {
+            limit_req zone=standard_api_zone burst=50 nodelay;
+
+            # Custom rate limit exhaustion headers
+            add_header X-RateLimit-Limit 100 always;
+            add_header Retry-After 1 always;
+
+            proxy_pass http://upstream_core_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+    }
+}
+</code></pre>
+<h3>3.3 Kong Gateway Declarative Configuration (<code>kong.yml</code>)</h3>
+<p>This configuration enforces a Redis-backed multi-tier limit across multiple consumer groups.</p>
+<pre><code class="language-yaml">_format_version: &quot;3.0&quot;
+
+services:
+  - name: enterprise-core-api
+    url: http://core-api-internal.internal:8080
+    routes:
+      - name: core-api-route
+        paths:
+          - /v2/data
+
+consumers:
+  - username: client_tier_free
+    custom_id: free_consumer_001
+  - username: client_tier_enterprise
+    custom_id: enterprise_consumer_002
+
+plugins:
+  - name: rate-limiting-advanced
+    service: enterprise-core-api
+    config:
+      limit:
+        - 100
+        - 50000
+      window_size:
+        - 60
+        - 86400
+      identifier: consumer
+      strategy: redis
+      redis:
+        host: redis-sentinel.internal
+        port: 26379
+        sentinel_master: mymaster
+        sentinel_role: master
+        timeout: 2000
+        database: 2
+        ssl: true
+      sync_rate: 100
+      namespace: kong_rate_limits
+      hide_client_headers: false
+      error_code: 429
+      error_message: &quot;API rate limit exceeded. Check X-RateLimit-Remaining-Minute.&quot;
+</code></pre>
+<hr />
+<h2>4. Cloudflare Worker WAF &amp; Edge Defense Script</h2>
+<p>This standalone Cloudflare Worker (JavaScript/ES module) inspects edge metadata before traffic touches origin infrastructure. It checks the JA4 TLS fingerprint, evaluates Cloudflare threat intelligence, and runs an atomic Sliding Window log against Upstash/Global Redis over HTTPS.</p>
+<p><strong>File: <code>edge-waf-ratelimiter.js</code></strong></p>
+<pre><code class="language-javascript">export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // 1. Bypass static resources to prevent unnecessary Redis calls
+    if (url.pathname.match(/\.(css|js|woff2|png|jpg|ico|svg)$/)) {
+      return fetch(request);
+    }
+
+    // 2. Extract edge client telemetry
+    const clientIp = request.headers.get(&quot;cf-connecting-ip&quot;) || &quot;unknown-ip&quot;;
+    const cf = request.cf || {};
+    const ja4 = cf.ja4 || &quot;unknown-ja4&quot;;
+    const threatScore = cf.threatScore || 0; // 0 = Clean, 100 = Malicious
+    const botScore = cf.botManagement?.score || 100; // 1 = Verified Automated, 99 = Human
+
+    // 3. Automated Heuristic Threat Dropping at the Edge
+    if (threatScore &gt; 50 || botScore &lt; 10) {
+      return new Response(JSON.stringify({
+        type: &quot;https://api.domain.com/errors/security-violation&quot;,
+        title: &quot;Forbidden Request&quot;,
+        status: 403,
+        detail: &quot;Edge threat mitigation triggered based on security profile.&quot;,
+        instance: url.pathname
+      }), {
+        status: 403,
+        headers: { &quot;Content-Type&quot;: &quot;application/problem+json&quot; }
+      });
+    }
+
+    // 4. Determine rate limiting key
+    // Prefer authenticated Authorization Bearer, fall back to IP + JA4 combo
+    let limiterKey = `ratelimit:${clientIp}:${ja4}`;
+    const authHeader = request.headers.get(&quot;authorization&quot;);
+    if (authHeader &amp;&amp; authHeader.startsWith(&quot;Bearer &quot;)) {
+      const token = authHeader.substring(7);
+      // Fast hash identifier instead of sending full JWT over wire
+      const tokenHash = await crypto.subtle.digest(&quot;SHA-256&quot;, new TextEncoder().encode(token))
+        .then(buf =&gt; Array.from(new Uint8Array(buf)).map(b =&gt; b.toString(16).padStart(2, '0')).join('').substring(0, 16));
+      limiterKey = `ratelimit:auth:${tokenHash}`;
+    }
+
+    // 5. Query Edge Redis (e.g., Upstash REST API)
+    const redisEndpoint = env.UPSTASH_REDIS_REST_URL;
+    const redisToken = env.UPSTASH_REDIS_REST_TOKEN;
+
+    const windowSeconds = 60;
+    const maxAllowed = 120; // 120 requests per minute
+    const nowMs = Date.now();
+    const requestId = crypto.randomUUID();
+
+    // High precision sliding window via REST pipeline
+    const pipelinePayload = [
+      [&quot;ZREMRANGEBYSCORE&quot;, limiterKey, &quot;-inf&quot;, nowMs - (windowSeconds * 1000)],
+      [&quot;ZCARD&quot;, limiterKey],
+      [&quot;ZADD&quot;, limiterKey, nowMs, `${nowMs}:${requestId}`],
+      [&quot;EXPIRE&quot;, limiterKey, windowSeconds]
+    ];
+
+    try {
+      const redisResponse = await fetch(`${redisEndpoint}/pipeline`, {
+        method: &quot;POST&quot;,
+        headers: {
+          Authorization: `Bearer ${redisToken}`,
+          &quot;Content-Type&quot;: &quot;application/json&quot;
+        },
+        body: JSON.stringify(pipelinePayload)
+      });
+
+      if (!redisResponse.ok) {
+        // FAIL-OPEN: Log error to edge analytics and proceed to avoid taking down origin
+        console.error(&quot;RateLimit Redis failed:&quot;, await redisResponse.text());
+        return fetch(request);
+      }
+
+      const results = await redisResponse.json();
+      const currentUsage = results[1].result; // ZCARD output
+
+      const remainingTokens = Math.max(0, maxAllowed - (currentUsage + 1));
+      const isRateLimited = currentUsage &gt;= maxAllowed;
+
+      if (isRateLimited) {
+        return new Response(JSON.stringify({
+          type: &quot;https://api.domain.com/errors/rate-limit-exceeded&quot;,
+          title: &quot;Too Many Requests&quot;,
+          status: 429,
+          detail: `Rate limit of ${maxAllowed} requests per ${windowSeconds}s reached.`,
+          retry_after: windowSeconds
+        }), {
+          status: 429,
+          headers: {
+            &quot;Content-Type&quot;: &quot;application/problem+json&quot;,
+            &quot;Retry-After&quot;: String(windowSeconds),
+            &quot;RateLimit-Limit&quot;: String(maxAllowed),
+            &quot;RateLimit-Remaining&quot;: &quot;0&quot;,
+            &quot;RateLimit-Reset&quot;: String(Math.ceil(nowMs / 1000) + windowSeconds)
+          }
+        });
+      }
+
+      // 6. Forward Request with Appended Context Headers
+      const modifiedRequestHeaders = new Headers(request.headers);
+      modifiedRequestHeaders.set(&quot;X-Edge-JA4&quot;, ja4);
+      modifiedRequestHeaders.set(&quot;X-Edge-Client-IP&quot;, clientIp);
+
+      const originResponse = await fetch(new Request(request, {
+        headers: modifiedRequestHeaders
+      }));
+
+      // 7. Inject Standardized RFC Headers into Upstream Response
+      const updatedResponseHeaders = new Headers(originResponse.headers);
+      updatedResponseHeaders.set(&quot;RateLimit-Limit&quot;, String(maxAllowed));
+      updatedResponseHeaders.set(&quot;RateLimit-Remaining&quot;, String(remainingTokens));
+      updatedResponseHeaders.set(&quot;RateLimit-Reset&quot;, String(Math.ceil(nowMs / 1000) + windowSeconds));
+
+      return new Response(originResponse.body, {
+        status: originResponse.status,
+        statusText: originResponse.statusText,
+        headers: updatedResponseHeaders
+      });
+
+    } catch (err) {
+      console.error(&quot;Edge rate limit exception (Failing open):&quot;, err);
+      return fetch(request);
+    }
+  }
+};
+</code></pre>
+<hr />
+<h2>5. Anomaly Detection &amp; Behavioral Defenses</h2>
+<p>Volumetric rate limits cannot stop low-and-slow brute force or distributed credential stuffing. If 5,000 distinct residential IP addresses each attempt 1 login per hour, typical IP-based limits never trigger.</p>
+<h3>5.1 Credential Stuffing &amp; Distributed Anomaly Script</h3>
+<p>This Redis Lua script detects distributed credential stuffing targeting the same user ID or username across rotating IP pools.</p>
+<p><strong>File: <code>detect_distributed_stuffing.lua</code></strong></p>
+<pre><code class="language-lua">-- KEYS[1]: Target Resource Key (e.g., target:user:john_doe_99)
+-- KEYS[2]: Global Security Alert Stream
+-- ARGV[1]: Origin IP attempting the login
+-- ARGV[2]: Current UNIX Timestamp
+-- ARGV[3]: Maximum Unique IPs allowed per user window before trip
+-- ARGV[4]: Window lifespan in seconds (e.g., 900 for 15 mins)
+
+local target_key = KEYS[1]
+local stream_alert_key = KEYS[2]
+local current_ip = ARGV[1]
+local now = tonumber(ARGV[2])
+local max_unique_ips = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+
+-- 1. Insert IP into a HyperLogLog (or Set) dedicated to this entity
+redis.call('SADD', target_key, current_ip)
+redis.call('EXPIRE', target_key, ttl)
+
+-- 2. Count distinct IPs seen within the current lifecycle
+local distinct_ip_count = redis.call('SCARD', target_key)
+
+-- 3. Trigger alert and enforce defensive block if threshold is crossed
+if distinct_ip_count &gt; max_unique_ips then
+    redis.call('XADD', stream_alert_key, '*',
+        'event_type', 'CREDENTIAL_STUFFING_SUSPECTED',
+        'target', target_key,
+        'unique_ips', distinct_ip_count,
+        'latest_ip', current_ip,
+        'timestamp', now
+    )
+    -- Return: 0 = Attack Detected, Block Request / Require CAPTCHA
+    return {0, distinct_ip_count}
+end
+
+-- Return: 1 = Clean
+return {1, distinct_ip_count}
+</code></pre>
+<h3>5.2 Dynamic Exponential Backoff Engine (Penalty Box)</h3>
+<p>This component dynamically penalizes offenders by tracking their violation history and applying exponentially scaling blocks.</p>
+<p><strong>File: <code>penalty_box.lua</code></strong></p>
+<pre><code class="language-lua">-- KEYS[1]: Offender Tracking Key (e.g., penalty:offender:198.51.100.22)
+-- KEYS[2]: Active Block Status Key
+-- ARGV[1]: Current UNIX Timestamp
+-- ARGV[2]: Base Penalty Duration in seconds (e.g., 300 = 5 mins)
+-- ARGV[3]: Max Exponential Factor (e.g., 6 = 2^6 * base = 64 * 300 = 19200s)
+
+local tracker_key = KEYS[1]
+local block_key = KEYS[2]
+local now = tonumber(ARGV[1])
+local base_penalty = tonumber(ARGV[2])
+local max_exponent = tonumber(ARGV[3])
+
+-- 1. Check if user is currently blocked
+local is_blocked = redis.call('GET', block_key)
+if is_blocked then
+    local remaining_ttl = redis.call('TTL', block_key)
+    return {0, remaining_ttl} -- Reject, return remaining seconds
+end
+
+-- 2. Increment historical violation counter
+local violations = redis.call('INCR', tracker_key)
+if violations == 1 then
+    -- Reset strike counter after 24 hours of clean behavior
+    redis.call('EXPIRE', tracker_key, 86400)
+end
+
+-- 3. Calculate dynamic exponential backoff: base_penalty * 2^(violations - 1)
+local exponent = math.min(violations - 1, max_exponent)
+local block_duration = base_penalty * (2 ^ exponent)
+
+-- 4. Set the lock key
+redis.call('SET', block_key, &quot;blocked&quot;, 'EX', block_duration)
+
+return {1, block_duration}
+</code></pre>
+<hr />
+<h2>6. Standardized Response Headers</h2>
+<p>When throttling traffic, use the modern standard format defined by the IETF <code>RateLimit-*</code> draft specification alongside RFC 6585.</p>
+<h3>6.1 Standard Headers Reference</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Header Name</th>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Example</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>Retry-After</code></td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;"><code>30</code></td>
+<td style="text-align: left;">Number of seconds the client must wait before retrying (RFC 7231).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>RateLimit-Limit</code></td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;"><code>100</code></td>
+<td style="text-align: left;">The maximum number of requests allowed in the current evaluation window.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>RateLimit-Remaining</code></td>
+<td style="text-align: left;">Integer</td>
+<td style="text-align: left;"><code>0</code></td>
+<td style="text-align: left;">The</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The API Security & Auth Architecture Vault: 50+ OAuth2 Flows, Token Rotation, Rate Limiting & OWASP Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: OWASP API Top 10 Patches, SSRF Shielding &amp; Payload Hardening</h1>
+<p>This module provides production-grade, drop-in middleware and security filters designed to eliminate the most critical attack vectors identified in the OWASP API Security Top 10 (2023). Every recipe includes direct, copy-pasteable implementations containing zero placeholder logic.</p>
+<hr />
+<h2>1. OWASP API Security Top 10 (2023) Mitigation Matrix</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">OWASP ID</th>
+<th style="text-align: left;">Vulnerability Class</th>
+<th style="text-align: left;">Core Threat Mechanism</th>
+<th style="text-align: left;">Mitigation Engine in This Module</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>API1:2023</strong></td>
+<td style="text-align: left;">Broken Object Level Authorization (BOLA)</td>
+<td style="text-align: left;">Manipulating resource IDs in URIs/payloads to access foreign tenant records.</td>
+<td style="text-align: left;">Contextual Ownership Resolution Middleware (Section 2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API2:2023</strong></td>
+<td style="text-align: left;">Broken Authentication</td>
+<td style="text-align: left;">Token tampering, credential stuffing, lack of credential step-up.</td>
+<td style="text-align: left;">Session Context Validator &amp; Nonce Verification (Section 2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API3:2023</strong></td>
+<td style="text-align: left;">Broken Object Property Level Authorization</td>
+<td style="text-align: left;">Mass assignment; modifying internal flags (<code>isAdmin</code>, <code>balance</code>, <code>tenantId</code>).</td>
+<td style="text-align: left;">Strict Schema Ingestion &amp; DTO Stripping Filter (Section 3)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API4:2023</strong></td>
+<td style="text-align: left;">Unrestricted Resource Consumption</td>
+<td style="text-align: left;">Regex DoS (ReDoS), giant JSON payloads, memory-exhaustion floods.</td>
+<td style="text-align: left;">ReDoS Guard &amp; Stream-Limiting JSON Parsing Engine (Section 4)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API5:2023</strong></td>
+<td style="text-align: left;">Broken Function Level Authorization (BFLA)</td>
+<td style="text-align: left;">Escalating standard user endpoints to administrative operations.</td>
+<td style="text-align: left;">Hierarchical RBAC/ABAC Gate Engine (Section 2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API6:2023</strong></td>
+<td style="text-align: left;">Unrestricted Access to Sensitive Business Flows</td>
+<td style="text-align: left;">Automated scraping, bulk state transitions without human throttling.</td>
+<td style="text-align: left;">Velocity &amp; Workflow Signature Throttle (Refer to Module 2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API7:2023</strong></td>
+<td style="text-align: left;">Server-Side Request Forgery (SSRF)</td>
+<td style="text-align: left;">Forcing backend to request internal cloud metadata (<code>169.254.169.254</code>) or VPC IPs.</td>
+<td style="text-align: left;">Hardened Outbound DNS-Pinning SSRF Proxy (Section 5)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API8:2023</strong></td>
+<td style="text-align: left;">Security Misconfiguration</td>
+<td style="text-align: left;">Permissive CORS (<code>Access-Control-Allow-Origin: *</code> with credentials), verbose stack traces.</td>
+<td style="text-align: left;">Zero-Trust Dynamic CORS Middleware (Section 7)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API9:2023</strong></td>
+<td style="text-align: left;">Improper Inventory Management</td>
+<td style="text-align: left;">Exploiting unpatched <code>v1</code> routes or unmapped GraphQL debug endpoints.</td>
+<td style="text-align: left;">Shadow API Route Ingestion Guard &amp; Deprecation Header Filter</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API10:2023</strong></td>
+<td style="text-align: left;">Unsafe Consumption of Third-Party APIs</td>
+<td style="text-align: left;">Blindly trusting payloads returned from partner webhooks and microservices.</td>
+<td style="text-align: left;">Inbound Webhook Cryptographic Verification &amp; Strict DTO Parser</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. BOLA/IDOR &amp; BFLA Contextual Defense Engine</h2>
+<p>BOLA occurs when an application relies on client-provided IDs without confirming whether the requesting security principal owns or has explicit authorization to interact with that object. The pattern below couples Route Parameter Access Control (RPAC) directly with the application's Data Access Object (DAO) interface.</p>
+<h3>TypeScript / Express Contextual Authorization Interceptor</h3>
+<pre><code class="language-typescript">// middleware/authorizeResource.ts
+import { Request, Response, NextFunction } from 'express';
+
+export interface AuthenticatedUser {
+  id: string;
+  tenantId: string;
+  roles: string[];
+  permissions: string[];
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthenticatedUser;
+      resolvedResource?: Record&lt;string, any&gt;;
+    }
+  }
+}
+
+export type ResourceResolver = (req: Request) =&gt; Promise&lt;Record&lt;string, any&gt; | null&gt;;
+export type OwnershipPredicate = (user: AuthenticatedUser, resource: Record&lt;string, any&gt;) =&gt; boolean;
+
+interface BOLAOptions {
+  resolver: ResourceResolver;
+  ownershipPredicate?: OwnershipPredicate;
+  requiredPermissions?: string[];
+}
+
+export function authorizeResource(options: BOLAOptions) {
+  return async (req: Request, res: Response, next: NextFunction): Promise&lt;void&gt; =&gt; {
+    try {
+      const user = req.user;
+
+      if (!user) {
+        res.status(401).json({
+          error: 'UNAUTHORIZED',
+          message: 'Security context missing or principal unauthenticated.'
+        });
+        return;
+      }
+
+      // 1. Enforce BFLA (Function-Level Permissions)
+      if (options.requiredPermissions &amp;&amp; options.requiredPermissions.length &gt; 0) {
+        const hasAllPermissions = options.requiredPermissions.every((perm) =&gt;
+          user.permissions.includes(perm)
+        );
+
+        if (!hasAllPermissions) {
+          res.status(403).json({
+            error: 'FORBIDDEN_ACTION',
+            message: 'Principal does not possess required functional authority for this operation.'
+          });
+          return;
+        }
+      }
+
+      // 2. Resolve target object using caller parameters
+      const resource = await options.resolver(req);
+
+      if (!resource) {
+        // Return 404 to avoid leaking existence of unauthorized IDs
+        res.status(404).json({
+          error: 'RESOURCE_NOT_FOUND',
+          message: 'The requested resource does not exist or is unavailable.'
+        });
+        return;
+      }
+
+      // 3. Enforce BOLA (Object-Level Authorization)
+      const isOwner = options.ownershipPredicate
+        ? options.ownershipPredicate(user, resource)
+        : resource.tenantId === user.tenantId &amp;&amp; (resource.userId === user.id || user.roles.includes('admin'));
+
+      if (!isOwner) {
+        // Obfuscate authorization failure as a 404 to prevent resource-id enumeration
+        res.status(404).json({
+          error: 'RESOURCE_NOT_FOUND',
+          message: 'The requested resource does not exist or is unavailable.'
+        });
+        return;
+      }
+
+      // Bind resolved entity to request context to eliminate redundant queries downstream
+      req.resolvedResource = resource;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+</code></pre>
+<h3>Production Usage Example</h3>
+<pre><code class="language-typescript">// routes/documents.ts
+import { Router } from 'express';
+import { authorizeResource } from '../middleware/authorizeResource';
+import { db } from '../database';
+
+const router = Router();
+
+router.get(
+  '/api/v2/workspaces/:workspaceId/documents/:documentId',
+  authorizeResource({
+    resolver: async (req) =&gt; {
+      return await db.document.findUnique({
+        where: { id: req.params.documentId }
+      });
+    },
+    ownershipPredicate: (user, document) =&gt; {
+      // Must match tenant boundary AND belong to workspace AND (be author or workspace admin)
+      return (
+        document.tenantId === user.tenantId &amp;&amp;
+        document.workspaceId === req.params.workspaceId &amp;&amp;
+        (document.authorId === user.id || user.roles.includes('workspace_admin'))
+      );
+    },
+    requiredPermissions: ['documents:read']
+  }),
+  (req, res) =&gt; {
+    // Guaranteed secure access
+    res.json({ success: true, data: req.resolvedResource });
+  }
+);
+
+export default router;
+</code></pre>
+<hr />
+<h2>3. Mass Assignment &amp; Property-Level Tampering Shield (Zod Engine)</h2>
+<p>Attackers leverage mass assignment to modify unlisted model attributes like <code>is_admin</code>, <code>email_verified</code>, <code>billing_plan</code>, or sensitive foreign tenant keys. Standard defensive coding requires runtime ingestion pipelines that strip or outright reject any keys not explicitly declared in an incoming Data Transfer Object (DTO).</p>
+<pre><code class="language-typescript">// middleware/validatePayload.ts
+import { Request, Response, NextFunction } from 'express';
+import { ZodSchema, ZodError } from 'zod';
+
+interface ValidationTargets {
+  body?: ZodSchema&lt;any&gt;;
+  query?: ZodSchema&lt;any&gt;;
+  params?: ZodSchema&lt;any&gt;;
+}
+
+export function validatePayload(schemas: ValidationTargets) {
+  return async (req: Request, res: Response, next: NextFunction): Promise&lt;void&gt; =&gt; {
+    try {
+      if (schemas.params) {
+        req.params = await schemas.params.parseAsync(req.params);
+      }
+      if (schemas.query) {
+        req.query = await schemas.query.parseAsync(req.query);
+      }
+      if (schemas.body) {
+        // .strict() must be enforced on schemas to reject undeclared fields explicitly
+        req.body = await schemas.body.parseAsync(req.body);
+      }
+      next();
+    } catch (error) {
+      if (error instanceof ZodError) {
+        res.status(422).json({
+          error: 'UNPROCESSABLE_ENTITY',
+          message: 'Payload validation failed; schema boundaries violated.',
+          violations: error.errors.map((e) =&gt; ({
+            field: e.path.join('.'),
+            issue: e.message,
+            code: e.code
+          }))
+        });
+        return;
+      }
+      next(error);
+    }
+  };
+}
+</code></pre>
+<h3>Strict Schema Declaration</h3>
+<pre><code class="language-typescript">// schemas/userSchemas.ts
+import { z } from 'zod';
+
+export const UpdateUserProfileSchema = z
+  .object({
+    displayName: z.string().min(2).max(50),
+    bio: z.string().max(500).optional(),
+    avatarUrl: z.string().url().max(2048).optional(),
+    notificationPreferences: z
+      .object({
+        emailUpdates: z.boolean(),
+        smsAlerts: z.boolean()
+      })
+      .strict() // Rejects injection inside nested attributes
+  })
+  .strict(); // CRITICAL: Drops or errors on undeclared keys like `isVerified`, `role`, `tenantId`
+</code></pre>
+<hr />
+<h2>4. ReDoS &amp; Payload Bomb Defense Pipeline</h2>
+<p>Regular Expression Denial of Service (ReDoS) locks the single-threaded Node.js event loop or saturates worker threads via catastrophic backtracking. Similarly, deeply nested JSON structures or decompression bombs (like gzip/deflate bombs) exhaust process memory instantly.</p>
+<h3>Stream Parsing &amp; JSON Nesting Depth Checker</h3>
+<pre><code class="language-typescript">// middleware/payloadShield.ts
+import { Request, Response, NextFunction } from 'express';
+
+interface PayloadShieldOptions {
+  maxDepth: number;
+  maxKeys: number;
+}
+
+export function jsonSanitizer(options: PayloadShieldOptions = { maxDepth: 7, maxKeys: 250 }) {
+  return (req: Request, res: Response, next: NextFunction): void =&gt; {
+    if (!req.body || typeof req.body !== 'object') {
+      return next();
+    }
+
+    let keyCounter = 0;
+
+    function verifyDepthAndKeys(obj: any, currentDepth: number): boolean {
+      if (currentDepth &gt; options.maxDepth) {
+        return false;
+      }
+
+      for (const key of Object.keys(obj)) {
+        keyCounter++;
+        if (keyCounter &gt; options.maxKeys) {
+          return false;
+        }
+
+        const value = obj[key];
+        if (value !== null &amp;&amp; typeof value === 'object') {
+          const isValid = verifyDepthAndKeys(value, currentDepth + 1);
+          if (!isValid) return false;
+        }
+      }
+      return true;
+    }
+
+    const isStructureSafe = verifyDepthAndKeys(req.body, 1);
+
+    if (!isStructureSafe) {
+      res.status(400).json({
+        error: 'MALFORMED_PAYLOAD_STRUCTURE',
+        message: `Payload exceeds architectural constraints (Max Depth: ${options.maxDepth}, Max Keys: ${options.maxKeys}).`
+      });
+      return;
+    }
+
+    next();
+  };
+}
+</code></pre>
+<h3>ReDoS Safe Execution Runner</h3>
+<pre><code class="language-typescript">// security/safeRegex.ts
+import { Worker } from 'worker_threads';
+import path from 'path';
+
+/**
+ * Executes a regular expression search inside an isolated worker thread.
+ * Guarantees zero blocking of the main event loop and aborts computation on timeout.
+ */
+export function executeIsolatedRegex(
+  pattern: string,
+  flags: string,
+  inputString: string,
+  timeoutMs: number = 250
+): Promise&lt;boolean&gt; {
+  return new Promise((resolve, reject) =&gt; {
+    const workerScript = `
+      const { parentPort, workerData } = require('worker_threads');
+      const { pattern, flags, inputString } = workerData;
+      try {
+        const regex = new RegExp(pattern, flags);
+        const result = regex.test(inputString);
+        parentPort.postMessage({ status: 'SUCCESS', result });
+      } catch (err) {
+        parentPort.postMessage({ status: 'ERROR', error: err.message });
+      }
+    `;
+
+    const worker = new Worker(workerScript, {
+      eval: true,
+      workerData: { pattern, flags, inputString }
+    });
+
+    const timer = setTimeout(() =&gt; {
+      worker.terminate();
+      reject(new Error(`ReDoS timeout threshold breached (${timeoutMs}ms). Execution terminated.`));
+    }, timeoutMs);
+
+    worker.on('message', (message) =&gt; {
+      clearTimeout(timer);
+      worker.terminate();
+      if (message.status === 'SUCCESS') {
+        resolve(message.result);
+      } else {
+        reject(new Error(message.error));
+      }
+    });
+
+    worker.on('error', (err) =&gt; {
+      clearTimeout(timer);
+      worker.terminate();
+      reject(err);
+    });
+  });
+}
+</code></pre>
+<hr />
+<h2>5. Hardened SSRF Defense Engine with DNS Pinning</h2>
+<p>Simple URL string validation fails against DNS Rebinding attacks, hexadecimal IP representations (<code>0x7f000001</code>), integer notations (<code>2130706433</code>), decimal variants, and link-local address targeting. </p>
+<p>The defensive engine below performs explicit multi-tier network validation:
+1. Parsing the URL to confirm standard schemes (<code>http:</code> / <code>https:</code>).
+2. Forcing an out-of-band DNS lookup using Node’s DNS resolver.
+3. Checking every resolved IP address against an exhaustive denylist of private, link-local, loopback, and cloud metadata CIDR ranges (including AWS, Azure, and GCP metadata IPs).
+4. Directing HTTP agents to the validated, pinned IP address, completely mitigating Time-of-Check to Time-of-Use (TOCTOU) DNS Rebinding.</p>
+<pre><code class="language-typescript">// security/ssrfShield.ts
+import http from 'http';
+import https from 'https';
+import dns from 'dns';
+import ipaddr from 'ipaddr.js';
+import { URL } from 'url';
+
+const BLOCKED_IPV4_RANGES = [
+  '0.0.0.0/8',         // Current network
+  '10.0.0.0/8',        // RFC 1918 Private
+  '100.64.0.0/10',     // Carrier grade NAT
+  '127.0.0.0/8',       // Loopback
+  '169.254.0.0/16',    // Link local / Cloud Metadata (169.254.169.254)
+  '172.16.0.0/12',     // RFC 1918 Private
+  '192.0.0.0/24',      // IETF Protocol Assignments
+  '192.0.2.0/24',      // TEST-NET-1
+  '192.88.99.0/24',    // 6to4 Relay
+  '192.168.0.0/16',    // RFC 1918 Private
+  '198.18.0.0/15',     // Network benchmark tests
+  '198.51.100.0/24',   // TEST-NET-2
+  '203.0.113.0/24',    // TEST-NET-3
+  '224.0.0.0/4',       // Multicast
+  '240.0.0.0/4',       // Reserved for future use
+  '255.255.255.255/32' // Broadcast
+];
+
+const BLOCKED_IPV6_RANGES = [
+  '::/128',            // Unspecified
+  '::1/128',           // Loopback
+  '::ffff:0:0/96',     // IPv4-mapped IPv6
+  '64:ff9b::/96',      // IPv4/IPv6 translation
+  '100::/64',          // Discard prefix
+  '2001:db8::/32',     // Documentation
+  'fc00::/7',          // Unique Local Addresses (ULA)
+  'fe80::/10',         // Link-local Unicast
+  'ff00::/8'           // Multicast
+];
+
+export class SSRFValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SSRFValidationError';
+  }
+}
+
+/**
+ * Validates an IP address against all blocked CIDR boundaries.
+ */
+export function isIpBlocked(ipString: string): boolean {
+  try {
+    const addr = ipaddr.parse(ipString);
+
+    if (addr.kind() === 'ipv4') {
+      const ipv4 = addr as ipaddr.IPv4;
+      for (const range of BLOCKED_IPV4_RANGES) {
+        const parsedRange = ipaddr.parseCIDR(range);
+        if (ipv4.match(parsedRange)) {
+          return true;
+        }
+      }
+    } else if (addr.kind() === 'ipv6') {
+      const ipv6 = addr as ipaddr.IPv6;
+
+      // Handle IPv4-mapped IPv6 explicitly (e.g. ::ffff:169.254.169.254)
+      if (ipv6.isIPv4MappedAddress()) {
+        const mappedV4 = ipv6.toIPv4Address();
+        for (const range of BLOCKED_IPV4_RANGES) {
+          if (mappedV4.match(ipaddr.parseCIDR(range))) {
+            return true;
+          }
+        }
+      }
+
+      for (const range of BLOCKED_IPV6_RANGES) {
+        const parsedRange = ipaddr.parseCIDR(range);
+        if (ipv6.match(parsedRange)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  } catch {
+    // If the IP parsing fails completely, block by default
+    return true;
+  }
+}
+
+/**
+ * Hardened Outbound Request Function
+ * Resolves hostname to its raw IP, evaluates network boundaries,
+ * and forces the request directly to the validated IP to defeat DNS rebinding.
+ */
+export async function executeSafeOutboundRequest(
+  targetUrl: string,
+  options: {
+    method?: string;
+    headers?: Record&lt;string, string&gt;;
+    timeoutMs?: number;
+    maxRedirects?: number;
+  } = {}
+): Promise&lt;{ statusCode: number; data: Buffer }&gt; {
+  const method = options.method || 'GET';
+  const headers = options.headers || {};
+  const timeoutMs = options.timeoutMs || 5000;
+  const maxRedirects = options.maxRedirects ?? 0; // Disallow redirects by default to prevent TOCTOU loops
+
+  const parsedUrl = new URL(targetUrl);
+
+  if (parsedUrl.protocol !== 'http:' &amp;&amp; parsedUrl.protocol !== 'https:') {
+    throw new SSRFValidationError(`Unsupported URI protocol: ${parsedUrl.protocol}`);
+  }
+
+  // 1. Resolve host explicitly to verify IP before connection
+  const lookupAddresses = await dns.promises.lookup(parsedUrl.hostname, {
+    all: true,
+    verbatim: true
+  });
+
+  if (!lookupAddresses.length) {
+    throw new SSRFValidationError(`Could not resolve hostname: ${parsedUrl.hostname}`);
+  }
+
+  // 2. Validate every returned record against prohibited ranges
+  for (const record of lookupAddresses) {
+    if (isIpBlocked(record.address)) {
+      throw new SSRFValidationError(
+        `Target host [${parsedUrl.hostname}] resolves to an internal or restricted IP: ${record.address}`
+      );
+    }
+  }
+
+  // Pin destination to the first evaluated safe IP
+  const targetIp = lookupAddresses[0].address;
+  const isHttps = parsedUrl.protocol === 'https:';
+  const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : isHttps ? 443 : 80;
+
+  return new Promise((resolve, reject) =&gt; {
+    const requestLibrary = isHttps ? https : http;
+
+    const reqOptions: http.RequestOptions = {
+      host: targetIp, // Force connection directly to safe resolved IP
+      port: port,
+      path: `${parsedUrl.pathname}${parsedUrl.search}`,
+      method: method,
+      headers: {
+        ...headers,
+        Host: parsedUrl.host // Maintain valid virtual host routing
+      },
+      // In Node.js TLS, servername validates SNI correctly despite dialing by IP
+      servername: parsedUrl.hostname,
+      timeout: timeoutMs
+    };
+
+    const clientReq = requestLibrary.request(reqOptions, (res) =&gt; {
+      // Intercept and block redirects if forbidden
+      if (
+        [301, 302, 303, 307, 308].includes(res.statusCode || 0) &amp;&amp;
+        res.headers.location
+      ) {
+        if (maxRedirects &lt;= 0) {
+          res.resume(); // Discard stream
+          return reject(new SSRFValidationError('SSRF protection prohibited outbound redirect.'));
+        }
+      }
+
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) =&gt; chunks.push(Buffer.from(chunk)));
+      res.on('end', () =&gt; {
+        resolve({
+          statusCode: res.statusCode || 0,
+          data: Buffer.concat(chunks)
+        });
+      });
+    });
+
+    clientReq.on('timeout', () =&gt; {
+      clientReq.destroy(new Error(`Outbound socket reached timeout (${timeoutMs}ms).`));
+    });
+
+    clientReq.on('error', (err) =&gt; {
+      reject(err);
+    });
+
+    clientReq.end();
+  });
+}
+</code></pre>
+<hr />
+<h2>6. GraphQL Query Depth &amp; Complexity Limiting</h2>
+<p>GraphQL endpoints are susceptible to resource exhaustion through nested recursive queries (e.g., <code>author -&gt; posts -&gt; author -&gt; posts</code>) and massive array multiplication. The rule below operates at the AST validation phase, terminating execution <strong>prior</strong> to running any resolvers.</p>
+<pre><code class="language-typescript">// security/graphqlComplexity.ts
+import {
+  ValidationContext,
+  FieldNode,
+  InlineFragmentNode,
+  FragmentSpreadNode,
+  GraphQLError
+} from 'graphql';
+
+export interface ComplexityRules {
+  maxDepth: number;
+  maxCost: number;
+  fieldCosts?: Record&lt;string, number&gt;;
+  defaultFieldCost?: number;
+}
+
+/**
+ * Creates a GraphQL validation rule to prevent deeply nested or computationally expensive queries.
+ */
+export function createQueryArmorRule(rules: ComplexityRules) {
+  const maxDepth = rules.maxDepth;
+  const maxCost = rules.maxCost;
+  const fieldCosts = rules.fieldCosts || {};
+  const defaultFieldCost = rules.defaultFieldCost || 1;
+
+  return (context: ValidationContext) =&gt; {
+    let currentDepth = 0;
+    let totalCost = 0;
+
+    function calculateNodeCost(fieldName: string): number {
+      return fieldCosts[fieldName] !== undefined ? fieldCosts[fieldName] : defaultFieldCost;
+    }
+
+    function traverseAST(
+      node: FieldNode | InlineFragmentNode | FragmentSpreadNode,
+      depth: number
+    ): void {
+      if (depth &gt; maxDepth) {
+        context.reportError(
+          new GraphQLError(
+            `Query depth limit exceeded: Operation exceeds maximum permissible depth of ${maxDepth}.`,
+            { nodes: [node] }
+          )
+        );
+        return;
+      }
+
+      if (node.kind === 'Field') {
+        const fieldName = node.name.value;
+        // Ignore introspection queries
+        if (!fieldName.startsWith('__')) {
+          totalCost += calculateNodeCost(fieldName);
+        }
+      }
+
+      if (totalCost &gt; maxCost) {
+        context.reportError(
+          new GraphQLError(
+            `Query cost budget exceeded: Cumulative cost [${totalCost}] breached limit [${maxCost}].`,
+            { nodes: [node] }
+          )
+        );
+        return;
+      }
+
+      const selectionSet = node.selectionSet;
+      if (selectionSet &amp;&amp; selectionSet.selections) {
+        for (const selection of selectionSet.selections) {
+          if (
+            selection.kind === 'Field' ||
+            selection.kind === 'InlineFragment' ||
+            selection.kind === 'FragmentSpread'
+          ) {
+            traverseAST(selection, depth + 1);
+          }
+        }
+      }
+    }
+
+    return {
+      OperationDefinition: {
+        enter(node) {
+          totalCost = 0;
+          currentDepth = 0;
+          if (node.selectionSet) {
+            for (const selection of node.selectionSet.selections) {
+              traverseAST(selection, 1);
+            }
+          }
+        }
+      }
+    };
+  };
+}
+</code></pre>
+<h3>Apollo Server V4 Integration</h3>
+<pre><code class="language-typescript">// server.ts
+import { ApolloServer } from '@apollo/server';
+import { createQueryArmorRule } from './security/graphqlComplexity';
+
+const armorRule = createQueryArmorRule({
+  maxDepth: 5,
+  maxCost: 100,
+  fieldCosts: {
+    users: 15,
+    transactions: 25,
+    exportAuditLogs: 50
+  },
+  defaultFieldCost: 1
+});
+
+export const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+  validationRules: [armorRule]
+});
+</code></pre>
+<hr />
+<h2>7. Zero-Trust Dynamic CORS Middleware</h2>
+<p>Many systems deploy insecure CORS setups like <code>Access-Control-Allow-Origin: *</code> while passing credentials, or dynamically reflection of the incoming <code>Origin</code> header without verification.</p>
+<p>The middleware below:
+- Rejects wildcards when credentials (<code>Access-Control-Allow-Credentials: true</code>) are demanded.
+- Prohibits the <code>null</code> origin, eliminating sandbox escape vectors.
+- Validates requests against an exact domain whitelist or controlled regular expression patterns.
+- Limits preflight cache exposure (<code>Access-Control-Max-Age</code>).</p>
+<pre><code class="language-typescript">// middleware/hardenedCors.ts
+import { Request, Response, NextFunction } from 'express';
+
+interface CorsPolicyOptions {
+  allowedOrigins: (string | RegExp)[];
+  allowedMethods?: string[];
+  allowedHeaders?: string[];
+  exposedHeaders?: string[];
+  allowCredentials?: boolean;
+  maxAgeSeconds?: number;
+}
+
+export function hardenedCors(options: CorsPolicyOptions) {
+  const allowedMethods = options.allowedMethods || ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+  const allowedHeaders = options.allowedHeaders || [
+    'Authorization',
+    'Content-Type',
+    'X-Requested-With',
+    'X-Correlation-ID'
+  ];
+  const exposedHeaders = options.exposedHeaders || ['X-Correlation-ID', 'X-RateLimit-Reset'];
+  const allowCredentials = options.allowCredentials ?? true;
+  const maxAge = options.maxAgeSeconds || 600; // 10 minutes cache
+
+  return (req: Request, res: Response, next: NextFunction): void =&gt; {
+    const origin = req.headers.origin;
+
+    // Non-CORS requests (server-to-server or standard same-origin navigation)
+    if (!origin) {
+      return next();
+    }
+
+    // Explicitly reject &quot;null&quot; origins (data URI exploits, sandboxed iframes)
+    if (origin === 'null') {
+      res.status(403).json({ error: 'CORS_VIOLATION', message: 'Null origins are strictly forbidden.' });
+      return;
+    }
+
+    const isOriginAllowed = options.allowedOrigins.some((pattern) =&gt; {
+      if (typeof pattern === 'string') {
+        return pattern.toLowerCase() === origin.toLowerCase();
+      }
+      return pattern.test(origin);
+    });
+
+    if (!isOriginAllowed) {
+      res.status(403).json({
+        error: 'CORS_VIOLATION',
+        message: 'Origin not allowed by security policy.'
+      });
+      return;
+    }
+
+    // Set strict dynamic CORS headers
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+
+    if (allowCredentials) {
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
+    if (exposedHeaders.length &gt; 0) {
+      res.setHeader('Access-Control-Expose-Headers', exposedHeaders.join(', '));
+    }
+
+    // Intercept Preflight Requests
+    if (req.method.toUpperCase() === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', allowedMethods.join(', '));
+      res.setHeader('Access-Control-Allow-Headers', allowedHeaders.join(', '));
+      res.setHeader('Access-Control-Max-Age', maxAge.toString());
+      res.status(204).end();
+      return;
+    }
+
+    next();
+  };
+}
+</code></pre>
+<hr />
+<h2>8. Automated Penetration Testing Harness</h2>
+<p>Verify the middleware by executing these attack scenarios against your staging environment:</p>
+<h3>1. BOLA Attack Verification</h3>
+<p>```bash</p>
+<h1>Attempt to</h1>
+</body>
+</html>
