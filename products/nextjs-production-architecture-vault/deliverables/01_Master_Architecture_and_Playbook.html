@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Next.js 15 & Full-Stack Architecture Vault: 50+ App Router Patterns, Server Actions, Edge Caching & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Next.js 15 App Router &amp; Server Component Architecture</h1>
+<hr />
+<h2>1. Enterprise Directory Structure &amp; Layering Strategy</h2>
+<p>In Next.js 15, directory layout is not an aesthetic preference—it defines the physical boundary between your Node.js runtime and the browser runtime. This blueprint establishes a scalable, domain-driven structure optimized for strict Server/Client Component isolation, sub-second Fast Refresh, and minimal client-side bundle allocation.</p>
+<pre><code>project-root/
+├── app/
+│   ├── (auth)/
+│   │   ├── login/
+│   │   │   └── page.tsx
+│   │   └── layout.tsx
+│   ├── (dashboard)/
+│   │   ├── analytics/
+│   │   │   └── page.tsx
+│   │   ├── settings/
+│   │   │   └── page.tsx
+│   │   ├── @modal/
+│   │   │   ├── (.)photos/[id]/
+│   │   │   │   └── page.tsx
+│   │   │   └── default.tsx
+│   │   ├── photos/[id]/
+│   │   │   └── page.tsx
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── api/
+│   │   └── webhooks/
+│   │       └── stripe/
+│   │           └── route.ts
+│   ├── favicon.ico
+│   ├── globals.css
+│   └── layout.tsx
+├── components/
+│   ├── ui/                       # Pure design system (stateless primitive UI)
+│   │   ├── button.tsx
+│   │   ├── dialog.tsx
+│   │   └── input.tsx
+│   └── feedback/
+│       ├── error-boundary.tsx
+│       └── skeleton-grid.tsx
+├── features/                     # Domain-driven feature modules
+│   ├── analytics/
+│   │   ├── actions/              # Module-scoped Server Actions
+│   │   │   └── export-report.ts
+│   │   ├── components/           # Mixed RSC and Client interactive blocks
+│   │   │   ├── chart-container.client.tsx
+│   │   │   └── metric-card.server.tsx
+│   │   ├── queries/              # Server-only read infrastructure
+│   │   │   └── get-metrics.ts
+│   │   ├── schemas/              # Zod validation models
+│   │   │   └── metrics-filter.ts
+│   │   └── types/
+│   │       └── index.ts
+│   └── media/
+│       ├── actions/
+│       │   └── mutate-photo.ts
+│       ├── components/
+│       │   ├── photo-frame.tsx
+│       │   └── photo-modal.client.tsx
+│       └── queries/
+│           └── get-photo.ts
+├── lib/                          # Framework-agnostic infrastructure
+│   ├── auth/
+│   │   ├── session.ts
+│   │   └── token.ts
+│   ├── db/
+│   │   ├── client.ts
+│   │   └── schema.ts
+│   ├── env/
+│   │   └── server.ts
+│   └── utils/
+│       └── cn.ts
+├── hooks/                        # Universal custom client hooks
+│   ├── use-intersection-observer.ts
+│   └── use-window-size.ts
+├── types/                        # Global ambient and Next.js internal type overrides
+│   └── next.d.ts
+├── next.config.ts
+├── tsconfig.json
+└── package.json
+</code></pre>
+<h3>Configuration: Strict Path Aliases &amp; Server-Isolation Guarantees</h3>
+<h4><code>tsconfig.json</code></h4>
+<pre><code class="language-json">{
+  &quot;compilerOptions&quot;: {
+    &quot;target&quot;: &quot;ES2022&quot;,
+    &quot;lib&quot;: [&quot;dom&quot;, &quot;dom.iterable&quot;, &quot;esnext&quot;],
+    &quot;allowJs&quot;: true,
+    &quot;skipLibCheck&quot;: true,
+    &quot;strict&quot;: true,
+    &quot;noEmit&quot;: true,
+    &quot;esModuleInterop&quot;: true,
+    &quot;module&quot;: &quot;esnext&quot;,
+    &quot;moduleResolution&quot;: &quot;bundler&quot;,
+    &quot;resolveJsonModule&quot;: true,
+    &quot;isolatedModules&quot;: true,
+    &quot;jsx&quot;: &quot;preserve&quot;,
+    &quot;incremental&quot;: true,
+    &quot;plugins&quot;: [
+      {
+        &quot;name&quot;: &quot;next&quot;
+      }
+    ],
+    &quot;paths&quot;: {
+      &quot;@/*&quot;: [&quot;./*&quot;],
+      &quot;@components/*&quot;: [&quot;./components/*&quot;],
+      &quot;@features/*&quot;: [&quot;./features/*&quot;],
+      &quot;@lib/*&quot;: [&quot;./lib/*&quot;],
+      &quot;@ui/*&quot;: [&quot;./components/ui/*&quot;]
+    }
+  },
+  &quot;include&quot;: [&quot;next-env.d.ts&quot;, &quot;**/*.ts&quot;, &quot;**/*.tsx&quot;, &quot;.next/types/**/*.ts&quot;],
+  &quot;exclude&quot;: [&quot;node_modules&quot;]
+}
+</code></pre>
+<h4><code>next.config.ts</code></h4>
+<pre><code class="language-typescript">import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+  experimental: {
+    typedRoutes: true,
+    // Optimize bundle boundaries by enforcing barrel file tree-shaking
+    optimizePackageImports: ['lucide-react', '@radix-ui/react-icons', 'date-fns'],
+  },
+  logging: {
+    fetches: {
+      fullUrl: true,
+    },
+  },
+};
+
+export default nextConfig;
+</code></pre>
+<hr />
+<h2>2. RSC vs. Client Component Mental Model &amp; Boundary Enforcement</h2>
+<p>React Server Components (RSC) execute <strong>only once</strong> on the server (or at build-time). They generate a structural virtual DOM representation streamed as JSON-like flight data to the browser. Client Components are traditional React components that execute on both the server (during the initial SSR pass) and on the client (during hydration and user interactions).</p>
+<h3>Architectural Decision Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dimension</th>
+<th style="text-align: left;">React Server Component (Default)</th>
+<th style="text-align: left;">Client Component (<code>'use client'</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Execution Environment</strong></td>
+<td style="text-align: left;">Node.js / Edge Runtime</td>
+<td style="text-align: left;">Initial SSR pass on Server + Browser</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Data Fetching Access</strong></td>
+<td style="text-align: left;">Direct access to DB, Redis, filesystem, secrets</td>
+<td style="text-align: left;">Network-only (via HTTP Fetch, Server Actions)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Bundle Impact</strong></td>
+<td style="text-align: left;">0 KB added to JavaScript client bundle</td>
+<td style="text-align: left;">Hydration code + dependencies shipped to client</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Allowed React APIs</strong></td>
+<td style="text-align: left;"><code>async/await</code>, <code>React.use()</code> for promises</td>
+<td style="text-align: left;"><code>useState</code>, <code>useEffect</code>, <code>useReducer</code>, DOM events</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Browser APIs</strong></td>
+<td style="text-align: left;">❌ Never (<code>window</code>, <code>localStorage</code>, <code>navigator</code>)</td>
+<td style="text-align: left;">✅ Accessible inside lifecycle hooks &amp; event handlers</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Re-rendering Trigger</strong></td>
+<td style="text-align: left;">On server re-validation / path dynamic transitions</td>
+<td style="text-align: left;">Reactive state changes, parent re-renders, contexts</td>
+</tr>
+</tbody>
+</table>
+<h3>Component Composition Patterns: The Leaf &amp; Sandwich Rules</h3>
+<p>A common architectural flaw is placing <code>'use client'</code> high up the DOM tree, converting all child components into Client Components and shipping their code downstream.</p>
+<pre><code>INCORRECT: Monolithic Client Boundary
+App
+ └─ Layout (Server)
+     └─ DashboardView ('use client') &lt;--- Entire tree converted to client bundle
+         ├─ MetricDisplay (Read-only data)
+         ├─ InteractiveFilter (Needs state)
+         └─ ComplexDataGrid (Huge JS library)
+
+CORRECT: Sandwich Pattern (Children as Props)
+App
+ └─ Layout (Server)
+     └─ MetricDisplay (Server - 0KB JS)
+     └─ InteractiveFilterWrapper ('use client' - Tiny JS)
+         └─ ComplexDataGrid (Server Component injected as `children`)
+</code></pre>
+<h3>Production Implementation: Strict Boundary Isolation</h3>
+<p>Prevent database credentials and internal APIs from accidentally leaking into the client bundle by employing the <code>server-only</code> and <code>client-only</code> guard packages.</p>
+<h4>1. Data Layer Enforcement (<code>lib/db/queries.ts</code>)</h4>
+<pre><code class="language-typescript">import 'server-only';
+import { db } from '@/lib/db/client';
+
+export interface UserMetric {
+  id: string;
+  label: string;
+  value: number;
+  delta: number;
+}
+
+export async function fetchSystemMetrics(workspaceId: string): Promise&lt;UserMetric[]&gt; {
+  // Direct database query without exposing connection details to client
+  const records = await db.query(
+    'SELECT id, label, value, delta FROM metrics WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 5',
+    [workspaceId]
+  );
+
+  return records.rows.map((row) =&gt; ({
+    id: String(row.id),
+    label: String(row.label),
+    value: Number(row.value),
+    delta: Number(row.delta),
+  }));
+}
+</code></pre>
+<h4>2. The Server Container (<code>features/analytics/components/metrics-dashboard.server.tsx</code>)</h4>
+<pre><code class="language-typescript">import { fetchSystemMetrics } from '@/lib/db/queries';
+import { MetricsFilterShell } from './metrics-filter-shell.client';
+import { MetricTable } from './metric-table.server';
+
+interface MetricsDashboardProps {
+  workspaceId: string;
+}
+
+export async function MetricsDashboard({ workspaceId }: MetricsDashboardProps) {
+  // Data fetched on server. Zero serialization overhead down to the client.
+  const data = await fetchSystemMetrics(workspaceId);
+
+  return (
+    &lt;section className=&quot;space-y-6&quot;&gt;
+      &lt;div className=&quot;flex justify-between items-center&quot;&gt;
+        &lt;h2 className=&quot;text-xl font-bold tracking-tight&quot;&gt;System Performance&lt;/h2&gt;
+      &lt;/div&gt;
+      {/* 
+        Sandwich Pattern: Client shell accepts an RSC via standard `children` prop.
+        The interactive shell manages state (search, filters), but doesn't force 
+        MetricTable's parsing libraries into the client bundle.
+      */}
+      &lt;MetricsFilterShell&gt;
+        &lt;MetricTable metrics={data} /&gt;
+      &lt;/MetricsFilterShell&gt;
+    &lt;/section&gt;
+  );
+}
+</code></pre>
+<h4>3. The Interactive Client Shell (<code>features/analytics/components/metrics-filter-shell.client.tsx</code>)</h4>
+<pre><code class="language-typescript">'use client';
+
+import React, { useState, useTransition } from 'react';
+import { Input } from '@/components/ui/input';
+
+interface MetricsFilterShellProps {
+  children: React.ReactNode;
+}
+
+export function MetricsFilterShell({ children }: MetricsFilterShellProps) {
+  const [filterQuery, setFilterQuery] = useState('');
+  const [isPending, startTransition] = useTransition();
+
+  const handleFilterChange = (e: React.ChangeEvent&lt;HTMLInputElement&gt;) =&gt; {
+    startTransition(() =&gt; {
+      setFilterQuery(e.target.value);
+    });
+  };
+
+  return (
+    &lt;div className=&quot;rounded-lg border border-neutral-200 bg-white p-6 shadow-sm&quot;&gt;
+      &lt;div className=&quot;mb-4 max-w-sm&quot;&gt;
+        &lt;Input
+          placeholder=&quot;Filter view metrics...&quot;
+          value={filterQuery}
+          onChange={handleFilterChange}
+          aria-label=&quot;Filter Metrics&quot;
+        /&gt;
+        {isPending &amp;&amp; &lt;span className=&quot;text-xs text-neutral-400&quot;&gt;Updating view...&lt;/span&gt;}
+      &lt;/div&gt;
+      {/* Dynamic DOM display modified via client state, preserving Server Child payload */}
+      &lt;div className={isPending ? 'opacity-50 transition-opacity' : 'opacity-100'}&gt;
+        {children}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<h4>4. The Leaf Component (<code>features/analytics/components/metric-table.server.tsx</code>)</h4>
+<pre><code class="language-typescript">import type { UserMetric } from '@/lib/db/queries';
+
+export function MetricTable({ metrics }: { metrics: UserMetric[] }) {
+  return (
+    &lt;div className=&quot;overflow-x-auto&quot;&gt;
+      &lt;table className=&quot;w-full text-left text-sm&quot;&gt;
+        &lt;thead className=&quot;border-b border-neutral-200 bg-neutral-50 text-neutral-600&quot;&gt;
+          &lt;tr&gt;
+            &lt;th className=&quot;px-4 py-3&quot;&gt;Metric&lt;/th&gt;
+            &lt;th className=&quot;px-4 py-3&quot;&gt;Value&lt;/th&gt;
+            &lt;th className=&quot;px-4 py-3&quot;&gt;Trend&lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody className=&quot;divide-y divide-neutral-100&quot;&gt;
+          {metrics.map((m) =&gt; (
+            &lt;tr key={m.id} className=&quot;hover:bg-neutral-50/50&quot;&gt;
+              &lt;td className=&quot;px-4 py-3 font-medium&quot;&gt;{m.label}&lt;/td&gt;
+              &lt;td className=&quot;px-4 py-3&quot;&gt;{m.value.toLocaleString()}&lt;/td&gt;
+              &lt;td className={`px-4 py-3 ${m.delta &gt;= 0 ? 'text-emerald-600' : 'text-rose-600'}`}&gt;
+                {m.delta &gt;= 0 ? `+${m.delta}%` : `${m.delta}%`}
+              &lt;/td&gt;
+            &lt;/tr&gt;
+          ))}
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>3. Advanced Routing Engine: Nested Layouts, Parallel Routes &amp; Intercepting Routes</h2>
+<p>Next.js 15 routing handles nested state preservation via subtrees, side-by-side slot rendering via <strong>Parallel Routes</strong>, and route masquerading via <strong>Intercepting Routes</strong>.</p>
+<h3>Deep Dive: Production-Grade Hard/Soft Navigation Modal Pattern</h3>
+<p>When a user selects a gallery image:
+1. <strong>Soft Navigation (Client Router Transition)</strong>: The URL updates to <code>/photos/123</code>. The current page remains intact behind a modal dialog rendered via the parallel route slot <code>@modal/(.)photos/[id]</code>.
+2. <strong>Hard Navigation (Direct Link / Refresh)</strong>: The user visits <code>/photos/123</code> directly or reloads the tab. The interception is bypassed, rendering the full standalone view at <code>photos/[id]/page.tsx</code>.</p>
+<pre><code>Dashboard Segment
+  ├── layout.tsx                &lt;- Contains: props.children and props.modal
+  ├── @modal/
+  │   ├── default.tsx           &lt;- Fallback when no modal is active (returns null)
+  │   └── (.)photos/[id]/
+  │       └── page.tsx          &lt;- Intercepted soft-route modal
+  ├── photos/
+  │   └── [id]/
+  │       └── page.tsx          &lt;- Dedicated hard-route standalone page
+  └── page.tsx                  &lt;- Main gallery view
+</code></pre>
+<h4>1. The Layout Slot Host (<code>app/(dashboard)/layout.tsx</code>)</h4>
+<pre><code class="language-typescript">import React from 'react';
+
+interface DashboardLayoutProps {
+  children: React.ReactNode;
+  modal: React.ReactNode;
+}
+
+export default function DashboardLayout({ children, modal }: DashboardLayoutProps) {
+  return (
+    &lt;div className=&quot;min-h-screen bg-neutral-50 text-neutral-900&quot;&gt;
+      &lt;header className=&quot;border-b bg-white px-8 py-4&quot;&gt;
+        &lt;h1 className=&quot;text-lg font-semibold tracking-wide&quot;&gt;Enterprise Image Console&lt;/h1&gt;
+      &lt;/header&gt;
+      &lt;main className=&quot;container mx-auto p-8&quot;&gt;
+        {children}
+      &lt;/main&gt;
+      {/* The parallel slot renders here when route matches; otherwise defaults to default.tsx */}
+      {modal}
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<h4>2. The Modal Fallback Catch-All (<code>app/(dashboard)/@modal/default.tsx</code>)</h4>
+<pre><code class="language-typescript">// Essential: Returns null to ensure the @modal slot mounts nothing on baseline routes.
+export default function DefaultModalSlot() {
+  return null;
+}
+</code></pre>
+<h4>3. The Intercepted Route Modal (<code>app/(dashboard)/@modal/(.)photos/[id]/page.tsx</code>)</h4>
+<p><em>Note: In Next.js 15, <code>params</code> is an asynchronous <code>Promise</code> that must be unwrapped using <code>await</code>.</em></p>
+<pre><code class="language-typescript">import { notFound } from 'next/navigation';
+import { PhotoModalClient } from '@/features/media/components/photo-modal.client';
+
+interface InterceptedPhotoProps {
+  params: Promise&lt;{ id: string }&gt;;
+}
+
+async function getPhotoData(id: string) {
+  // Simulated localized server fetch
+  const mockDb: Record&lt;string, { title: string; src: string; resolution: string }&gt; = {
+    '1': { title: 'Architecture Main', src: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab', resolution: '4K' },
+    '2': { title: 'System Engine', src: 'https://images.unsplash.com/photo-1518770660439-4636190af475', resolution: 'Raw' },
+  };
+
+  return mockDb[id] ?? null;
+}
+
+export default async function InterceptedPhotoModal({ params }: InterceptedPhotoProps) {
+  const { id } = await params;
+  const photo = await getPhotoData(id);
+
+  if (!photo) {
+    notFound();
+  }
+
+  return (
+    &lt;PhotoModalClient title={photo.title}&gt;
+      &lt;div className=&quot;space-y-4&quot;&gt;
+        &lt;img
+          src={photo.src}
+          alt={photo.title}
+          className=&quot;h-96 w-full rounded-md object-cover&quot;
+        /&gt;
+        &lt;div className=&quot;flex justify-between text-sm text-neutral-500&quot;&gt;
+          &lt;span&gt;Identifier: {id}&lt;/span&gt;
+          &lt;span&gt;Quality: {photo.resolution}&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/PhotoModalClient&gt;
+  );
+}
+</code></pre>
+<h4>4. The Interactive Modal Wrapper (<code>features/media/components/photo-modal.client.tsx</code>)</h4>
+<pre><code class="language-typescript">'use client';
+
+import React, { useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+
+interface PhotoModalClientProps {
+  title: string;
+  children: React.ReactNode;
+}
+
+export function PhotoModalClient({ title, children }: PhotoModalClientProps) {
+  const router = useRouter();
+  const dialogRef = useRef&lt;HTMLDialogElement&gt;(null);
+
+  useEffect(() =&gt; {
+    const dialog = dialogRef.current;
+    if (dialog &amp;&amp; !dialog.open) {
+      dialog.showModal();
+    }
+  }, []);
+
+  const handleDismiss = () =&gt; {
+    // Navigates one step backward, clearing the interception slot back to @modal/default.tsx
+    router.back();
+  };
+
+  return (
+    &lt;dialog
+      ref={dialogRef}
+      onClose={handleDismiss}
+      className=&quot;backdrop:bg-black/80 fixed inset-0 z-50 m-auto w-full max-w-2xl rounded-xl border border-neutral-200 bg-white p-6 shadow-2xl open:animate-in open:fade-in-0 open:zoom-in-95&quot;
+    &gt;
+      &lt;div className=&quot;flex items-center justify-between border-b pb-3&quot;&gt;
+        &lt;h3 className=&quot;text-lg font-semibold&quot;&gt;{title}&lt;/h3&gt;
+        &lt;button
+          onClick={handleDismiss}
+          className=&quot;rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900&quot;
+          aria-label=&quot;Close dialog&quot;
+        &gt;
+          ✕
+        &lt;/button&gt;
+      &lt;/div&gt;
+      &lt;div className=&quot;mt-4&quot;&gt;{children}&lt;/div&gt;
+    &lt;/dialog&gt;
+  );
+}
+</code></pre>
+<h4>5. The Hard Standalone Page (<code>app/(dashboard)/photos/[id]/page.tsx</code>)</h4>
+<pre><code class="language-typescript">import Link from 'next/link';
+import { notFound } from 'next/navigation';
+
+interface DedicatedPhotoPageProps {
+  params: Promise&lt;{ id: string }&gt;;
+}
+
+export default async function DedicatedPhotoPage({ params }: DedicatedPhotoPageProps) {
+  const { id } = await params;
+
+  // Direct fetch fallback for hard loads/page reloads
+  if (id !== '1' &amp;&amp; id !== '2') {
+    notFound();
+  }
+
+  return (
+    &lt;article className=&quot;mx-auto max-w-3xl rounded-xl border border-neutral-200 bg-white p-8&quot;&gt;
+      &lt;Link
+        href=&quot;/&quot;
+        className=&quot;mb-6 inline-block text-sm font-medium text-blue-600 hover:underline&quot;
+      &gt;
+        ← Return to Gallery Overview
+      &lt;/Link&gt;
+      &lt;header className=&quot;mb-6&quot;&gt;
+        &lt;h1 className=&quot;text-3xl font-extrabold tracking-tight&quot;&gt;Resource Entity: {id}&lt;/h1&gt;
+        &lt;p className=&quot;text-neutral-500&quot;&gt;Standalone Hard Load Rendering Mode&lt;/p&gt;
+      &lt;/header&gt;
+      &lt;div className=&quot;aspect-video w-full rounded-lg bg-neutral-100 flex items-center justify-center border&quot;&gt;
+        &lt;span className=&quot;text-neutral-400 font-mono&quot;&gt;Render Payload Visualizer [{id}]&lt;/span&gt;
+      &lt;/div&gt;
+    &lt;/article&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>4. Next.js 15 Async Request APIs &amp; Breaking Changes Migration Playbook</h2>
+<p>Next.js 15 makes runtime context APIs explicitly <strong>asynchronous</strong>. In previous versions, dynamic route arguments and HTTP metadata could be accessed synchronously during render execution. Now, synchronicity is removed to unlock continuous streaming, speculative microtask execution, and fine-grained partial rendering.</p>
+<h3>The Async API Shift</h3>
+<pre><code>// NEXT.JS 14 (LEGACY PATTERN)
+export default function Page({ params, searchParams }: { params: { id: string } }) {
+  const id = params.id;
+  const cookieJar = cookies();
+  const token = cookieJar.get('session');
+}
+
+// NEXT.JS 15 (CANONICAL ARCHITECTURE)
+export default async function Page(props: {
+  params: Promise&lt;{ id: string }&gt;;
+  searchParams: Promise&lt;{ [key: string]: string | string[] | undefined }&gt;;
+}) {
+  const { id } = await props.params;
+  const search = await props.searchParams;
+  const cookieJar = await cookies();
+  const token = cookieJar.get('session');
+}
+</code></pre>
+<h3>Complete Implementation: Async Request Context Extraction</h3>
+<p>The following production pattern shows how to unpack asynchronous cookies, headers, and dynamic route params inside an authenticated sub-resource route:</p>
+<pre><code class="language-typescript">// app/(dashboard)/workspaces/[workspaceId]/audit/page.tsx
+import { cookies, headers } from 'next/headers';
+import { notFound, redirect } from 'next/navigation';
+
+interface AuditRouteProps {
+  params: Promise&lt;{ workspaceId: string }&gt;;
+  searchParams: Promise&lt;{ page?: string; limit?: string }&gt;;
+}
+
+export async function generateMetadata({ params }: AuditRouteProps) {
+  const { workspaceId } = await params;
+  return {
+    title: `Audit Log Analysis | Workspace ${workspaceId}`,
+  };
+}
+
+export default async function WorkspaceAuditPage({ params, searchParams }: AuditRouteProps) {
+  // Await route segment params and search parameters concurrently
+  const [{ workspaceId }, query] = await Promise.all([params, searchParams]);
+
+  // Await dynamic request headers and cookies
+  const [cookieStore, headerList] = await Promise.all([cookies(), headers()]);
+
+  const authToken = cookieStore.get('auth_token')?.value;
+  const userAgent = headerList.get('user-agent') ?? 'Unknown Client';
+  const clientIp = headerList.get('x-forwarded-for') ?? '127.0.0.1';
+
+  if (!authToken) {
+    redirect('/login');
+  }
+
+  const currentPage = Number(query.page ?? '1');
+  const pageSize = Number(query.limit ?? '25');
+
+  if (Number.isNaN(currentPage) || currentPage &lt; 1) {
+    notFound();
+  }
+
+  return (
+    &lt;div className=&quot;space-y-6&quot;&gt;
+      &lt;header className=&quot;border-b pb-4&quot;&gt;
+        &lt;h1 className=&quot;text-2xl font-bold&quot;&gt;Audit Log Ledger&lt;/h1&gt;
+        &lt;p className=&quot;text-sm text-neutral-500 font-mono&quot;&gt;Workspace ID: {workspaceId}&lt;/p&gt;
+      &lt;/header&gt;
+
+      &lt;section className=&quot;grid grid-cols-2 gap-4 text-xs font-mono&quot;&gt;
+        &lt;div className=&quot;rounded border bg-neutral-50 p-4&quot;&gt;
+          &lt;p className=&quot;font-semibold text-neutral-700&quot;&gt;Client Headers&lt;/p&gt;
+          &lt;p className=&quot;truncate mt-1&quot;&gt;IP: {clientIp}&lt;/p&gt;
+          &lt;p className=&quot;truncate&quot;&gt;Agent: {userAgent}&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;rounded border bg-neutral-50 p-4&quot;&gt;
+          &lt;p className=&quot;font-semibold text-neutral-700&quot;&gt;Session Context&lt;/p&gt;
+          &lt;p className=&quot;truncate mt-1&quot;&gt;Token: {authToken.slice(0, 8)}...[redacted]&lt;/p&gt;
+          &lt;p className=&quot;truncate&quot;&gt;Paging: Page {currentPage} (Size {pageSize})&lt;/p&gt;
+        &lt;/div&gt;
+      &lt;/section&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>5. Architectural Quality Checklist &amp; Automated Boundary Auditor</h2>
+<p>Run this pre-flight checklist and audit script through your CI/CD pipeline to verify component boundaries before deployment.</p>
+<h3>Architecture Pre-Flight Checklist</h3>
+<ul>
+<li>[ ] <strong>Boundary Integrity</strong>: Every file importing native database clients (<code>pg</code>, <code>prisma</code>, <code>drizzle-orm</code>) has <code>import 'server-only'</code> at Line 1.</li>
+<li>[ ] <strong>Next.js 15 Dynamic Contexts</strong>: All page and layout definitions access <code>params</code> and <code>searchParams</code> via <code>await</code> or <code>React.use()</code>.</li>
+<li>[ ] <strong>Leaf Pruning</strong>: All components marked with <code>'use client'</code> are strictly leaves in the render tree, importing zero business logic query files.</li>
+<li>[ ] <strong>Slots Sealed</strong>: Every parallel route directory (e.g., <code>@modal</code>) has a sibling <code>default.tsx</code> exporting a component returning <code>null</code> or a static fallback.</li>
+<li>[ ] <strong>Client State Escapes</strong>: No client-side <code>useEffect</code> is utilized purely to fetch initial render-critical data; initial data must originate from Server Components.</li>
+<li>[ ] <strong>Fetch Cache Declarations</strong>: All runtime Next.js 15 <code>fetch()</code> requests specify explicit cache semantics (<code>cache: 'force-cache'</code>, <code>cache: 'no-store'</code>, or <code>next: { revalidate: N }</code>), as Next.js 15 defaults to un-cached fetches.</li>
+</ul>
+<h3>Automated CI Guard: Client Bundle Leak Auditor</h3>
+<p>This Node.js audit script runs during CI (<code>npm run audit:boundaries</code>) to catch missing boundary statements, forbidden client imports, and synchronous <code>params</code> usages across the codebase.</p>
+<p>```javascript
+// scripts/audit-boundaries.mjs
+import fs from 'node:fs';
+import path from 'node:path';</p>
+<p>const APP_DIR = path.resolve(process.cwd(), 'app');
+const FEATURES_DIR = path.resolve(process.cwd(), 'features');
+const LIB_DIR = path.resolve(process.cwd(), 'lib');</p>
+<p>const FORBIDDEN_CLIENT_IMPORTS = [
+  'server-only',
+  'prisma',
+  '@prisma/client',
+  'drizzle-orm',
+  'pg',
+  'jsonwebtoken',
+  'bcrypt',
+];</p>
+<p>let totalViolations = 0;</p>
+<p>function walkDirectory(dir, callback) {
+  if (!fs.existsSync(dir)) return;
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      walkDirectory(fullPath, callback);
+    } else if (file.endsWith('.tsx') || file.endsWith('.ts')) {
+      callback(fullPath);
+    }
+  }
+}</p>
+<p>console.log('\x1b[34m%s\x1b[0m', '🔍 Starting App Router Architecture &amp; Security Audit...\n');</p>
+<p>// 1. Audit Client Components for Dangerous Server Imports
+walkDirectory(APP_DIR, auditFile);
+walkDirectory(FEATURES_DIR, auditFile);</p>
+<p>function auditFile(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const isClientComponent = content.startsWith("'use client'") || content.startsWith('"use client"');</p>
+<p>if (isClientComponent) {
+    for (const forbidden of FORBIDDEN_CLIENT_IMPORTS) {
+      const importRegex = new RegExp(<code>from\\s+['"]${forbidden}['"]</code>, 'g');
+      if (importRegex.test(content)) {
+        console.error(
+          '\x1b[31m%s\x1b[0m',
+          <code>❌ [CRITICAL] Leaked server dependency "${forbidden}" inside Client Component:</code>
+        );
+        console.error(<code>File: ${filePath}\n</code>);
+        totalViolations++;
+      }
+    }
+  }</p>
+<p>// 2. Audit DB/Data access files for missing 'server-only'
+  if (filePath.includes(<code>${path.sep}queries${path.sep}</code>) || filePath.includes(<code>${path.sep}db${path.sep}</code>)) {
+    if (!content.includes("'server-only'") &amp;&amp; !content.includes('"server-only"')) {
+      console.warn(
+        '\x1b[33m%s\x1b[0m',
+        <code>⚠️  [WARNING] Query/Database file lacks 'server-only' isolation guard:</code>
+      );
+      console.warn(<code>File: ${filePath}\n</code>);
+    }
+  }</p>
+<p>// 3. Audit for deprecated Next.js 14 synchronous params patterns
+  if (filePath.endsWith('page.tsx') || filePath.endsWith('layout.tsx')) {
+    const syncParamsRegex = /export\s+default\s+function\s+\w+(\s<em>{\s</em>params\s<em>}\s</em>:\s<em>{\s</em>params\s<em>:\s</em>{/g;
+    if (syncParamsRegex.test(content)) {
+      console.error(
+        '\x1b[31m%s\x1b[0m',
+        <code>❌ [DEPRECATION] Synchronous params typing detected (Next.js 15 requires params: Promise&lt;...&gt;):</code>
+      );
+      console.error(<code>File: ${filePath}\n</code>);
+      totalViolations++;
+    }
+  }
+}</p>
+<p>// 4. Audit Parallel Route slots for sibling default.tsx
+walkDirectory(APP_DIR, (filePath) =&gt; {
+  if (filePath.includes(<code>${path.sep}@</code>) &amp;&amp; filePath.endsWith('page.tsx')) {
+    const slotDirectory = path.dirname(filePath);
+    const parentDirectory = path.resolve(slotDirectory, '..');
+    const defaultSibling = path.join(slotDirectory, 'default.tsx');
+    const parentDefault = path.join(parentDirectory, 'default.tsx');</p>
+<pre><code>if (!fs.existsSync(defaultSibling) &amp;&amp; !fs.existsSync(parentDefault)) {
+  console.warn(
+    '\x1b[33m%s\x1b[0m',
+    `⚠️  [ROUTING] Slot missing fallback "default.tsx" in slot or parent path:`
+  );
+  console.warn(`   Directory: ${slotDirectory}\n`);
+}
+</code></pre>
+<p>}
+});</p>
+<p>if (totalViolations &gt; 0) {
+  console.error('\x1b[31m%s\x1</p>
+</body>
+</html>

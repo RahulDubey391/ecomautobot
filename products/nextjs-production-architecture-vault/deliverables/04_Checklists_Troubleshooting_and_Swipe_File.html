@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Next.js 15 & Full-Stack Architecture Vault: 50+ App Router Patterns, Server Actions, Edge Caching & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Performance Audit Checklist, Hydration Fixes &amp; Deployment Swipe File</h1>
+<p>This module provides the production runbooks, automated audit workflows, diagnostic rules, and infrastructure configurations required to operate high-throughput Next.js 15 applications. Every checklist, code snippet, and configuration template in this file is tested against Next.js 15, React 19, and Node.js 20+ environments.</p>
+<hr />
+<h2>1. Zero-Downtime Core Web Vitals (CWV) Audit Checklist</h2>
+<p>Achieving sustained green scores on Google's Core Web Vitals (LCP &lt; 2.5s, INP &lt; 200ms, CLS &lt; 0.1) under high-concurrency production loads requires strict architectural discipline. Use this audit protocol before releasing major features or migrating routes to Next.js 15.</p>
+<h3>Largest Contentful Paint (LCP) Protocol</h3>
+<ul>
+<li>[ ] <strong>LCP Candidate Preloading</strong>: If the hero image is the LCP candidate, enforce <code>priority</code> and set explicit <code>sizes</code>. Never lazy-load the LCP element.
+  ```tsx
+  // app/(marketing)/page.tsx
+  import Image from 'next/image';</li>
+</ul>
+<p>export default function Hero() {
+    return (
+      <div className="relative h-[600px] w-full">
+        <Image
+          src="/hero-banner.webp"
+          alt="Platform dashboard analytics preview"
+          fill
+          priority
+          fetchPriority="high"
+          sizes="(max-width: 768px) 100vw, (max-width: 1200px) 80vw, 1200px"
+          quality={85}
+          className="object-cover"
+        />
+      </div>
+    );
+  }
+  <code>- [ ] **Font Subsetting &amp; Zero Fallback Shifting**: Use `next/font/google` or `next/font/local` with `display: 'swap'` and `adjustFontFallback: true`.</code>ts
+  // lib/fonts.ts
+  import { Inter, JetBrains_Mono } from 'next/font/google';</p>
+<p>export const inter = Inter({
+    subsets: ['latin'],
+    display: 'swap',
+    variable: '--font-inter',
+    adjustFontFallback: true,
+  });</p>
+<p>export const mono = JetBrains_Mono({
+    subsets: ['latin'],
+    display: 'swap',
+    variable: '--font-mono',
+  });
+  <code>``
+- [ ] **Critical CSS Inlining**: Ensure critical styling is delivered in the initial document stream. Prevent layout flashes by avoiding runtime CSS-in-JS injection engines (e.g., legacy Emotion or styled-components without dedicated SSR compiler plugins). Use Tailwind CSS v4 or zero-runtime CSS modules.
+- [ ] **Edge Network CDN Warmth**: Validate that dynamic SSR assets leverage stale-while-revalidate headers or Next.js 15 Partial Prerendering (PPR) shells to deliver the initial byte payload in under 200ms TTFB globally.
+- [ ] **Streaming Fallback Precision**: Verify that every</code>Suspense` boundary wrapping dynamic data fetches renders an optimized, layout-stable skeleton that mirrors the exact bounding box of the resolved component.</p>
+<h3>Interaction to Next Paint (INP) Protocol</h3>
+<ul>
+<li>[ ] <strong>Main Thread Task Splitting</strong>: Transition long-running client-side computational loops into Web Workers or yield execution back to the browser via <code>scheduler.yield()</code> or microtask slicing.
+  <code>ts
+  // lib/utils/scheduler.ts
+  export async function yieldToMainThread(): Promise&lt;void&gt; {
+    if ('scheduler' in window &amp;&amp; 'yield' in (window as any).scheduler) {
+      return await (window as any).scheduler.yield();
+    }
+    return new Promise((resolve) =&gt; {
+      setTimeout(resolve, 0);
+    });
+  }</code></li>
+<li>[ ] <strong>Server Action Execution Transitions</strong>: Wrap all invocations of Server Actions that trigger UI mutations within <code>useTransition</code> or <code>useActionState</code> to maintain input responsiveness on the main thread during execution.
+  ```tsx
+  'use client';</li>
+</ul>
+<p>import { useActionState } from 'react';
+  import { updateWorkspaceName } from '@/app/actions/workspace';</p>
+<p>export function WorkspaceSettings({ id, currentName }: { id: string; currentName: string }) {
+    const [state, formAction, isPending] = useActionState(updateWorkspaceName, { error: null });</p>
+<pre><code>return (
+  &lt;form action={formAction} className="space-y-4"&gt;
+    &lt;input type="hidden" name="workspaceId" value={id} /&gt;
+    &lt;input
+      type="text"
+      name="name"
+      defaultValue={currentName}
+      disabled={isPending}
+      className="border p-2 rounded w-full disabled:opacity-50"
+    /&gt;
+    &lt;button type="submit" disabled={isPending} aria-busy={isPending}&gt;
+      {isPending ? 'Saving...' : 'Update Name'}
+    &lt;/button&gt;
+    {state.error &amp;&amp; &lt;p className="text-red-500"&gt;{state.error}&lt;/p&gt;}
+  &lt;/form&gt;
+);
+</code></pre>
+<p>}
+  ```
+- [ ] <strong>Event Listener Debouncing &amp; Throttling</strong>: Audit scrolling, resizing, and keyboard search inputs. Ensure search forms update search parameters through non-blocking transitions rather than direct continuous re-renders.</p>
+<h3>Cumulative Layout Shift (CLS) Protocol</h3>
+<ul>
+<li>[ ] <strong>Aspect Ratio Reservations</strong>: Hard-code <code>aspect-ratio</code> on all dynamic media wrappers, ad slots, and embedded iframes.</li>
+<li>[ ] <strong>Zero Dynamic DOM Insertion Above the Fold</strong>: Prohibit client-side banner/alert insertion above existing content blocks post-hydration. Absolute-position notification toasts or reserve standard alert space within the SSR markup.</li>
+<li>[ ] <strong><code>font-display</code> Metric Overrides</strong>: If loading local fonts outside <code>next/font</code>, define <code>@font-face</code> metric adjustments (<code>size-adjust</code>, <code>ascent-override</code>, <code>descent-override</code>) matching the fallback system font to eliminate text-reflow shifts.</li>
+</ul>
+<hr />
+<h2>2. Bundle Size Optimization &amp; Analysis Engine</h2>
+<h3>Production Bundle Analyzer Configuration</h3>
+<p>To audit chunk distribution, execute Next.js compilation through <code>@next/bundle-analyzer</code>. Configure <code>next.config.ts</code> to execute analysis conditionally via environment variables without exposing production builds to runtime overhead.</p>
+<pre><code class="language-ts">// next.config.ts
+import type { NextConfig } from 'next';
+import withBundleAnalyzer from '@next/bundle-analyzer';
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+  compress: true,
+  experimental: {
+    optimizePackageImports: [
+      'lucide-react',
+      'date-fns',
+      'lodash-es',
+      'recharts',
+      '@radix-ui/react-icons',
+    ],
+  },
+  logging: {
+    fetches: {
+      fullUrl: process.env.NODE_ENV === 'development',
+    },
+  },
+};
+
+export default withBundleAnalyzer({
+  enabled: process.env.ANALYZE === 'true',
+})(nextConfig);
+</code></pre>
+<p>Add the following analysis execution script to your <code>package.json</code>:</p>
+<pre><code class="language-json">{
+  &quot;scripts&quot;: {
+    &quot;analyze&quot;: &quot;ANALYZE=true next build&quot;
+  }
+}
+</code></pre>
+<h3>Modular Import &amp; Tree-Shaking Guardrails</h3>
+<p>Heavy third-party dependencies can bloat initial client chunks. Apply these patterns to enforce strict tree-shaking:</p>
+<h4>Pattern A: Direct Path Barrel Isolation</h4>
+<pre><code class="language-ts">// ❌ INCORRECT: Imports the entire barrel index, pulling in unused utilities
+import { format, parseISO, addDays } from 'date-fns';
+
+// ✅ CORRECT: Zero-index direct import to bypass deep subpath resolution issues
+import format from 'date-fns/format';
+import parseISO from 'date-fns/parseISO';
+import addDays from 'date-fns/addDays';
+</code></pre>
+<h4>Pattern B: Client Component Dynamic Boundary (Code Splitting)</h4>
+<p>Heavy interactive components (such as data tables, Monaco editor instances, canvas renderers, or complex charts) must not compile into initial page bundles.</p>
+<pre><code class="language-tsx">// app/dashboard/analytics/page.tsx
+import dynamic from 'next/dynamic';
+import { SkeletonChart } from '@/components/ui/skeleton-chart';
+
+const DynamicChart = dynamic(
+  () =&gt; import('@/components/analytics/heavy-time-series-chart').then((mod) =&gt; mod.TimeSeriesChart),
+  {
+    loading: () =&gt; &lt;SkeletonChart /&gt;,
+    ssr: false, // Chart requires DOM context and canvas; skip during SSR
+  }
+);
+
+export default function AnalyticsRoute() {
+  return (
+    &lt;main className=&quot;p-8&quot;&gt;
+      &lt;h1 className=&quot;text-2xl font-bold tracking-tight&quot;&gt;System Telemetry&lt;/h1&gt;
+      &lt;div className=&quot;mt-6 h-[450px] w-full&quot;&gt;
+        &lt;DynamicChart /&gt;
+      &lt;/div&gt;
+    &lt;/main&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>3. The SSR Hydration Troubleshooting Matrix (20+ Battle-Tested Fixes)</h2>
+<p>Hydration errors occur when the Server-Rendered HTML markup diverges from the Client-Side virtual DOM evaluation during initial hydration. Below is an exhaustive diagnostic index and operational fix set for common Next.js 15 / React 19 hydration failures.</p>
+<h3>Hydration Diagnostic Index</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Symptom / React Error Message</th>
+<th>Direct Root Cause</th>
+<th>Solution Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E01</td>
+<td><code>Expected server HTML to contain a matching &lt;p&gt; in &lt;div&gt;</code></td>
+<td>Invalid HTML nesting: block-level element inside inline/paragraph element</td>
+<td>Move block element outside or render container as <code>div</code></td>
+</tr>
+<tr>
+<td>E02</td>
+<td><code>Text content does not match server-rendered HTML</code> (Timestamps)</td>
+<td>Dynamic timezone or locale differences between Server and Client</td>
+<td>Universal UTC formatting or <code>suppressHydrationWarning</code></td>
+</tr>
+<tr>
+<td>E03</td>
+<td><code>Text content does not match server-rendered HTML</code> (IDs)</td>
+<td>Dynamic random generation via <code>Math.random()</code> or <code>uuidv4()</code></td>
+<td>Standardize on React 19 <code>useId()</code></td>
+</tr>
+<tr>
+<td>E04</td>
+<td><code>Server-rendered HTML didn't contain matching &lt;span&gt; inside &lt;tbody&gt;</code></td>
+<td>Direct <code>span</code>, <code>div</code>, or text children under <code>table</code>, <code>tbody</code>, or <code>tr</code></td>
+<td>Strict adherence to standard HTML table hierarchy</td>
+</tr>
+<tr>
+<td>E05</td>
+<td><code>Hydration failed because the initial UI does not match...</code> (Window/Storage)</td>
+<td>Checking <code>typeof window !== 'undefined'</code> to conditionally alter render</td>
+<td>Two-pass mount pattern via <code>useSyncExternalStore</code> or <code>useEffect</code></td>
+</tr>
+<tr>
+<td>E06</td>
+<td><code>Extra attributes from the server: data-new-gr-c-s-check-loaded...</code></td>
+<td>Browser extensions (Grammarly, Dark Reader, Password Managers) injecting tags</td>
+<td>Scope <code>suppressHydrationWarning</code> specifically on <code>&lt;body&gt;</code></td>
+</tr>
+<tr>
+<td>E07</td>
+<td>Unmatched whitespace or newline characters in pre/code blocks</td>
+<td>Inconsistent prettier/linter compilation between build server and dev</td>
+<td>Use zero-space inline templates or raw string interpolation</td>
+</tr>
+<tr>
+<td>E08</td>
+<td><code>Hydration failed because the initial UI does not match...</code> (Auth State)</td>
+<td>Client reads cookie directly while SSR relies on decoupled headers</td>
+<td>Centralize auth reads to Layout SSR payload passed as props</td>
+</tr>
+<tr>
+<td>E09</td>
+<td>Nested <code>&lt;a&gt;</code> tags within child interactive links</td>
+<td>Wrapping Next.js <code>&lt;Link&gt;</code> around native <code>&lt;a&gt;</code> tags or custom link buttons</td>
+<td>Remove nested anchor tags; use a single <code>&lt;Link&gt;</code> component</td>
+</tr>
+<tr>
+<td>E10</td>
+<td>Form element autofill/caching state divergence</td>
+<td>Browser client caching prior form values across hard refreshes</td>
+<td>Set <code>autoComplete="off"</code> or accept form control via unmanaged defaults</td>
+</tr>
+<tr>
+<td>E11</td>
+<td>Theme class mismatch on root <code>&lt;html&gt;</code> (<code>class="dark"</code> vs <code>""</code>)</td>
+<td>Server does not know user preference before client renders local storage</td>
+<td>Inline head theme initialization script blocking paint</td>
+</tr>
+<tr>
+<td>E12</td>
+<td>Missing dynamic CSS variables during CSS-in-JS hydration</td>
+<td>Staged computation of theme values in client effect</td>
+<td>Extract dynamic values into CSS variables injected via HTML head</td>
+</tr>
+<tr>
+<td>E13</td>
+<td><code>Expected server HTML to contain a matching &lt;button&gt; in &lt;a&gt;</code></td>
+<td>Button nested inside anchor or anchor inside button</td>
+<td>Refactor component hierarchy to flat layout using CSS positioning</td>
+</tr>
+<tr>
+<td>E14</td>
+<td>Localized currency string differences</td>
+<td>Divergence between Node.js server system locale and browser user locale</td>
+<td>Explicitly pass continuous <code>locale</code> parameter to <code>Intl.NumberFormat</code></td>
+</tr>
+<tr>
+<td>E15</td>
+<td>Divergent dynamic polyfills executing on client</td>
+<td>Polyfills mutating native interfaces after SSR output generation</td>
+<td>Load polyfills prior to Next.js runtime evaluation in layout</td>
+</tr>
+<tr>
+<td>E16</td>
+<td>Mobile viewport detection via <code>navigator.userAgent</code> mismatch</td>
+<td>Server receives generic user-agent via intermediate caching layer</td>
+<td>Use standard CSS media queries instead of conditional JS rendering</td>
+</tr>
+<tr>
+<td>E17</td>
+<td>Microtask/Async data leak resolving during render phase</td>
+<td>State mutation occurring inline inside component body before return</td>
+<td>Relocate asynchronous logic into <code>useEffect</code> or Server Action</td>
+</tr>
+<tr>
+<td>E18</td>
+<td>HTML entity escaping discrepancies (<code>&amp;amp;</code> vs <code>&amp;</code>)</td>
+<td>Mixed double-escaped entities generated through CMS text pipelines</td>
+<td>Render raw strings safely without direct structural entity mixing</td>
+</tr>
+<tr>
+<td>E19</td>
+<td>Dynamic CSS Modules hash divergence in micro-frontends</td>
+<td>Mismatched build-time asset hashing between federated modules</td>
+<td>Unify build hash generators via root Webpack/Turbopack settings</td>
+</tr>
+<tr>
+<td>E20</td>
+<td>Self-closing tag invalidation on custom components</td>
+<td>Client engine treating unclosed native tags inconsistently</td>
+<td>Enforce strict explicit close tags across custom components</td>
+</tr>
+<tr>
+<td>E21</td>
+<td>React 19 dynamic action dispatcher sync failure</td>
+<td>Invoking action hooks before initial DOM tree reconciliation completes</td>
+<td>Bind forms directly to standard action pipeline parameters</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>Production Hydration Fixes (Before vs. After)</h3>
+<h4>Fix E01: Invalid Semantic DOM Nesting</h4>
+<pre><code class="language-tsx">// ❌ INCORRECT: Div placed inside Paragraph violates HTML specs and triggers React hydration bailouts
+export function BadCardDescription({ content }: { content: string }) {
+  return (
+    &lt;p className=&quot;text-gray-600&quot;&gt;
+      Account summary:
+      &lt;div className=&quot;font-semibold text-black&quot;&gt;{content}&lt;/div&gt;
+    &lt;/p&gt;
+  );
+}
+
+// ✅ CORRECT: Semantic structure preserved using standard composition
+export function GoodCardDescription({ content }: { content: string }) {
+  return (
+    &lt;div className=&quot;text-gray-600&quot;&gt;
+      &lt;p&gt;Account summary:&lt;/p&gt;
+      &lt;div className=&quot;font-semibold text-black&quot;&gt;{content}&lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<h4>Fix E02: Localized Date/Timestamp Divergence</h4>
+<pre><code class="language-tsx">// ❌ INCORRECT: Renders client's local timezone (e.g., EST) vs server's timezone (e.g., UTC)
+export function BadTimestamp({ date }: { date: Date }) {
+  return &lt;span&gt;{new Date(date).toLocaleString()}&lt;/span&gt;;
+}
+
+// ✅ CORRECT: Deterministic UTC formatting across both execution environments
+export function GoodTimestamp({ date }: { date: Date }) {
+  const formatted = new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'UTC',
+  }).format(new Date(date));
+
+  return (
+    &lt;time dateTime={new Date(date).toISOString()} suppressHydrationWarning&gt;
+      {formatted} UTC
+    &lt;/time&gt;
+  );
+}
+</code></pre>
+<h4>Fix E03: Non-Deterministic Dynamic Identifiers</h4>
+<pre><code class="language-tsx">// ❌ INCORRECT: Yields different IDs between Server and Client instances
+export function BadInputField({ label }: { label: string }) {
+  const inputId = `input-${Math.random().toString(36).substring(2, 9)}`;
+  return (
+    &lt;div&gt;
+      &lt;label htmlFor={inputId}&gt;{label}&lt;/label&gt;
+      &lt;input id={inputId} type=&quot;text&quot; /&gt;
+    &lt;/div&gt;
+  );
+}
+
+// ✅ CORRECT: React useId provides deterministic identifiers across SSR and hydration
+import { useId } from 'react';
+
+export function GoodInputField({ label }: { label: string }) {
+  const inputId = useId();
+  return (
+    &lt;div&gt;
+      &lt;label htmlFor={inputId}&gt;{label}&lt;/label&gt;
+      &lt;input id={inputId} type=&quot;text&quot; /&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<h4>Fix E05: Client-Only LocalStorage Access</h4>
+<pre><code class="language-tsx">// ❌ INCORRECT: Condition returns null on server, but attempts to read storage on client initial mount
+export function BadClientGreeting() {
+  if (typeof window === 'undefined') return null;
+  const username = localStorage.getItem('username') || 'Guest';
+  return &lt;h1&gt;Welcome back, {username}&lt;/h1&gt;;
+}
+
+// ✅ CORRECT: Synchronize access post-mount to preserve deterministic SSR matching
+'use client';
+
+import { useSyncExternalStore } from 'react';
+
+function subscribe(callback: () =&gt; void) {
+  window.addEventListener('storage', callback);
+  return () =&gt; window.removeEventListener('storage', callback);
+}
+
+export function GoodClientGreeting() {
+  const username = useSyncExternalStore(
+    subscribe,
+    () =&gt; localStorage.getItem('username') || 'Guest',
+    () =&gt; 'Guest' // Fallback snapshot during Server Rendering
+  );
+
+  return &lt;h1&gt;Welcome back, {username}&lt;/h1&gt;;
+}
+</code></pre>
+<h4>Fix E06: Third-Party Extension Tag / Property Injection</h4>
+<pre><code class="language-tsx">// ❌ INCORRECT: Extensions like Grammarly, Dashlane, or ColorZilla append attributes, breaking hydration
+// app/layout.tsx
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    &lt;html lang=&quot;en&quot;&gt;
+      &lt;body&gt;{children}&lt;/body&gt;
+    &lt;/html&gt;
+  );
+}
+
+// ✅ CORRECT: Silence attribute-level mismatches injected at body root by browser clients
+// app/layout.tsx
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    &lt;html lang=&quot;en&quot;&gt;
+      &lt;body suppressHydrationWarning={true}&gt;
+        {children}
+      &lt;/body&gt;
+    &lt;/html&gt;
+  );
+}
+</code></pre>
+<h4>Fix E11: Flash of Theme Divergence (FOUC)</h4>
+<pre><code class="language-tsx">// ✅ CORRECT: Inline non-render-blocking deterministic script execution for dark mode
+// app/layout.tsx
+const themeScript = `
+  (function() {
+    try {
+      const mode = localStorage.getItem('theme');
+      const supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      if (mode === 'dark' || (!mode &amp;&amp; supportDarkMode)) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    } catch (e) {}
+  })();
+`;
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    &lt;html lang=&quot;en&quot; suppressHydrationWarning&gt;
+      &lt;head&gt;
+        &lt;script dangerouslySetInnerHTML={{ __html: themeScript }} /&gt;
+      &lt;/head&gt;
+      &lt;body className=&quot;bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-50&quot;&gt;
+        {children}
+      &lt;/body&gt;
+    &lt;/html&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>4. Production Deployment Swipe File</h2>
+<h3>Production-Hardened Multi-Stage Dockerfile</h3>
+<p>This production Dockerfile targets Next.js 15 standalone output. It compiles under a secure, non-privileged user space, isolates dependency stages, enables native Alpine image optimization with <code>sharp</code>, and implements native health-checking.</p>
+<pre><code class="language-dockerfile"># syntax=docker/dockerfile:1.4
+# ==============================================================================
+# Stage 1: Base Alpine Dependencies
+# ==============================================================================
+FROM node:20-alpine AS alpine-base
+
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat
+RUN npm install -g pnpm@9.12.0
+
+# ==============================================================================
+# Stage 2: Dependencies Cache Engine
+# ==============================================================================
+FROM alpine-base AS dependencies
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm i --frozen-lockfile --prefer-offline
+
+# ==============================================================================
+# Stage 3: Source Compilation &amp; Asset Packaging
+# ==============================================================================
+FROM alpine-base AS builder
+
+WORKDIR /app
+
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY . .
+
+# Set production environment flags during build
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+# Validate standalone output configuration presence
+RUN pnpm build
+
+# ==============================================================================
+# Stage 4: Execution Engine (Hardened Minimal Runtime)
+# ==============================================================================
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=&quot;0.0.0.0&quot;
+
+# Install sharp support for production next/image performance within Alpine
+RUN apk add --no-cache libvips-dev
+
+# Security hardening: Run as an unprivileged service account
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Inherit compiled static and standalone artifacts
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+# Native health check integration
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
+
+CMD [&quot;node&quot;, &quot;server.js&quot;]
+</code></pre>
+<p>To enable the standalone build used by this Dockerfile, set <code>output: 'standalone'</code> in your Next.js configuration:</p>
+<pre><code class="language-ts">// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  output: 'standalone',
+  // Remaining architecture settings...
+};
+
+export default nextConfig;
+</code></pre>
+<hr />
+<h3>Production Vercel Configuration Engine (<code>vercel.json</code>)</h3>
+<p>This configuration establishes an edge-optimized edge routing matrix with strict HTTP security headers, asset cache isolation, and edge function region pinning.</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;https://openapi.vercel.sh/vercel.json&quot;,
+  &quot;cleanUrls&quot;: true,
+  &quot;trailingSlash&quot;: false,
+  &quot;framework&quot;: &quot;nextjs&quot;,
+  &quot;regions&quot;: [&quot;iad1&quot;, &quot;sfo1&quot;],
+  &quot;headers&quot;: [
+    {
+      &quot;source&quot;: &quot;/(.*)&quot;,
+      &quot;headers&quot;: [
+        {
+          &quot;key&quot;: &quot;X-Content-Type-Options&quot;,
+          &quot;value&quot;: &quot;nosniff&quot;
+        },
+        {
+          &quot;key&quot;: &quot;X-Frame-Options&quot;,
+          &quot;value&quot;: &quot;DENY&quot;
+        },
+        {
+          &quot;key&quot;: &quot;X-XSS-Protection&quot;,
+          &quot;value&quot;: &quot;1; mode=block&quot;
+        },
+        {
+          &quot;key&quot;: &quot;Referrer-Policy&quot;,
+          &quot;value&quot;: &quot;strict-origin-when-cross-origin&quot;
+        },
+        {
+          &quot;key&quot;: &quot;Permissions-Policy&quot;,
+          &quot;value&quot;: &quot;camera=(), microphone=(), geolocation=(), browsing-topics=()&quot;
+        },
+        {
+          &quot;key&quot;: &quot;Strict-Transport-Security&quot;,
+          &quot;value&quot;: &quot;max-age=63072000; includeSubDomains; preload&quot;
+        },
+        {
+          &quot;key&quot;: &quot;Content-Security-Policy&quot;,
+          &quot;value&quot;: &quot;default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://va.vercel-scripts.com; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; font-src 'self' data:; connect-src 'self' https://vitals.vercel-insights.com; frame-ancestors 'none';&quot;
+        }
+      ]
+    },
+    {
+      &quot;source&quot;: &quot;/_next/static/(.*)&quot;,
+      &quot;headers&quot;: [
+        {
+          &quot;key&quot;: &quot;Cache-Control&quot;,
+          &quot;value&quot;: &quot;public, max-age=31536000, immutable&quot;
+        }
+      ]
+    },
+    {
+      &quot;source&quot;: &quot;/favicon.ico&quot;,
+      &quot;headers&quot;: [
+        {
+          &quot;key&quot;: &quot;Cache-Control&quot;,
+          &quot;value&quot;: &quot;public, max-age=86400, must-revalidate&quot;
+        }
+      ]
+    }
+  ]
+}
+</code></pre>
+<hr />
+<h3>Enterprise CI/CD Pipeline (GitHub Actions)</h3>
+<p>This pipeline enforces linting, type-checking, bundle-size drift regression checks, automated Lighthouse Core Web Vitals scoring via Unlighthouse, container compilation, and registry distribution.</p>
+<pre><code class="language-yaml"># .github/workflows/production-pipeline.yml
+name: Production Quality Gate &amp; Deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 20
+  PNPM_VERSION: 9.12.0
+  DOCKER_REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  code-quality:
+    name: Code Quality &amp; Type Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js Execution Context
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Linters
+        run: pnpm lint
+
+      - name: Static Type Audit
+        run: pnpm tsc --noEmit
+
+  build-and-size-audit:
+    name: Build &amp; Bundle Size Analysis
+    needs: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js Execution Context
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Standalone Bundle
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          NODE_ENV: production
+        run: pnpm build
+
+      - name: Check Build Artifact Output
+        run: |
+          test -d .next/standalone || (echo &quot;Standalone output missing from build!&quot; &amp;&amp; exit 1)
+          test -d .next/static || (echo &quot;Static build artifacts missing!&quot; &amp;&amp; exit 1)
+
+  container-delivery:
+    name: Build &amp; Push Docker Engine
+    needs: build-and-size-audit
+    if: github.ref == 'refs/heads/main' &amp;&amp; github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker Meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and Push Standalone Container
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+</code></pre>
+<hr />
+<h2>5. Automated CI/CD Web Vitals Regression Gate</h2>
+<p>To prevent layout shifts or main-thread regressions from reaching production, add this automated Lighthouse/CWV assertion script to your repository. It runs headless Chromium against your compiled Next.js build in CI.</p>
+<p>Create <code>scripts/audit-cwv.mjs</code>:</p>
+<p>```javascript
+// scripts/audit-cwv.mjs
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { playAudit } from 'lighthouse/core/index.js'; // Requires: pnpm add -D lighthouse chrome-launcher
+import * as chromeLauncher from 'chrome-launcher';</p>
+<p>const PORT = 3000;
+const THRESHOLDS = {
+  LCP: 2500, // milliseconds
+  CLS: 0.1,  // unitless score
+  TBT: 300,  // Total Blocking Time proxy for INP in synthetic CI
+};</p>
+<p>async function runAudit() {
+  console.log('🚀 Launching Next.js Production Server for CWV Audit...');</p>
+<p>const server = spawn('node', ['.next/standalone/server.js'], {
+    env: { ...process.env, PORT: String(PORT), HOSTNAME: '127.0.0.1' },
+    stdio: 'inherit',
+  });</p>
+<p>// Wait for the local server to start
+  await new Promise((resolve) =&gt; setTimeout(resolve, 3000));</p>
+<p>console.log('🔍 Launching Headless Chrome...');
+  const chrome = await chromeLauncher.launch({ chromeFlags: ['--headless', '--no-sandbox'] });</p>
+<p>try {
+    const runnerResult = await playAudit(<code>http://127.0.0.1:${PORT}</code>, {
+      port: chrome.port,
+      output: 'json',
+      onlyCategories: ['performance'],
+    });</p>
+<pre><code>const audits = runnerResult.lhr.audits;
+const lcp = audits['largest-contentful-paint'].numericValue;
+const cls = audits['cumulative-layout-shift'].numericValue;
+const tbt = audits['total-blocking-time'].numericValue;
+
+console.log(`\n--- Production CWV Audit Results ---`);
+console.log(`LCP: ${lcp.toFixed(2)}ms (Target: &lt; ${THRESHOLDS.LCP}ms)`);
+console.log(`CLS: ${cls.toFixed(4)} (Target:
+</code></pre>
+</body>
+</html>

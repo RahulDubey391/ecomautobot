@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Next.js 15 & Full-Stack Architecture Vault: 50+ App Router Patterns, Server Actions, Edge Caching & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Edge Caching, Streaming Suspense &amp; Multi-Tenant Routing</h1>
+<h2>1. Architectural Overview &amp; System Topography</h2>
+<p>Modern web scale requires decoupling dynamic user context from static asset distribution. Next.js 15 redefines caching defaults by shifting fetch requests from aggressive automatic caching to <code>no-store</code> by default, putting cache control explicitly back into developer control. </p>
+<p>This module provides the production blueprint for combining edge middleware, wildcard multi-tenancy, granular tag-based cache revalidation, and React Server Component (RSC) streaming.</p>
+<pre><code>                          ┌───────────────────────────┐
+                          │   Global Anycast Edge     │
+                          │ (Cloudflare / Vercel Edge)│
+                          └─────────────┬─────────────┘
+                                        │
+                         Incoming Request: tenant.domain.com
+                                        │
+                                        ▼
+                          ┌───────────────────────────┐
+                          │    Next.js 15 Middleware  │
+                          │   - Subdomain Extraction  │
+                          │   - Host Header Rewrite   │
+                          │   - Edge Context Injection│
+                          └─────────────┬─────────────┘
+                                        │
+                                Path Rewrite:
+                     /_tenants/tenant-slug/dashboard
+                                        │
+                                        ▼
+                          ┌───────────────────────────┐
+                          │ Server Component Pipeline │
+                          └──────┬─────────────┬──────┘
+                                 │             │
+                    Fast / Cached Data      Slow Data Stream
+                                 │             │
+                                 ▼             ▼
+                     ┌───────────────┐  ┌───────────────────┐
+                     │ Shell Render  │  │ &lt;Suspense&gt; Yield  │
+                     │  (Instant)    │  │ (Flushed via HTTP)│
+                     └───────┬───────┘  └─────────┬─────────┘
+                             │                    │
+                             └──────────┬─────────┘
+                                        │
+                                        ▼
+                          ┌───────────────────────────┐
+                          │ Client Browser DOM Hydrate│
+                          └───────────────────────────┘
+</code></pre>
+<h3>Next.js 14 vs. Next.js 15 Cache Defaults</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Feature / Mechanism</th>
+<th style="text-align: left;">Next.js 14 Paradigm</th>
+<th style="text-align: left;">Next.js 15 Paradigm</th>
+<th style="text-align: left;">Operational Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong><code>fetch()</code> Requests</strong></td>
+<td style="text-align: left;"><code>force-cache</code> by default</td>
+<td style="text-align: left;"><code>no-store</code> by default</td>
+<td style="text-align: left;">Eliminates stale data leaks; requires explicit cache tags for ISR.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Route Handlers (<code>GET</code>)</strong></td>
+<td style="text-align: left;">Cached by default unless using dynamic functions</td>
+<td style="text-align: left;">Uncached (<code>no-store</code>) by default</td>
+<td style="text-align: left;">Static webhooks or health checks must explicitly define <code>revalidate</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Client Navigation Cache</strong></td>
+<td style="text-align: left;">30s cache for dynamic pages, 5m for static</td>
+<td style="text-align: left;">0s cache for dynamic pages (<code>staleTimes.dynamic: 0</code>)</td>
+<td style="text-align: left;">Instant consistency on client navigations; stops visual desync.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Streaming Compilation</strong></td>
+<td style="text-align: left;">Prone to waterfall blocking on uncached tags</td>
+<td style="text-align: left;">Decoupled via Server Component Fiber splits</td>
+<td style="text-align: left;">Faster Time-to-First-Byte (TTFB) on edge node responses.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Advanced Multi-Tenant Dynamic Subdomain Routing</h2>
+<p>This blueprint implements wildcard subdomain isolation (e.g., <code>acme.platform.com</code> or custom domains like <code>dashboard.acme.com</code>) routing internally to dynamic route parameters without causing client-side redirection loops or leaking tenant contexts.</p>
+<h3>2.1. Edge Middleware with Custom Domain Mapping</h3>
+<p>Create or replace <code>middleware.ts</code> in the project root:</p>
+<pre><code class="language-typescript">// middleware.ts
+import { NextRequest, NextResponse } from 'next/server';
+
+export const config = {
+  matcher: [
+    /*
+     * Match all paths except:
+     * 1. /api routes
+     * 2. /_next (Next.js internals)
+     * 3. /_static (inside /public)
+     * 4. Static files (e.g. /favicon.ico, /sitemap.xml, robots.txt, etc.)
+     */
+    '/((?!api/|_next/|_static/|[\\w-]+\\.\\w+).*)',
+  ],
+};
+
+const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN || 'platform.com';
+
+export default async function middleware(req: NextRequest) {
+  const url = req.nextUrl;
+  const hostname = req.headers.get('host') || '';
+
+  // Extract clean tenant hostname by removing root domain and port numbers
+  const currentHost = hostname
+    .replace(`.${ROOT_DOMAIN}`, '')
+    .replace(`:${url.port}`, '');
+
+  // Detect custom domain vs. root domain vs. subdomain
+  const isRootDomain =
+    hostname === ROOT_DOMAIN ||
+    hostname === `www.${ROOT_DOMAIN}` ||
+    hostname === 'localhost:3000';
+
+  // Rewrites for public marketing site on the root domain
+  if (isRootDomain) {
+    return NextResponse.rewrite(new URL(`/marketing${url.pathname}`, req.url));
+  }
+
+  // App routing: Inject the detected tenant identifier into internal path
+  // Custom domains map to their tenant slug; subdomains map directly
+  const tenantSlug = currentHost.toLowerCase();
+
+  // Rewrite internal routes to the tenant folder structure
+  // e.g., acme.platform.com/analytics -&gt; /app/[tenant]/analytics
+  const rewriteUrl = new URL(`/app/${tenantSlug}${url.pathname}${url.search}`, req.url);
+
+  const response = NextResponse.rewrite(rewriteUrl);
+
+  // Set internal security and context headers for Server Components
+  response.headers.set('x-tenant-slug', tenantSlug);
+  response.headers.set('x-forwarded-host', hostname);
+
+  return response;
+}
+</code></pre>
+<h3>2.2. Production App Router File Architecture</h3>
+<p>Organize the <code>app</code> directory to separate public, root-level marketing interfaces from dynamically resolved tenant spaces:</p>
+<pre><code>app/
+├── app/
+│   └── [tenant]/
+│       ├── layout.tsx              # Tenant context hydration, tenant auth checks
+│       ├── page.tsx                # Tenant primary dashboard view
+│       ├── settings/
+│       │   └── page.tsx            # Tenant settings
+│       └── analytics/
+│           ├── loading.tsx         # Route-level fallback
+│           └── page.tsx            # Async streaming analytics
+├── marketing/
+│   ├── layout.tsx                  # Public marketing layout
+│   └── page.tsx                    # Landing page
+├── api/
+│   └── revalidate/
+│       └── route.ts                # Cache tag invalidation webhook
+└── layout.tsx                      # Root HTML and base providers
+</code></pre>
+<h3>2.3. Tenant Layout with Security Enforcement</h3>
+<pre><code class="language-tsx">// app/app/[tenant]/layout.tsx
+import { ReactNode } from 'react';
+import { notFound } from 'next/navigation';
+import { headers } from 'next/headers';
+
+interface TenantLayoutProps {
+  children: ReactNode;
+  params: Promise&lt;{ tenant: string }&gt;;
+}
+
+interface TenantMetadata {
+  id: string;
+  name: string;
+  slug: string;
+  plan: 'free' | 'pro' | 'enterprise';
+  isActive: boolean;
+}
+
+// Database validation layer (Memoized at the edge/data tier)
+async function getTenant(slug: string): Promise&lt;TenantMetadata | null&gt; {
+  const res = await fetch(`https://api.internal.platform.com/v1/tenants/${slug}`, {
+    headers: {
+      'Authorization': `Bearer ${process.env.INTERNAL_SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    next: {
+      revalidate: 3600, // Cache for 1 hour; manually purged via webhooks
+      tags: [`tenant:${slug}`, 'all-tenants'],
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    throw new Error(`Failed to fetch tenant context for ${slug}: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export default async function TenantLayout({ children, params }: TenantLayoutProps) {
+  const { tenant } = await params;
+  const headerList = await headers();
+  const headerTenant = headerList.get('x-tenant-slug');
+
+  // Verify that the route param strictly matches the rewritten header
+  if (!headerTenant || headerTenant !== tenant) {
+    notFound();
+  }
+
+  const tenantData = await getTenant(tenant);
+
+  if (!tenantData || !tenantData.isActive) {
+    notFound();
+  }
+
+  return (
+    &lt;div className=&quot;min-h-screen bg-slate-50 flex flex-col&quot;&gt;
+      &lt;header className=&quot;border-b bg-white px-6 py-4 flex items-center justify-between&quot;&gt;
+        &lt;div className=&quot;flex items-center space-x-3&quot;&gt;
+          &lt;span className=&quot;font-bold text-lg text-slate-900&quot;&gt;{tenantData.name}&lt;/span&gt;
+          &lt;span className=&quot;text-xs px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-mono&quot;&gt;
+            {tenantData.plan.toUpperCase()}
+          &lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;text-sm text-slate-500 font-mono&quot;&gt;Workspace: {tenantData.slug}&lt;/div&gt;
+      &lt;/header&gt;
+      &lt;main className=&quot;flex-1 p-8 max-w-7xl mx-auto w-full&quot;&gt;
+        {children}
+      &lt;/main&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>3. High-Performance Tag-Based ISR and Revalidation Pipelines</h2>
+<p>Next.js 15 requires an explicit cache invalidation architecture using Next-specific options within <code>fetch</code> and direct calls to <code>revalidateTag</code> inside Server Actions and Route Handlers.</p>
+<h3>3.1. Tag Architecture Taxonomy</h3>
+<p>Structure your cache tags uniformly across the application to prevent unintentional broad invalidations or stale reads:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Scope</th>
+<th style="text-align: left;">Tag Structure</th>
+<th style="text-align: left;">Example</th>
+<th style="text-align: left;">Invalidation Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Entity-Level</strong></td>
+<td style="text-align: left;"><code>[entity]:[id]</code></td>
+<td style="text-align: left;"><code>user:usr_99812</code></td>
+<td style="text-align: left;">User updates their profile.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tenant-Level</strong></td>
+<td style="text-align: left;"><code>tenant:[slug]:[resource]</code></td>
+<td style="text-align: left;"><code>tenant:acme:billing</code></td>
+<td style="text-align: left;">Subscription checkout webhook completes.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Collection-Level</strong></td>
+<td style="text-align: left;"><code>tenant:[slug]:[collection]</code></td>
+<td style="text-align: left;"><code>tenant:acme:invoices</code></td>
+<td style="text-align: left;">New invoice generated.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Global System</strong></td>
+<td style="text-align: left;"><code>system:[resource]</code></td>
+<td style="text-align: left;"><code>system:currencies</code></td>
+<td style="text-align: left;">Global exchange rates update daily.</td>
+</tr>
+</tbody>
+</table>
+<h3>3.2. Concrete Revalidation Route Handler</h3>
+<pre><code class="language-typescript">// app/api/revalidate/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { revalidateTag } from 'next/cache';
+import crypto from 'crypto';
+
+interface InvalidationPayload {
+  tags: string[];
+  tenant?: string;
+  timestamp: number;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const rawBody = await req.text();
+    const signature = req.headers.get('x-vault-signature');
+    const secret = process.env.CACHE_WEBHOOK_SECRET;
+
+    if (!secret) {
+      console.error('Missing CACHE_WEBHOOK_SECRET environment variable.');
+      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+    }
+
+    if (!signature) {
+      return NextResponse.json({ error: 'Missing security signature' }, { status: 401 });
+    }
+
+    // Cryptographic validation of incoming webhook
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(rawBody)
+      .digest('hex');
+
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      return NextResponse.json({ error: 'Invalid HMAC signature' }, { status: 403 });
+    }
+
+    const payload: InvalidationPayload = JSON.parse(rawBody);
+
+    if (!Array.isArray(payload.tags) || payload.tags.length === 0) {
+      return NextResponse.json(
+        { error: 'Invalid payload: &quot;tags&quot; must be a non-empty array' },
+        { status: 400 }
+      );
+    }
+
+    // Process invalidations across the Edge cluster
+    const invalidationResults = payload.tags.map((tag) =&gt; {
+      try {
+        revalidateTag(tag);
+        return { tag, status: 'purged' };
+      } catch (err) {
+        return { tag, status: 'error', error: (err as Error).message };
+      }
+    });
+
+    return NextResponse.json({
+      revalidated: true,
+      timestamp: Date.now(),
+      results: invalidationResults,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: 'Internal operational error', details: (error as Error).message },
+      { status: 500 }
+    );
+  }
+}
+</code></pre>
+<h3>3.3. Cache Invalidation in Server Actions</h3>
+<pre><code class="language-typescript">// app/actions/billing.ts
+'use server';
+
+import { revalidateTag } from 'next/cache';
+import { headers } from 'next/headers';
+
+interface UpdatePlanResult {
+  success: boolean;
+  error?: string;
+}
+
+export async function updateTenantPlan(
+  tierId: string,
+  targetTenant: string
+): Promise&lt;UpdatePlanResult&gt; {
+  const headerList = await headers();
+  const callerTenant = headerList.get('x-tenant-slug');
+
+  // Verify the tenant context matches the operation target
+  if (callerTenant !== targetTenant) {
+    return { success: false, error: 'Unauthorized tenancy boundary breach.' };
+  }
+
+  try {
+    const res = await fetch(`https://api.internal.platform.com/v1/billing/${targetTenant}`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${process.env.INTERNAL_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tier: tierId }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Plan update failed with status: ${res.status}`);
+    }
+
+    // Invalidate the tenant configuration and the billing details explicitly
+    revalidateTag(`tenant:${targetTenant}`);
+    revalidateTag(`tenant:${targetTenant}:billing`);
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+}
+</code></pre>
+<hr />
+<h2>4. Deep-Tier Streaming Suspense Boundaries</h2>
+<p>Streaming Suspense allows Server Components to stream chunks of UI over an active HTTP response as database and network calls resolve, bypassing the slowest bottleneck on the page.</p>
+<h3>4.1. Streaming Architecture Pipeline</h3>
+<pre><code>Client -&gt; HTTP Request -&gt; Edge Router -&gt; Server Renders Outer Layout
+                                            │
+                                            ├─&gt; Render Shell HTML Immediately --&gt; Browser displays loading
+                                            │
+                                            ├─&gt; Stream 1: Fast Component Resolves --&gt; Browser renders cards
+                                            │
+                                            └─&gt; Stream 2: Slow Component Resolves --&gt; Browser renders charts
+</code></pre>
+<h3>4.2. Implementation Blueprint</h3>
+<pre><code class="language-tsx">// app/app/[tenant]/analytics/page.tsx
+import { Suspense } from 'react';
+import { SkeletonMetricCard, SkeletonChart } from '@/components/skeletons';
+
+interface AnalyticsPageProps {
+  params: Promise&lt;{ tenant: string }&gt;;
+  searchParams: Promise&lt;{ [key: string]: string | string[] | undefined }&gt;;
+}
+
+export default async function AnalyticsPage({ params, searchParams }: AnalyticsPageProps) {
+  const { tenant } = await params;
+  const resolvedSearchParams = await searchParams;
+  const range = (resolvedSearchParams.range as string) || '30d';
+
+  return (
+    &lt;div className=&quot;space-y-8&quot;&gt;
+      &lt;div&gt;
+        &lt;h1 className=&quot;text-2xl font-bold tracking-tight text-slate-900&quot;&gt;
+          Analytics Overview
+        &lt;/h1&gt;
+        &lt;p className=&quot;text-slate-500 text-sm&quot;&gt;Real-time usage and financial throughput.&lt;/p&gt;
+      &lt;/div&gt;
+
+      {/* Boundary 1: Metrics resolve quickly (low network cost) */}
+      &lt;Suspense fallback={&lt;MetricsFallback /&gt;}&gt;
+        &lt;FastMetricsSection tenant={tenant} range={range} /&gt;
+      &lt;/Suspense&gt;
+
+      {/* Boundary 2: Deep compute analytical graphs stream independently */}
+      &lt;Suspense fallback={&lt;ChartFallback /&gt;}&gt;
+        &lt;SlowTimeSeriesSection tenant={tenant} range={range} /&gt;
+      &lt;/Suspense&gt;
+    &lt;/div&gt;
+  );
+}
+
+// -------------------------------------------------------------
+// Component Stream 1: High Priority / Low Latency
+// -------------------------------------------------------------
+async function FastMetricsSection({ tenant, range }: { tenant: string; range: string }) {
+  // Simulates 150ms DB call
+  const metrics = await fetchTenantMetrics(tenant, range);
+
+  return (
+    &lt;div className=&quot;grid grid-cols-1 md:grid-cols-3 gap-6&quot;&gt;
+      &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200&quot;&gt;
+        &lt;span className=&quot;text-xs font-semibold text-slate-400 uppercase&quot;&gt;Requests&lt;/span&gt;
+        &lt;p className=&quot;text-3xl font-extrabold text-slate-800 mt-2&quot;&gt;
+          {metrics.totalRequests.toLocaleString()}
+        &lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200&quot;&gt;
+        &lt;span className=&quot;text-xs font-semibold text-slate-400 uppercase&quot;&gt;P99 Latency&lt;/span&gt;
+        &lt;p className=&quot;text-3xl font-extrabold text-slate-800 mt-2&quot;&gt;{metrics.p99Latency}ms&lt;/p&gt;
+      &lt;/div&gt;
+      &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200&quot;&gt;
+        &lt;span className=&quot;text-xs font-semibold text-slate-400 uppercase&quot;&gt;Total Bandwidth&lt;/span&gt;
+        &lt;p className=&quot;text-3xl font-extrabold text-slate-800 mt-2&quot;&gt;{metrics.bandwidthGb} GB&lt;/p&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+
+// -------------------------------------------------------------
+// Component Stream 2: Slow Heavy Analytic Pipeline (Streamed Late)
+// -------------------------------------------------------------
+async function SlowTimeSeriesSection({ tenant, range }: { tenant: string; range: string }) {
+  // Simulates an intensive aggregation query taking 1200ms
+  const chartData = await fetchDeepTimeSeries(tenant, range);
+
+  return (
+    &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200&quot;&gt;
+      &lt;h3 className=&quot;font-semibold text-slate-800 mb-4&quot;&gt;Ingestion vs Output (Time-Series)&lt;/h3&gt;
+      &lt;div className=&quot;h-64 flex items-end space-x-2&quot;&gt;
+        {chartData.points.map((point) =&gt; (
+          &lt;div
+            key={point.timestamp}
+            className=&quot;flex-1 bg-indigo-500 rounded-t hover:bg-indigo-600 transition-colors&quot;
+            style={{ height: `${point.percentage}%` }}
+            title={`${point.date}: ${point.value}`}
+          /&gt;
+        ))}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+
+// Fallback Shells
+function MetricsFallback() {
+  return (
+    &lt;div className=&quot;grid grid-cols-1 md:grid-cols-3 gap-6&quot;&gt;
+      &lt;SkeletonMetricCard /&gt;
+      &lt;SkeletonMetricCard /&gt;
+      &lt;SkeletonMetricCard /&gt;
+    &lt;/div&gt;
+  );
+}
+
+function ChartFallback() {
+  return &lt;SkeletonChart /&gt;;
+}
+
+// Fetch stubs with intentional Next.js 15 cache assertions
+async function fetchTenantMetrics(tenant: string, range: string) {
+  const res = await fetch(
+    `https://api.internal.platform.com/v1/tenants/${tenant}/metrics?range=${range}`,
+    {
+      next: {
+        revalidate: 60, // SWR: Dynamic update max once a minute
+        tags: [`tenant:${tenant}:analytics`],
+      },
+    }
+  );
+  if (!res.ok) throw new Error('Failed to load metrics data');
+  return res.json() as Promise&lt;{ totalRequests: number; p99Latency: number; bandwidthGb: number }&gt;;
+}
+
+async function fetchDeepTimeSeries(tenant: string, range: string) {
+  const res = await fetch(
+    `https://api.internal.platform.com/v1/tenants/${tenant}/timeseries?range=${range}`,
+    {
+      next: {
+        revalidate: 300, // Expensive query: hold for 5 minutes
+        tags: [`tenant:${tenant}:timeseries`],
+      },
+    }
+  );
+  if (!res.ok) throw new Error('Failed to load analytical charts');
+  return res.json() as Promise&lt;{ points: Array&lt;{ timestamp: string; date: string; percentage: number; value: number }&gt; }&gt;;
+}
+</code></pre>
+<pre><code class="language-tsx">// components/skeletons.tsx
+export function SkeletonMetricCard() {
+  return (
+    &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200 animate-pulse&quot;&gt;
+      &lt;div className=&quot;h-3 w-16 bg-slate-200 rounded mb-4&quot; /&gt;
+      &lt;div className=&quot;h-8 w-28 bg-slate-200 rounded&quot; /&gt;
+    &lt;/div&gt;
+  );
+}
+
+export function SkeletonChart() {
+  return (
+    &lt;div className=&quot;bg-white p-6 rounded-lg border border-slate-200 animate-pulse&quot;&gt;
+      &lt;div className=&quot;h-4 w-48 bg-slate-200 rounded mb-8&quot; /&gt;
+      &lt;div className=&quot;h-64 bg-slate-100 rounded flex items-center justify-center&quot;&gt;
+        &lt;span className=&quot;text-slate-400 text-sm font-medium&quot;&gt;Streaming metrics payload...&lt;/span&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>5. Production Configuration: Edge Caching Runtime Tuning</h2>
+<h3>Next.js Core Optimization Config</h3>
+<p>Place the following configuration inside <code>next.config.ts</code>:</p>
+<pre><code class="language-typescript">// next.config.ts
+import type { NextConfig } from 'next';
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+  compress: true,
+
+  // Custom headers to enforce high security standards on edge routing
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-DNS-Prefetch-Control', value: 'on' },
+          { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'origin-when-cross-origin' },
+        ],
+      },
+      {
+        // Enforce cache behavior on static images and immutable fonts
+        source: '/_static/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
+    ];
+  },
+
+  // Logging behavior: Print cache hit/miss statuses in development for debugging
+  logging: {
+    fetches: {
+      fullUrl: true,
+    },
+  },
+
+  // Enable dynamic client routing optimizations (Next.js 15 cache retention)
+  experimental: {
+    staleTimes: {
+      dynamic: 0, // Client side dynamic page cache holds 0 seconds
+      static: 180, // Static layouts/pages held in browser memory for 3 mins
+    },
+  },
+};
+
+export default nextConfig;
+</code></pre>
+<hr />
+<h2>6. Verification &amp; Troubleshooting Runbook</h2>
+<h3>Cache Miss / Stale Data Diagnostic Table</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Symptom</th>
+<th style="text-align: left;">Underlying Cause</th>
+<th style="text-align: left;">Diagnostic Step</th>
+<th style="text-align: left;">Production Resolution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Dynamic route updates fail to display after <code>revalidateTag()</code>.</td>
+<td style="text-align: left;">In-memory Next.js 15 Client Router Cache holds static parts of the tree.</td>
+<td style="text-align: left;">Check navigation method (<code>router.push</code> vs direct link).</td>
+<td style="text-align: left;">Call <code>router.refresh()</code> in the client component or adjust <code>staleTimes.dynamic: 0</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Middleware executes endless redirect loop.</td>
+<td style="text-align: left;"><code>currentHost</code> extraction fails to strip the port or includes subpaths incorrectly.</td>
+<td style="text-align: left;">Log <code>req.headers.get('host')</code> and <code>url.pathname</code> at top of middleware.</td>
+<td style="text-align: left;">Use the regex pattern from Section 2.1 to sanitize host strings.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Streaming stops working; page hangs until all data is ready.</td>
+<td style="text-align: left;">Data fetches occur above the <code>&lt;Suspense&gt;</code> boundary in parent components.</td>
+<td style="text-align: left;">Inspect parent RSCs for blocking <code>await</code> statements.</td>
+<td style="text-align: left;">Move data fetch functions down into the child components wrapped by <code>&lt;Suspense&gt;</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Subdomain context leakage across concurrent requests.</td>
+<td style="text-align: left;">Shared Node.js global state or closure variables hold tenant IDs.</td>
+<td style="text-align: left;">Search codebase for globally scoped tenant variables.</td>
+<td style="text-align: left;">Use <code>headers()</code> or <code>React.cache()</code> to scope data access per request.</td>
+</tr>
+</tbody>
+</table>
+<h3>CLI Cache Verification Script</h3>
+<p>Run this verification suite from your CI/CD runner or locally via terminal to test edge header resolution and invalidation APIs:</p>
+<p>```bash</p>
+<h1>!/usr/bin/env bash</h1>
+<h1>run-edge-diagnostics.sh</h1>
+<p>set -eo pipefail</p>
+<p>TARGET_DOMAIN="http://localhost:3000"
+REVALIDATE_SECRET="test-secret-value-32-chars-minimum"
+TENANT="acme"</p>
+<p>echo "=== 1. Checking Tenant Context Ingestion ==="
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${TENANT}.platform.localhost:3000" "${TARGET_DOMAIN}/analytics")
+if [ "$STATUS" -eq 200 ] || [ "$STATUS" -eq 307 ]; then
+  echo "✔ Subdomain rewrite active: Returned HTTP $STATUS"
+else
+  echo "✖ Failed Subdomain rewrite: Returned HTTP $STATUS"
+  exit 1
+fi</p>
+<p>echo "=== 2. Testing Cryptographic Revalidation Webhook ==="
+PAYLOAD='{"tags":["tenant:acme:analytics"],"timestamp":1700000000}'
+SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$REVALIDATE_SECRET" | sed 's/^.* //')</p>
+<p>REV_RESPONSE=$(curl -s -X POST "${TARGET_DOMAIN}/api/revalidate" \
+  -H "Content-Type: application/json" \
+  -H "x-vault-signature: ${SIGNATURE}" \
+  -d "$PAYLOAD")</p>
+<p>echo "Edge Response: $REV_RESPONSE"
+if [[ $REV_RESPONSE == <em>"\"revalidated\":true"</em> ]]; then
+  echo "✔ Cache invalidation pipeline confirmed operational."
+else
+  echo "✖ Cache invalidation rejected."
+  exit 1
+fi</p>
+<p>echo "All tests passed successfully."</p>
+</body>
+</html>
