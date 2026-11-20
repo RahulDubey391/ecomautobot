@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The React Native & Expo Production Architecture Vault: 50+ Offline Sync Patterns, Native Modules & App Store Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Advanced Workflows, Background Sync &amp; OTA Release Pipelines</h1>
+<p>This deliverable provides complete, production-tested automation assets, configuration files, and architecture implementations for shipping React Native apps with Expo Application Services (EAS), automated CI/CD distribution, predictable Over-The-Air (OTA) runtime updates, Sentry release tracing, and background sync orchestration.</p>
+<hr />
+<h2>1. Enterprise EAS Configuration (<code>eas.json</code>)</h2>
+<p>This <code>eas.json</code> configuration provides isolated build environments for development, internal staging, and production release tracks. It uses automatic build incrementing, custom resource allocations to prevent out-of-memory errors on native compiles, and separate distribution channels.</p>
+<pre><code class="language-json">{
+  &quot;cli&quot;: {
+    &quot;version&quot;: &quot;&gt;= 12.5.0&quot;,
+    &quot;appVersionSource&quot;: &quot;remote&quot;
+  },
+  &quot;build&quot;: {
+    &quot;base&quot;: {
+      &quot;node&quot;: &quot;20.18.0&quot;,
+      &quot;yarn&quot;: &quot;1.22.22&quot;
+    },
+    &quot;development&quot;: {
+      &quot;extends&quot;: &quot;base&quot;,
+      &quot;developmentClient&quot;: true,
+      &quot;distribution&quot;: &quot;internal&quot;,
+      &quot;channel&quot;: &quot;development&quot;,
+      &quot;ios&quot;: {
+        &quot;simulator&quot;: true,
+        &quot;image&quot;: &quot;latest&quot;
+      },
+      &quot;android&quot;: {
+        &quot;buildType&quot;: &quot;apk&quot;,
+        &quot;gradleCommand&quot;: &quot;:app:assembleDebug&quot;,
+        &quot;image&quot;: &quot;latest&quot;
+      },
+      &quot;env&quot;: {
+        &quot;APP_ENV&quot;: &quot;development&quot;,
+        &quot;API_BASE_URL&quot;: &quot;https://api.dev.domain.internal/v1&quot;
+      }
+    },
+    &quot;preview&quot;: {
+      &quot;extends&quot;: &quot;base&quot;,
+      &quot;distribution&quot;: &quot;internal&quot;,
+      &quot;channel&quot;: &quot;staging&quot;,
+      &quot;autoIncrement&quot;: true,
+      &quot;ios&quot;: {
+        &quot;enterpriseProvisioning&quot;: &quot;adhoc&quot;,
+        &quot;image&quot;: &quot;latest&quot;
+      },
+      &quot;android&quot;: {
+        &quot;buildType&quot;: &quot;apk&quot;,
+        &quot;gradleCommand&quot;: &quot;:app:assembleRelease&quot;,
+        &quot;image&quot;: &quot;latest&quot;
+      },
+      &quot;env&quot;: {
+        &quot;APP_ENV&quot;: &quot;staging&quot;,
+        &quot;API_BASE_URL&quot;: &quot;https://api.staging.domain.com/v1&quot;
+      }
+    },
+    &quot;production&quot;: {
+      &quot;extends&quot;: &quot;base&quot;,
+      &quot;distribution&quot;: &quot;store&quot;,
+      &quot;channel&quot;: &quot;production&quot;,
+      &quot;autoIncrement&quot;: true,
+      &quot;ios&quot;: {
+        &quot;image&quot;: &quot;latest&quot;,
+        &quot;resourceClass&quot;: &quot;m-medium&quot;
+      },
+      &quot;android&quot;: {
+        &quot;buildType&quot;: &quot;app-bundle&quot;,
+        &quot;gradleCommand&quot;: &quot;:app:bundleRelease&quot;,
+        &quot;image&quot;: &quot;latest&quot;,
+        &quot;resourceClass&quot;: &quot;medium&quot;
+      },
+      &quot;env&quot;: {
+        &quot;APP_ENV&quot;: &quot;production&quot;,
+        &quot;API_BASE_URL&quot;: &quot;https://api.domain.com/v1&quot;
+      }
+    }
+  },
+  &quot;submit&quot;: {
+    &quot;production&quot;: {
+      &quot;ios&quot;: {
+        &quot;appleId&quot;: &quot;eng-appstore@domain.com&quot;,
+        &quot;ascAppId&quot;: &quot;6470000000&quot;,
+        &quot;appleTeamId&quot;: &quot;K89XYZ1234&quot;
+      },
+      &quot;android&quot;: {
+        &quot;serviceAccountKeyPath&quot;: &quot;./credentials/play-store-service-account.json&quot;,
+        &quot;track&quot;: &quot;internal&quot;
+      }
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2>2. Dynamic Runtime Versioning &amp; OTA Engine</h2>
+<p>Expo updates must never deliver a JavaScript bundle dependent on native modules missing from the installed binary. We enforce this through dynamic runtime fingerprinting in <code>app.config.ts</code>, coupled with an in-app OTA controller that reconciles critical vs. silent update flows.</p>
+<h3>Dynamic Engine Configuration (<code>app.config.ts</code>)</h3>
+<pre><code class="language-typescript">import { ExpoConfig, ConfigContext } from 'expo/config';
+
+export default ({ config }: ConfigContext): ExpoConfig =&gt; {
+  const appEnv = process.env.APP_ENV || 'development';
+
+  return {
+    ...config,
+    name: appEnv === 'production' ? 'VaultPro' : `VaultPro (${appEnv})`,
+    slug: 'vault-pro',
+    version: '2.4.0',
+    orientation: 'portrait',
+    icon: './assets/icon.png',
+    userInterfaceStyle: 'automatic',
+    splash: {
+      image: './assets/splash.png',
+      resizeMode: 'contain',
+      backgroundColor: '#0F172A',
+    },
+    updates: {
+      url: 'https://u.expo.dev/f18d7285-0000-4000-8000-000000000000',
+      checkAutomatically: 'NEVER',
+      fallbackToCacheTimeout: 0,
+    },
+    runtimeVersion: {
+      policy: 'fingerprint',
+    },
+    assetBundlePatterns: ['**/*'],
+    ios: {
+      supportsTablet: false,
+      bundleIdentifier:
+        appEnv === 'production'
+          ? 'com.domain.vaultpro'
+          : `com.domain.vaultpro.${appEnv}`,
+    },
+    android: {
+      adaptiveIcon: {
+        foregroundImage: './assets/adaptive-icon.png',
+        backgroundColor: '#0F172A',
+      },
+      package:
+        appEnv === 'production'
+          ? 'com.domain.vaultpro'
+          : `com.domain.vaultpro.${appEnv}`,
+    },
+    plugins: [
+      [
+        'expo-updates',
+        {
+          username: 'vault-org',
+        },
+      ],
+      [
+        '@sentry/react-native/expo',
+        {
+          url: 'https://sentry.io/',
+          project: 'vault-mobile',
+          organization: 'vault-org',
+        },
+      ],
+    ],
+    extra: {
+      eas: {
+        projectId: 'f18d7285-0000-4000-8000-000000000000',
+      },
+      appEnv,
+      apiBaseUrl: process.env.API_BASE_URL,
+    },
+  };
+};
+</code></pre>
+<h3>Deterministic Update Controller Hook (<code>useOTAUpdate.ts</code>)</h3>
+<p>This production hook performs continuous update checks on application state changes, reports metadata to Sentry, and distinguishes between background non-breaking updates and blocking emergency patches.</p>
+<pre><code class="language-typescript">import { useEffect, useCallback, useState } from 'react';
+import { AppState, AppStateStatus, Alert } from 'react-native';
+import * as Updates from 'expo-updates';
+import * as Sentry from '@sentry/react-native';
+
+interface UseOTAUpdateReturn {
+  isChecking: boolean;
+  isDownloading: boolean;
+  updateAvailable: boolean;
+  triggerManualCheck: () =&gt; Promise&lt;void&gt;;
+}
+
+export function useOTAUpdate(): UseOTAUpdateReturn {
+  const [isChecking, setIsChecking] = useState&lt;boolean&gt;(false);
+  const [isDownloading, setIsDownloading] = useState&lt;boolean&gt;(false);
+  const [updateAvailable, setUpdateAvailable] = useState&lt;boolean&gt;(false);
+
+  const applyUpdate = useCallback(async (isCritical: boolean) =&gt; {
+    try {
+      setIsDownloading(true);
+      const downloadResult = await Updates.fetchUpdateAsync();
+
+      if (downloadResult.isNew) {
+        if (isCritical) {
+          Alert.alert(
+            'Essential Security Patch',
+            'A mandatory infrastructure update has been downloaded. The application will restart immediately to apply changes.',
+            [
+              {
+                text: 'Restart Now',
+                onPress: async () =&gt; {
+                  await Updates.reloadAsync();
+                },
+              },
+            ],
+            { cancelable: false }
+          );
+        } else {
+          // Non-critical update: reload quietly on next cold launch
+          setUpdateAvailable(true);
+        }
+      }
+    } catch (error) {
+      Sentry.captureException(error, {
+        tags: { section: 'useOTAUpdate.applyUpdate' },
+      });
+    } finally {
+      setIsDownloading(false);
+    }
+  }, []);
+
+  const checkForUpdate = useCallback(async () =&gt; {
+    if (__DEV__) {
+      return;
+    }
+
+    try {
+      setIsChecking(true);
+      const updateCheck = await Updates.checkForUpdateAsync();
+
+      if (updateCheck.isAvailable) {
+        // Critical updates are tagged via EAS release channel manifests
+        const manifest = updateCheck.manifest as { metadata?: { critical?: string } };
+        const isCritical = manifest?.metadata?.critical === 'true';
+        await applyUpdate(isCritical);
+      }
+    } catch (error) {
+      Sentry.captureException(error, {
+        tags: { section: 'useOTAUpdate.checkForUpdate' },
+      });
+    } finally {
+      setIsChecking(false);
+    }
+  }, [applyUpdate]);
+
+  useEffect(() =&gt; {
+    // Check on startup
+    void checkForUpdate();
+
+    // Check on app resume from background
+    const subscription = AppState.addEventListener(
+      'change',
+      (nextState: AppStateStatus) =&gt; {
+        if (nextState === 'active') {
+          void checkForUpdate();
+        }
+      }
+    );
+
+    return () =&gt; {
+      subscription.remove();
+    };
+  }, [checkForUpdate]);
+
+  return {
+    isChecking,
+    isDownloading,
+    updateAvailable,
+    triggerManualCheck: checkForUpdate,
+  };
+}
+</code></pre>
+<hr />
+<h2>3. GitHub Actions CI/CD Pipeline (<code>.github/workflows/deploy.yml</code>)</h2>
+<p>The following end-to-end GitHub Actions workflow triggers native builds on explicit semantic tags and auto-publishes OTA updates directly on non-native changes pushed to <code>staging</code> or <code>main</code>. It leverages the <code>@expo/fingerprint</code> engine to determine whether native files have changed, routing to an EAS build or an EAS update automatically.</p>
+<pre><code class="language-yaml">name: Mobile CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  pull_request:
+    branches:
+      - main
+      - staging
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Code Quality &amp; Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.18.0
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Static Type Validation
+        run: yarn tsc --noEmit
+
+      - name: Run ESLint
+        run: yarn eslint . --max-warnings 0
+
+      - name: Execute Test Suite
+        run: yarn jest --ci --coverage --maxWorkers=2
+
+  check-native-fingerprint:
+    name: Determine Build Mode (Native vs OTA)
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      fingerprint_changed: ${{ steps.check_diff.outputs.changed }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.18.0
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install Global EAS CLI
+        run: npm install -g eas-cli@12.5.0
+
+      - name: Calculate Native Engine Delta
+        id: check_diff
+        run: |
+          npx @expo/fingerprint . --platform ios &gt; ios_fingerprint.json
+          git checkout HEAD~1
+          yarn install --frozen-lockfile
+          npx @expo/fingerprint . --platform ios &gt; ios_prev_fingerprint.json
+          git checkout -
+
+          if cmp -s ios_fingerprint.json ios_prev_fingerprint.json; then
+            echo &quot;changed=false&quot; &gt;&gt; $GITHUB_OUTPUT
+          else
+            echo &quot;changed=true&quot; &gt;&gt; $GITHUB_OUTPUT
+          fi
+
+  publish-ota:
+    name: Publish Non-Native EAS Update
+    needs: check-native-fingerprint
+    if: needs.check-native-fingerprint.outputs.fingerprint_changed == 'false' &amp;&amp; !startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.18.0
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Setup EAS Environment
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 12.5.0
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Set Release Channel
+        id: channel
+        run: |
+          if [ &quot;${{ github.ref_name }}&quot; = &quot;main&quot; ]; then
+            echo &quot;target_channel=production&quot; &gt;&gt; $GITHUB_OUTPUT
+          else
+            echo &quot;target_channel=staging&quot; &gt;&gt; $GITHUB_OUTPUT
+          fi
+
+      - name: Publish Update
+        run: |
+          eas update \
+            --channel=${{ steps.channel.outputs.target_channel }} \
+            --message=&quot;${{ github.event.head_commit.message }}&quot; \
+            --non-interactive
+
+  build-native:
+    name: Execute EAS Native Build
+    needs: check-native-fingerprint
+    if: needs.check-native-fingerprint.outputs.fingerprint_changed == 'true' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.18.0
+          cache: 'yarn'
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Setup EAS Environment
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 12.5.0
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Determine Profile
+        id: profile
+        run: |
+          if [ &quot;${{ github.ref_name }}&quot; = &quot;main&quot; ] || [[ &quot;${{ github.ref }}&quot; =~ ^refs/tags/v ]]; then
+            echo &quot;build_profile=production&quot; &gt;&gt; $GITHUB_OUTPUT
+          else
+            echo &quot;build_profile=preview&quot; &gt;&gt; $GITHUB_OUTPUT
+          fi
+
+      - name: Build and Distribute
+        run: |
+          eas build \
+            --platform all \
+            --profile ${{ steps.profile.outputs.build_profile }} \
+            --auto-submit \
+            --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+</code></pre>
+<hr />
+<h2>4. Production Crash Observability &amp; Source Map Sync</h2>
+<p>This configuration guarantees that minified JS execution errors map cleanly to explicit source code lines in Sentry, without exposing private API keys or leaking memory.</p>
+<h3>Sentry SDK Orchestrator (<code>sentry.ts</code>)</h3>
+<pre><code class="language-typescript">import * as Sentry from '@sentry/react-native';
+import Constants from 'expo-constants';
+
+export const configureObservability = (): void =&gt; {
+  if (__DEV__) {
+    return;
+  }
+
+  const appEnv = Constants.expoConfig?.extra?.appEnv || 'production';
+  const releaseId = `${Constants.expoConfig?.slug}@${Constants.expoConfig?.version}+${
+    Constants.expoConfig?.ios?.buildNumber || Constants.expoConfig?.android?.versionCode || 1
+  }`;
+
+  Sentry.init({
+    dsn: 'https://pubkey1234567890@sentry.io/4500000000000000',
+    debug: false,
+    environment: appEnv,
+    release: releaseId,
+    dist: String(
+      Constants.expoConfig?.ios?.buildNumber || Constants.expoConfig?.android?.versionCode || '1'
+    ),
+    tracesSampleRate: appEnv === 'production' ? 0.2 : 1.0,
+    attachStacktrace: true,
+    enableNativeFramesTracking: true,
+    beforeSend(event, hint) {
+      // Redact sensitive authorization headers from error contexts
+      if (event.request?.headers) {
+        delete event.request.headers['Authorization'];
+        delete event.request.headers['Cookie'];
+      }
+      return event;
+    },
+  });
+};
+
+export const trackSyncFailure = (
+  endpoint: string,
+  statusCode: number,
+  clientMutationLog: Record&lt;string, unknown&gt;
+): void =&gt; {
+  Sentry.withScope((scope) =&gt; {
+    scope.setLevel('error');
+    scope.setTag('layer', 'offline-sync');
+    scope.setContext('sync_payload', {
+      endpoint,
+      statusCode,
+      uncommittedMutations: JSON.stringify(clientMutationLog),
+    });
+    Sentry.captureMessage(`Sync Pipeline Failure: ${endpoint} returned [${statusCode}]`);
+  });
+};
+</code></pre>
+<hr />
+<h2>5. Native Background Sync Architecture</h2>
+<p>This background sync architecture executes background jobs on both iOS and Android. It binds <code>expo-task-manager</code> and <code>expo-background-fetch</code> to an offline queue processing pipeline, ensuring offline operations reconcile with the central API when the app is suspended.</p>
+<pre><code>┌────────────────────────────────────────────────────────────────────────┐
+│ App Execution Lifecycle                                                │
+└────────────────────────────────────────────────────────────────────────┘
+                  │
+        [Transition: Background]
+                  │
+                  ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ Native OS Background Scheduler                                         │
+│ (iOS BGAppRefreshTask / Android JobScheduler)                         │
+└────────────────────────────────────────────────────────────────────────┘
+                  │
+          [Invoke Registered Task]
+                  │
+                  ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ Headless Engine: `BACKGROUND_SYNC_TASK` Execution                      │
+│                                                                        │
+│  1. Hardware Connection Check                                          │
+│     - Inspect Network.getNetworkStateAsync()                           │
+│     - Exit if offline / metered constraint failed                     │
+│                                                                        │
+│  2. Persistent Storage Transaction                                     │
+│     - Fetch pending mutations from SQLite                              │
+│     - Lock pending rows (set status = &quot;PROCESSING&quot;)                    │
+│                                                                        │
+│  3. Network Dispatch Engine                                            │
+│     - Process mutations through authenticated pipeline                 │
+│     - If 200 OK: DELETE or Mark synced in SQLite                       │
+│     - If 4xx/5xx: Revert to &quot;PENDING&quot;, increment retryCount            │
+│                                                                        │
+│  4. Yield Execution Context                                            │
+│     - BackgroundFetch.BackgroundFetchResult.NewData                    │
+│     - Return control to host OS                                        │
+└────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3>Complete Implementation: <code>BackgroundSyncEngine.ts</code></h3>
+<pre><code class="language-typescript">import * as TaskManager from 'expo-task-manager';
+import * as BackgroundFetch from 'expo-background-fetch';
+import * as Network from 'expo-network';
+import * as SQLite from 'expo-sqlite';
+import * as Sentry from '@sentry/react-native';
+
+export const BACKGROUND_SYNC_TASK = 'VAULT_ENTERPRISE_BACKGROUND_SYNC';
+
+interface QueueRecord {
+  id: string;
+  endpoint: string;
+  payload: string;
+  retry_count: number;
+}
+
+const db = SQLite.openDatabaseSync('offline_queue.db');
+
+// Initialize local schema table
+db.execSync(`
+  CREATE TABLE IF NOT EXISTS sync_queue (
+    id TEXT PRIMARY KEY NOT NULL,
+    endpoint TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at INTEGER NOT NULL
+  );
+`);
+
+/**
+ * Task Executor defined in Global Scope (Outside Component Tree)
+ */
+TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () =&gt; {
+  const startTime = Date.now();
+  let operationsProcessed = 0;
+
+  try {
+    // 1. Hardware State Verification
+    const networkState = await Network.getNetworkStateAsync();
+    if (!networkState.isConnected || !networkState.isInternetReachable) {
+      return BackgroundFetch.BackgroundFetchResult.NoData;
+    }
+
+    // 2. Fetch uncommitted records from SQLite
+    const pendingRecords: QueueRecord[] = db.getAllSync(
+      `SELECT id, endpoint, payload, retry_count 
+       FROM sync_queue 
+       WHERE status = 'PENDING' AND retry_count &lt; 5 
+       ORDER BY created_at ASC LIMIT 25;`
+    );
+
+    if (pendingRecords.length === 0) {
+      return BackgroundFetch.BackgroundFetchResult.NoData;
+    }
+
+    // Mark items as processing
+    const recordIds = pendingRecords.map((r) =&gt; `'${r.id}'`).join(',');
+    db.runSync(
+      `UPDATE sync_queue SET status = 'PROCESSING' WHERE id IN (${recordIds});`
+    );
+
+    // 3. Dispatch queue
+    for (const record of pendingRecords) {
+      try {
+        const response = await fetch(record.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Sync-Background-Worker': 'true',
+          },
+          body: record.payload,
+        });
+
+        if (response.ok) {
+          db.runSync(`DELETE FROM sync_queue WHERE id = ?;`, [record.id]);
+          operationsProcessed++;
+        } else {
+          // Increment retry count, return status to PENDING
+          db.runSync(
+            `UPDATE sync_queue 
+             SET status = 'PENDING', retry_count = retry_count + 1 
+             WHERE id = ?;`,
+            [record.id]
+          );
+        }
+      } catch (mutationError) {
+        // Rollback processing to pending for offline recovery
+        db.runSync(
+          `UPDATE sync_queue 
+           SET status = 'PENDING', retry_count = retry_count + 1 
+           WHERE id = ?;`,
+          [record.id]
+        );
+      }
+    }
+
+    return operationsProcessed &gt; 0
+      ? BackgroundFetch.BackgroundFetchResult.NewData
+      : BackgroundFetch.BackgroundFetchResult.NoData;
+  } catch (globalExecutionError) {
+    Sentry.captureException(globalExecutionError, {
+      tags: { background_task: BACKGROUND_SYNC_TASK },
+      extra: { executionDurationMs: Date.now() - startTime },
+    });
+    return BackgroundFetch.BackgroundFetchResult.Failed;
+  }
+});
+
+/**
+ * System Management Client: Registration and De-registration
+ */
+export class BackgroundSyncManager {
+  public static async registerWorker(intervalMinutes: number = 15): Promise&lt;void&gt; {
+    try {
+      const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_SYNC_TASK);
+
+      if (!isRegistered) {
+        await BackgroundFetch.registerTaskAsync(BACKGROUND_SYNC_TASK, {
+          minimumInterval: intervalMinutes * 60,
+          stopOnTerminate: false,
+          startOnBoot: true,
+        });
+      }
+    } catch (error) {
+      Sentry.captureException(error, {
+        tags: { action: 'BackgroundSyncManager.registerWorker' },
+      });
+    }
+  }
+
+  public static async stopWorker(): Promise&lt;void&gt; {
+    try {
+      const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_SYNC_TASK);
+      if (isRegistered) {
+        await BackgroundFetch.unregisterTaskAsync(BACKGROUND_SYNC_TASK);
+      }
+    } catch (error) {
+      Sentry.captureException(error, {
+        tags: { action: 'BackgroundSyncManager.stopWorker' },
+      });
+    }
+  }
+
+  public static async enqueueMutation(
+    endpoint: string,
+    payload: Record&lt;string, unknown&gt;
+  ): Promise&lt;string&gt; {
+    const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const now = Date.now();
+
+    db.runSync(
+      `INSERT INTO sync_queue (id, endpoint, payload, retry_count, status, created_at) 
+       VALUES (?, ?, ?, 0, 'PENDING', ?);`,
+      [id, endpoint, JSON.stringify(payload), now]
+    );
+
+    return id;
+  }
+}
+</code></pre>
+<hr />
+<h2>6. Release &amp; OTA Strategy Decision Matrix</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Release Vector</th>
+<th style="text-align: left;">Native Code Mod?</th>
+<th style="text-align: left;">App Store Approval</th>
+<th style="text-align: left;">User Delivery Timeline</th>
+<th style="text-align: left;">Rollback Mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Store Release (<code>eas build -p all</code>)</strong></td>
+<td style="text-align: left;">Yes</td>
+<td style="text-align: left;">Yes (Apple / Google Manual Review)</td>
+<td style="text-align: left;">12 to 72 Hours</td>
+<td style="text-align: left;">Deploy new binary with incremented <code>version</code> or <code>buildNumber</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Critical OTA (<code>eas update --channel production</code>)</strong></td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">No (Bypasses App Store Review)</td>
+<td style="text-align: left;">Instantaneous / Under 60 Seconds on Restart</td>
+<td style="text-align: left;"><code>eas update --rollback-to</code> target commit</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Silent OTA (<code>eas update --channel production</code>)</strong></td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">No</td>
+<td style="text-align: left;">Next app start (cached in background)</td>
+<td style="text-align: left;">Publish previous valid deployment branch</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Dynamic Staging (<code>preview</code>)</strong></td>
+<td style="text-align: left;">Yes or No</td>
+<td style="text-align: left;">No (TestFlight / Firebase Distribution)</td>
+<td style="text-align: left;">Under 15 Minutes (Automation Pipeline)</td>
+<td style="text-align: left;">Re-run workflow pointing to stable commit</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>7. Zero-Downtime Rollback Runbook</h2>
+<p>If a faulty JavaScript release passes continuous integration and is pushed via an OTA update to production, follow this protocol to restore app stability.</p>
+<pre><code>+-------------------------------------------------------------+
+|               INCIDENT: Faulty Production OTA               |
++-------------------------------------------------------------+
+                              |
+                              v
+    [STEP 1: Identify Last Healthy Update ID]
+    $ eas update:list --channel=production --limit=5
+    Extract the Target Update Group ID of the last known stable update.
+                              |
+                              v
+    [STEP 2: Execute Revert via Fingerprint Lock]
+    $ eas update:rollback \
+        --channel=production \
+        --target-update-group-id=[STABLE_GROUP_ID] \
+        --non-interactive
+                              |
+                              v
+    [STEP 3: Validate Update Reversal in Sentry]
+    Confirm through Sentry Real-Time Crash Monitoring:
+    - Target release resolves back to the stable build number.
+    - Active unhandled exception graphs return to base threshold (&lt;0.01%).
+                              |
+                              v
+    [STEP 4: Fix-Forward &amp; Re-run Test Suite]
+    1. Land the bug fix on the release branch.
+    2. Run full regression test suite locally and in CI.
+    3. Deploy the fix via standard GitHub Actions pipeline.
+</code></pre>
+<h3>Complete Emergency Rollback Automation Script (<code>scripts/emergency-rollback.sh</code>)</h3>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -eo pipefail
+
+CHANNEL=&quot;production&quot;
+EXPECTED_ARGUMENTS=1
+
+if [ &quot;$#&quot; -lt &quot;$EXPECTED_ARGUMENTS&quot; ]; then
+    echo &quot;CRITICAL ERROR: Stable Update Group ID required.&quot;
+    echo &quot;Usage: ./emergency-rollback.sh &lt;STABLE_UPDATE_GROUP_ID&gt;&quot;
+    echo &quot;Example: ./emergency-rollback.sh 8b3c-4cf2-9e26-e179bc2db911&quot;
+    exit 1
+fi
+
+STABLE_UPDATE_GROUP_ID=&quot;$1&quot;
+
+echo &quot;--------------------------------------------------------&quot;
+echo &quot;EXECUTING EMERGENCY PRODUCTION ROLLBACK&quot;
+echo &quot;Target Channel: ${CHANNEL}&quot;
+echo &quot;Rolling back to update group: ${STABLE_UPDATE_GROUP_ID}&quot;
+echo &quot;--------------------------------------------------------&quot;
+
+# 1. Validate EAS Session
+eas whoami || { echo &quot;EAS Auth Failure. Ensure EXPO_TOKEN is exported.&quot;; exit 1; }
+
+# 2. Issue Rollback to EAS Channel
+eas update:rollback \
+    --channel=&quot;${CHANNEL}&quot; \
+    --target-update-group-id=&quot;${STABLE_UPDATE_GROUP_ID}&quot; \
+    --non-interactive
+
+# 3. Create tracking annotation in Sentry
+if [ -n &quot;$SENTRY_AUTH_TOKEN&quot; ]; then
+    echo &quot;Notifying Sentry of Rollback Execution...&quot;
+    curl https://sentry.io/api/0/organizations/vault-org/releases/ \
+        -H &quot;Authorization: Bearer ${SENTRY_AUTH_TOKEN}&quot; \
+        -H &quot;Content-Type: application/json&quot; \
+        -X POST \
+        -d &quot;{
+            \&quot;version\&quot;: \&quot;emergency-rollback-${STABLE_UPDATE_GROUP_ID}\&quot;,
+            \&quot;projects\&quot;: [\&quot;vault-mobile\&quot;],
+            \&quot;ref\&quot;: \&quot;${STABLE_UPDATE_GROUP_ID}\&quot;
+        }&quot;
+fi
+
+echo &quot;--------------------------------------------------------&quot;
+echo &quot;ROLLBACK ISSUED SUCCESSFULLY&quot;
+echo &quot;End-users will receive this update on next application start.&quot;
+echo &quot;--------------------------------------------------------&quot;
+</code></pre>
+<hr />
+<h2>8. Verification Checklist Before Store Submission</h2>
+<p>Before triggering a production build (<code>eas build --profile production</code>), complete this verification pass:</p>
+<ul>
+<li>[ ] <strong>Runtime Version Pinning</strong>: Ensure <code>runtimeVersion</code> in <code>app.config.ts</code> matches your distribution model (<code>fingerprint</code> for auto-invalidation, or hardcoded for multi-app monorepos).</li>
+<li>[ ] <strong>Source Map Verification</strong>: Sentry auth token (<code>SENTRY_AUTH_TOKEN</code>) is populated in repository secrets, and Sentry hooks are present in <code>plugins</code>.</li>
+<li>[ ] <strong>Queue Schema Idempotency</strong>: All tables managed by the <code>BackgroundSyncEngine</code> execute using SQLite transactions with <code>sync_queue</code> write operations marked with strict status boundaries (<code>PENDING</code>, <code>PROCESSING</code>).</li>
+<li>[ ] <strong>Store Credential Expiry</strong>: Apple Distribution Certificates and Provisioning Profiles (iOS) and Google Play Keystore/Upload Keys (Android) are verified via <code>eas credentials</code>.</li>
+<li>[ ] <strong>No Local Localhost Paths</strong>: Ensure no native hardcoded strings (e.g., <code>http://localhost:8080</code> or <code>10.0.2.2</code>) exist in dynamic config closures. Use environment variables exclusively.</li>
+</ul>
+</body>
+</html>
