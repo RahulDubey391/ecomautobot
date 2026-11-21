@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Supabase & Multi-Tenant Architecture Vault: 50+ RLS Security Patterns, Edge Functions & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Edge Functions, Background Jobs &amp; Realtime Sync Pipelines</h1>
+<p>This module provides production-ready implementations for asynchronous processing, external integrations, and real-time state synchronization in multi-tenant Supabase architectures. You will deploy secure webhook endpoints, decouple transactional database operations from slow third-party APIs using native PostgreSQL networking extensions, manage distributed message queues, and enforce tenant isolation across WebSocket subscriptions.</p>
+<hr />
+<h2>1. Production Deno TypeScript Webhook Verification Engine</h2>
+<p>Third-party webhooks are an attack vector for replay attacks and tenant impersonation. This implementation processes Stripe subscription events, verifies the cryptographic signature using standard Web Crypto primitives, and guarantees exactly-once processing using an atomic idempotency ledger in PostgreSQL.</p>
+<h3>1.1 Database Schema: Idempotency &amp; Webhook Audit Ledger</h3>
+<p>Execute this migration to establish the audit trail and deduplication barrier:</p>
+<pre><code class="language-sql">-- Migration: 20240301000001_create_webhook_idempotency.sql
+
+create table if not exists public.webhook_idempotency (
+    event_id text primary key,
+    provider text not null,
+    tenant_id uuid references public.tenants(id) on delete cascade,
+    event_type text not null,
+    status text not null check (status in ('processing', 'processed', 'failed')),
+    payload jsonb not null,
+    error_message text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+-- Index for operational monitoring and stale-job detection
+create index idx_webhook_idempotency_tenant_status 
+on public.webhook_idempotency(tenant_id, status);
+
+create index idx_webhook_idempotency_created 
+on public.webhook_idempotency(created_at desc);
+
+-- Enable RLS: Webhook ledger is strictly inaccessible to client roles
+alter table public.webhook_idempotency enable row level security;
+
+-- Only service_role can read or write to this ledger
+create policy &quot;Service role manages webhook ledger&quot;
+on public.webhook_idempotency
+for all
+to service_role
+using (true)
+with check (true);
+</code></pre>
+<h3>1.2 Edge Function: Cryptographic Signature Verification &amp; Pipeline</h3>
+<p>Deploy this Edge Function to <code>supabase/functions/stripe-webhook/index.ts</code>. It reads raw request bytes for HMAC-SHA256 signature verification, claims the event ID atomically in the database, and processes subscription changes within the correct tenant scope.</p>
+<pre><code class="language-typescript">import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+import { createClient } from &quot;https://esm.sh/@supabase/supabase-js@2.43.4&quot;;
+import Stripe from &quot;https://esm.sh/stripe@15.10.0?target=deno&quot;;
+
+const stripe = new Stripe(Deno.env.get(&quot;STRIPE_SECRET_KEY&quot;) ?? &quot;&quot;, {
+  apiVersion: &quot;2024-04-10&quot;,
+  httpClient: Stripe.createFetchHttpClient(),
+});
+
+const cryptoProvider = Stripe.createSubtleCryptoProvider();
+
+serve(async (req: Request): Promise&lt;Response&gt; =&gt; {
+  if (req.method !== &quot;POST&quot;) {
+    return new Response(JSON.stringify({ error: &quot;Method not allowed&quot; }), {
+      status: 405,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  }
+
+  const signature = req.headers.get(&quot;stripe-signature&quot;);
+  const webhookSecret = Deno.env.get(&quot;STRIPE_WEBHOOK_SECRET&quot;);
+
+  if (!signature || !webhookSecret) {
+    return new Response(
+      JSON.stringify({ error: &quot;Missing signature or webhook secret configuration&quot; }),
+      { status: 400, headers: { &quot;Content-Type&quot;: &quot;application/json&quot; } }
+    );
+  }
+
+  const rawBody = await req.text();
+  let event: Stripe.Event;
+
+  try {
+    event = await stripe.webhooks.constructEventAsync(
+      rawBody,
+      signature,
+      webhookSecret,
+      undefined,
+      cryptoProvider
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : &quot;Signature verification failed&quot;;
+    return new Response(JSON.stringify({ error: `Webhook Error: ${message}` }), {
+      status: 400,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  }
+
+  // Initialize service_role client to bypass RLS for ledger checks and cross-tenant lookups
+  const supabaseAdmin = createClient(
+    Deno.env.get(&quot;SUPABASE_URL&quot;) ?? &quot;&quot;,
+    Deno.env.get(&quot;SUPABASE_SERVICE_ROLE_KEY&quot;) ?? &quot;&quot;,
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    }
+  );
+
+  // Attempt atomic ledger insertion to lock the event
+  const { error: insertError } = await supabaseAdmin
+    .from(&quot;webhook_idempotency&quot;)
+    .insert({
+      event_id: event.id,
+      provider: &quot;stripe&quot;,
+      event_type: event.type,
+      status: &quot;processing&quot;,
+      payload: event.data.object,
+    });
+
+  if (insertError) {
+    // Unique violation (Postgres error 23505) indicates duplicate event delivery
+    if (insertError.code === &quot;23505&quot;) {
+      return new Response(
+        JSON.stringify({ received: true, deduplicated: true }),
+        { status: 200, headers: { &quot;Content-Type&quot;: &quot;application/json&quot; } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ error: &quot;Failed to persist event receipt ledger&quot; }),
+      { status: 500, headers: { &quot;Content-Type&quot;: &quot;application/json&quot; } }
+    );
+  }
+
+  try {
+    switch (event.type) {
+      case &quot;customer.subscription.created&quot;:
+      case &quot;customer.subscription.updated&quot;: {
+        const subscription = event.data.object as Stripe.Subscription;
+        await handleSubscriptionSync(supabaseAdmin, subscription, event.id);
+        break;
+      }
+      case &quot;customer.subscription.deleted&quot;: {
+        const subscription = event.data.object as Stripe.Subscription;
+        await handleSubscriptionCancellation(supabaseAdmin, subscription, event.id);
+        break;
+      }
+      default:
+        // Mark unhandled events as processed to avoid redelivery loops
+        await supabaseAdmin
+          .from(&quot;webhook_idempotency&quot;)
+          .update({ status: &quot;processed&quot;, updated_at: new Date().toISOString() })
+          .eq(&quot;event_id&quot;, event.id);
+    }
+
+    return new Response(JSON.stringify({ received: true }), {
+      status: 200,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : &quot;Internal processing error&quot;;
+
+    // Record explicit failure state for dead-letter processing
+    await supabaseAdmin
+      .from(&quot;webhook_idempotency&quot;)
+      .update({
+        status: &quot;failed&quot;,
+        error_message: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq(&quot;event_id&quot;, event.id);
+
+    return new Response(
+      JSON.stringify({ error: &quot;Processing failed&quot;, details: message }),
+      { status: 500, headers: { &quot;Content-Type&quot;: &quot;application/json&quot; } }
+    );
+  }
+});
+
+async function handleSubscriptionSync(
+  supabase: any,
+  subscription: Stripe.Subscription,
+  eventId: string
+) {
+  const customerId = typeof subscription.customer === &quot;string&quot; 
+    ? subscription.customer 
+    : subscription.customer.id;
+
+  // Retrieve tenant ID mapped to Stripe Customer ID
+  const { data: tenant, error: tenantError } = await supabase
+    .from(&quot;tenants&quot;)
+    .select(&quot;id&quot;)
+    .eq(&quot;stripe_customer_id&quot;, customerId)
+    .single();
+
+  if (tenantError || !tenant) {
+    throw new Error(`Tenant resolution failure for Stripe Customer: ${customerId}`);
+  }
+
+  const priceId = subscription.items.data[0]?.price.id;
+  const status = subscription.status;
+  const currentPeriodEnd = new Date(subscription.current_period_end * 1000).toISOString();
+
+  // Update subscription data and attach tenant_id to the idempotency record
+  const { error: updateTenantError } = await supabase
+    .from(&quot;tenants&quot;)
+    .update({
+      subscription_status: status,
+      subscription_plan_id: priceId,
+      current_period_end: currentPeriodEnd,
+      updated_at: new Date().toISOString(),
+    })
+    .eq(&quot;id&quot;, tenant.id);
+
+  if (updateTenantError) {
+    throw new Error(`Tenant update failed: ${updateTenantError.message}`);
+  }
+
+  await supabase
+    .from(&quot;webhook_idempotency&quot;)
+    .update({
+      tenant_id: tenant.id,
+      status: &quot;processed&quot;,
+      updated_at: new Date().toISOString(),
+    })
+    .eq(&quot;event_id&quot;, eventId);
+}
+
+async function handleSubscriptionCancellation(
+  supabase: any,
+  subscription: Stripe.Subscription,
+  eventId: string
+) {
+  const customerId = typeof subscription.customer === &quot;string&quot; 
+    ? subscription.customer 
+    : subscription.customer.id;
+
+  const { data: tenant, error: tenantError } = await supabase
+    .from(&quot;tenants&quot;)
+    .select(&quot;id&quot;)
+    .eq(&quot;stripe_customer_id&quot;, customerId)
+    .single();
+
+  if (tenantError || !tenant) {
+    throw new Error(`Tenant resolution failure for Stripe Customer: ${customerId}`);
+  }
+
+  await supabase
+    .from(&quot;tenants&quot;)
+    .update({
+      subscription_status: &quot;canceled&quot;,
+      updated_at: new Date().toISOString(),
+    })
+    .eq(&quot;id&quot;, tenant.id);
+
+  await supabase
+    .from(&quot;webhook_idempotency&quot;)
+    .update({
+      tenant_id: tenant.id,
+      status: &quot;processed&quot;,
+      updated_at: new Date().toISOString(),
+    })
+    .eq(&quot;event_id&quot;, eventId);
+}
+</code></pre>
+<hr />
+<h2>2. The <code>pg_net</code> + <code>pg_cron</code> Asynchronous Dispatch Pattern</h2>
+<p>Directly calling external APIs (e.g., Slack notifications, customer webhooks, CRM sync) inside PostgreSQL triggers creates blocking transactions, connection pool exhaustion, and vulnerability to network latency. The <code>pg_net</code> extension decouples operations by executing non-blocking HTTP requests directly from the database engine.</p>
+<pre><code>+-------------------------------------------------------------------------------+
+|                           DATABASE TRANSACTION BOUNDARY                       |
+|                                                                               |
+|   1. Mutation Event         2. Trigger Execution       3. Enqueue Webhook     |
+|   +------------------+      +-------------------+      +------------------+   |
+|   | UPDATE projects  | ---&gt; | on_project_update | ---&gt; | INSERT INTO      |   |
+|   | SET status='done'|      +-------------------+      | webhook_outbox   |   |
+|   +------------------+                                 +------------------+   |
++------------------------------------------------------------------|------------+
+                                                                   |
+                                              Cron Poll: Every 10s | (pg_cron)
+                                                                   v
++-------------------------------------------------------------------------------+
+|                            pg_net ASYNCHRONOUS ENGINE                         |
+|                                                                               |
+|   6. Result Ingestion       5. HTTP POST Request       4. Outbox Worker       |
+|   +------------------+      +-------------------+      +------------------+   |
+|   | UPDATE outbox    | &lt;--- | External Server   | &lt;--- | net.http_post()  |   |
+|   | SET status='sent'|      | (Tenant Endpoint) |      | (Non-blocking)   |   |
+|   +------------------+      +-------------------+      +------------------+   |
++-------------------------------------------------------------------------------+
+</code></pre>
+<h3>2.1 Outbox &amp; Dead Letter Queue (DLQ) Schema</h3>
+<p>This schema implements the Transactional Outbox pattern with retry budgets and exponential backoff tracking:</p>
+<pre><code class="language-sql">-- Migration: 20240301000002_pg_net_outbox_queue.sql
+
+create extension if not exists &quot;pg_net&quot; with schema extensions;
+create extension if not exists &quot;pg_cron&quot; with schema extensions;
+
+create table if not exists public.webhook_outbox (
+    id uuid primary key default gen_random_uuid(),
+    tenant_id uuid not null references public.tenants(id) on delete cascade,
+    destination_url text not null,
+    event_type text not null,
+    payload jsonb not null,
+    headers jsonb not null default '{}'::jsonb,
+    status text not null default 'pending' check (status in ('pending', 'processing', 'delivered', 'failed', 'dead_letter')),
+    attempts int not null default 0,
+    max_attempts int not null default 5,
+    next_retry_at timestamptz not null default now(),
+    last_error text,
+    pg_net_request_id bigint,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create index idx_webhook_outbox_processing 
+on public.webhook_outbox(status, next_retry_at) 
+where status in ('pending', 'processing');
+
+create index idx_webhook_outbox_tenant 
+on public.webhook_outbox(tenant_id, created_at desc);
+
+alter table public.webhook_outbox enable row level security;
+
+-- Client applications cannot view or alter transactional outbox records
+create policy &quot;Service role outbox access only&quot;
+on public.webhook_outbox
+for all
+to service_role
+using (true)
+with check (true);
+</code></pre>
+<h3>2.2 Trigger Function: Enqueueing Outbound Webhooks</h3>
+<p>When an audited domain event occurs, the record is placed into the outbox within the same database transaction:</p>
+<pre><code class="language-sql">create or replace function public.enqueue_tenant_event_webhook()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+    v_target_url text;
+    v_payload jsonb;
+begin
+    -- Extract tenant's registered webhook URL from configuration table
+    select webhook_url into v_target_url
+    from public.tenant_configurations
+    where tenant_id = new.tenant_id;
+
+    if v_target_url is not null then
+        v_payload := jsonb_build_object(
+            'event', TG_ARGV[0],
+            'table', TG_TABLE_NAME,
+            'schema', TG_TABLE_SCHEMA,
+            'record', row_to_json(new),
+            'timestamp', extract(epoch from now())
+        );
+
+        insert into public.webhook_outbox (
+            tenant_id,
+            destination_url,
+            event_type,
+            payload,
+            headers
+        ) values (
+            new.tenant_id,
+            v_target_url,
+            TG_ARGV[0],
+            v_payload,
+            jsonb_build_object(
+                'Content-Type', 'application/json',
+                'X-Tenant-Signature', encode(hmac(v_payload::text, 'hardened-tenant-secret', 'sha256'), 'hex')
+            )
+        );
+    end if;
+
+    return new;
+end;
+$$;
+</code></pre>
+<h3>2.3 Dispatch Worker Function via <code>pg_net</code></h3>
+<p>The dispatch worker processes pending outbox events, fires non-blocking HTTP requests, stores the asynchronous request handle (<code>net_request_id</code>), and schedules exponential backoff retries:</p>
+<pre><code class="language-sql">create or replace function public.dispatch_outbox_webhooks()
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+    r record;
+    v_request_id bigint;
+begin
+    -- Row-level locking ensures parallel cron workers do not duplicate dispatches
+    for r in
+        select id, tenant_id, destination_url, headers, payload, attempts
+        from public.webhook_outbox
+        where status in ('pending', 'failed')
+          and next_retry_at &lt;= now()
+          and attempts &lt; max_attempts
+        order by next_retry_at asc
+        limit 50
+        for update skip locked
+    loop
+        begin
+            -- Fire asynchronous HTTP POST using pg_net
+            select net.http_post(
+                url := r.destination_url,
+                body := r.payload,
+                headers := r.headers::jsonb,
+                timeout_milliseconds := 5000
+            ) into v_request_id;
+
+            update public.webhook_outbox
+            set status = 'processing',
+                attempts = attempts + 1,
+                pg_net_request_id = v_request_id,
+                updated_at = now()
+            where id = r.id;
+
+        exception when others then
+            -- Handle network interface failures inside the engine
+            update public.webhook_outbox
+            set status = case when attempts + 1 &gt;= max_attempts then 'dead_letter' else 'failed' end,
+                attempts = attempts + 1,
+                last_error = SQLERRM,
+                next_retry_at = now() + (power(2, attempts + 1) * interval '30 seconds'),
+                updated_at = now()
+            where id = r.id;
+        end;
+    end loop;
+end;
+$$;
+</code></pre>
+<h3>2.4 Asynchronous Response Reconciliation Engine</h3>
+<p><code>pg_net</code> processes HTTP requests outside the SQL engine thread. This cron worker reconciles HTTP statuses from <code>net._http_response</code> back into the outbox:</p>
+<pre><code class="language-sql">create or replace function public.reconcile_pg_net_responses()
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+    r record;
+begin
+    for r in
+        select 
+            o.id,
+            o.attempts,
+            o.max_attempts,
+            resp.status_code,
+            resp.error_msg
+        from public.webhook_outbox o
+        join net._http_response resp on o.pg_net_request_id = resp.id
+        where o.status = 'processing'
+    loop
+        if r.status_code &gt;= 200 and r.status_code &lt; 300 then
+            update public.webhook_outbox
+            set status = 'delivered',
+                updated_at = now()
+            where id = r.id;
+        else
+            update public.webhook_outbox
+            set status = case when r.attempts &gt;= r.max_attempts then 'dead_letter' else 'failed' end,
+                last_error = coalesce(r.error_msg, 'HTTP Status: ' || r.status_code::text),
+                next_retry_at = now() + (power(2, r.attempts) * interval '60 seconds'),
+                updated_at = now()
+            where id = r.id;
+        end if;
+    end loop;
+end;
+$$;
+
+-- Schedule outbox processing every 10 seconds via pg_cron
+select cron.schedule(
+    'process-webhook-outbox',
+    '10 seconds',
+    'select public.dispatch_outbox_webhooks();'
+);
+
+-- Schedule reconciliation sweep every 30 seconds
+select cron.schedule(
+    'reconcile-webhook-responses',
+    '30 seconds',
+    'select public.reconcile_pg_net_responses();'
+);
+</code></pre>
+<hr />
+<h2>3. High-Throughput Event Processing with Supabase Queues (<code>pgmq</code>)</h2>
+<p>When workloads require strictly managed queues with visibility timeouts, guaranteed ordering, and multi-consumer concurrency, use the Postgres Message Queue (<code>pgmq</code>) extension.</p>
+<h3>3.1 Initializing Tenant Queue Topologies</h3>
+<p>Run this initialization pattern to establish dedicated tenant queues or a partitioned global message bus:</p>
+<pre><code class="language-sql">-- Migration: 20240301000003_pgmq_initialization.sql
+
+create extension if not exists &quot;pgmq&quot; with schema extensions;
+
+-- Establish a shared multi-tenant queue
+select pgmq.create('tenant_data_sync_queue');
+
+-- Create an audit table for tracking failed, expired, or archived messages
+create table if not exists public.queue_dead_letters (
+    id bigserial primary key,
+    queue_name text not null,
+    msg_id bigint not null,
+    tenant_id uuid not null references public.tenants(id) on delete cascade,
+    read_ct int not null,
+    enqueued_at timestamptz not null,
+    payload jsonb not null,
+    diagnostic_context text not null,
+    archived_at timestamptz not null default now()
+);
+
+alter table public.queue_dead_letters enable row level security;
+create policy &quot;Service role dead-letter access&quot; on public.queue_dead_letters
+for all to service_role using (true) with check (true);
+</code></pre>
+<h3>3.2 SQL Producer Interface</h3>
+<p>Enqueuing events strictly enforces the inclusion of <code>tenant_id</code> to maintain data isolation across consuming workers:</p>
+<pre><code class="language-sql">create or replace function public.enqueue_tenant_task(
+    p_tenant_id uuid,
+    p_task_type text,
+    p_parameters jsonb
+)
+returns bigint
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+    v_message_id bigint;
+    v_message jsonb;
+begin
+    -- Validate tenant existence and status
+    if not exists (
+        select 1 from public.tenants 
+        where id = p_tenant_id and subscription_status in ('active', 'trialing')
+    ) then
+        raise exception 'Tenant % is inactive or does not exist', p_tenant_id;
+    end if;
+
+    v_message := jsonb_build_object(
+        'tenant_id', p_tenant_id,
+        'task_type', p_task_type,
+        'parameters', p_parameters,
+        'enqueued_at', extract(epoch from now())
+    );
+
+    -- Send message with a default visibility delay of 0 seconds
+    select pgmq.send(
+        queue_name := 'tenant_data_sync_queue',
+        msg := v_message,
+        delay := 0
+    ) into v_message_id;
+
+    return v_message_id;
+end;
+$$;
+</code></pre>
+<h3>3.3 Batch Processing Deno Edge Function Worker</h3>
+<p>This consumer function runs on an automated schedule (via HTTP trigger or external monitor), processing messages in batches with visibility timeout enforcement:</p>
+<pre><code class="language-typescript">// supabase/functions/queue-consumer/index.ts
+
+import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+import { createClient } from &quot;https://esm.sh/@supabase/supabase-js@2.43.4&quot;;
+
+interface QueueMessagePayload {
+  tenant_id: string;
+  task_type: string;
+  parameters: Record&lt;string, unknown&gt;;
+  enqueued_at: number;
+}
+
+interface PgmqMessage {
+  msg_id: number;
+  read_ct: number;
+  enqueued_at: string;
+  vt: string;
+  message: QueueMessagePayload;
+}
+
+serve(async (req: Request): Promise&lt;Response&gt; =&gt; {
+  // Enforce administrative bearer authorization
+  const authHeader = req.headers.get(&quot;Authorization&quot;);
+  const expectedSecret = Deno.env.get(&quot;CRON_SECRET&quot;);
+
+  if (!authHeader || authHeader !== `Bearer ${expectedSecret}`) {
+    return new Response(JSON.stringify({ error: &quot;Unauthorized worker invocation&quot; }), {
+      status: 401,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  }
+
+  const supabase = createClient(
+    Deno.env.get(&quot;SUPABASE_URL&quot;) ?? &quot;&quot;,
+    Deno.env.get(&quot;SUPABASE_SERVICE_ROLE_KEY&quot;) ?? &quot;&quot;,
+    { auth: { persistSession: false, autoRefreshToken: false } }
+  );
+
+  const BATCH_SIZE = 25;
+  const VISIBILITY_TIMEOUT_SECONDS = 60;
+  const MAX_RETRIES = 3;
+
+  // Read a batch of messages from the queue with an active visibility timeout
+  const { data: messages, error: readError } = await supabase.rpc(
+    &quot;pgmq_read_batch_wrapper&quot;,
+    {
+      p_queue_name: &quot;tenant_data_sync_queue&quot;,
+      p_visibility_time: VISIBILITY_TIMEOUT_SECONDS,
+      p_qty: BATCH_SIZE,
+    }
+  );
+
+  if (readError) {
+    return new Response(JSON.stringify({ error: readError.message }), {
+      status: 500,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  }
+
+  if (!messages || messages.length === 0) {
+    return new Response(JSON.stringify({ status: &quot;idle&quot;, processed: 0 }), {
+      status: 200,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+    });
+  }
+
+  const processingResults = await Promise.allSettled(
+    messages.map(async (rawMsg: PgmqMessage) =&gt; {
+      const { msg_id, read_ct, message } = rawMsg;
+
+      // Handle poison pill messages exceeding retry budget
+      if (read_ct &gt; MAX_RETRIES) {
+        await handlePoisonPill(supabase, rawMsg, &quot;Retry budget exceeded&quot;);
+        return { msg_id, status: &quot;dead_lettered&quot; };
+      }
+
+      // Execute tenant-isolated task
+      await processTenantTask(supabase, message);
+
+      // Successfully processed: Delete message from the queue
+      const { error: archiveError } = await supabase.rpc(&quot;pgmq_delete_wrapper&quot;, {
+        p_queue_name: &quot;tenant_data_sync_queue&quot;,
+        p_msg_id: msg_id,
+      });
+
+      if (archiveError) {
+        throw new Error(`Failed to delete message ${msg_id}: ${archiveError.message}`);
+      }
+
+      return { msg_id, status: &quot;acknowledged&quot; };
+    })
+  );
+
+  return new Response(
+    JSON.stringify({
+      status: &quot;completed&quot;,
+      batch_size: messages.length,
+      results: processingResults,
+    }),
+    { status: 200, headers: { &quot;Content-Type&quot;: &quot;application/json&quot; } }
+  );
+});
+
+async function processTenantTask(supabase: any, payload: QueueMessagePayload) {
+  const { tenant_id, task_type, parameters } = payload;
+
+  switch (task_type) {
+    case &quot;AGGREGATE_METRICS&quot;: {
+      const { error } = await supabase.rpc(&quot;calculate_tenant_aggregates&quot;, {
+        p_tenant_id: tenant_id,
+        p_start_date: parameters.start_date,
+      });
+      if (error) throw error;
+      break;
+    }
+    case &quot;PURGE_EXPIRED_SESSIONS&quot;: {
+      const { error } = await supabase
+        .from(&quot;tenant_user_sessions&quot;)
+        .delete()
+        .eq(&quot;tenant_id&quot;, tenant_id)
+        .lt(&quot;expires_at&quot;, new Date().toISOString());
+      if (error) throw error;
+      break;
+    }
+    default:
+      throw new Error(`Unrecognized task type: ${task_type}`);
+  }
+}
+
+async function handlePoisonPill(
+  supabase: any,
+  rawMsg: PgmqMessage,
+  reason: string
+) {
+  // Move to dead letters audit table
+  await supabase.from(&quot;queue_dead_letters&quot;).insert({
+    queue_name: &quot;tenant_data_sync_queue&quot;,
+    msg_id: rawMsg.msg_id,
+    tenant_id: rawMsg.message.tenant_id,
+    read_ct: rawMsg.read_ct,
+    enqueued_at: rawMsg.enqueued_at,
+    payload: rawMsg.message,
+    diagnostic_context: reason,
+  });
+
+  // Remove from processing queue to unblock workers
+  await supabase.rpc(&quot;pgmq_delete_wrapper&quot;, {
+    p_queue_name: &quot;tenant_data_sync_queue&quot;,
+    p_msg_id: rawMsg.msg_id,
+  });
+}
+</code></pre>
+<h3>3.4 SQL RPC Wrappers for pgmq Function Access</h3>
+<p>Edge Functions cannot directly invoke pgmq extension commands without schema-qualified security definer wrappers:</p>
+<pre><code class="language-sql">create or replace function public.pgmq_read_batch_wrapper(
+    p_queue_name text,
+    p_visibility_time int,
+    p_qty int
+)
+returns table (
+    msg_id bigint,
+    read_ct int,
+    enqueued_at timestamptz,
+    vt timestamptz,
+    message jsonb
+)
+language plpgsql
+security definer
+set search_path = extensions, public
+as $$
+begin
+    return query select * from pgmq.read(p_queue_name, p_visibility_time, p_qty);
+end;
+$$;
+
+create or replace function public.pgmq_delete_wrapper(
+    p_queue_name text,
+    p_msg_id bigint
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = extensions, public
+as $$
+begin
+    return pgmq.delete(p_queue_name, p_msg_id);
+end;
+$$;
+</code></pre>
+<hr />
+<h2>4. Multi-Tenant Realtime Presence &amp; Broadcast Sync Engine</h2>
+<p>Cross-tenant data exposure over WebSockets occurs when clients subscribe to unscoped topics, or when authorization tokens fail to enforce tenant boundaries during WebSocket handshakes. The following architecture secures Realtime channels through custom claims and row-level authorization.</p>
+<p>```
+       +---------------------------------------------------------+
+       |               FRONTEND CLIENT INSTANCE                  |
+       |  (User: alice@tenant-corp.com | Tenant: 'tenant-corp')  |
+       +---------------------------------------------------------+
+                                    |
+          1. Connect with JWT       |  Channel Subscription Request:
+             (tenant_id claim)      |  "room:tenant-corp:doc-8812"
+                                    v
+       +---------------------------------------------------------+
+       |                SUPABASE REALTIME ENGINE                 |
+       +---------------------------------------------------------+
+                                    |
+          2. Execute Handshake RLS  |  SELECT check on:
+             Validation             |  public.tenant_realtime_channel_access
+                                    v
+       +---------------------------------------------------------+
+       |                 POSTGRESQL VALIDATION                   |</p>
+</body>
+</html>

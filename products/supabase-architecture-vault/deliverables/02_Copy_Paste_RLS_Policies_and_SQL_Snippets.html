@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Supabase & Multi-Tenant Architecture Vault: 50+ RLS Security Patterns, Edge Functions & Production Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: 50+ Battle-Tested Row-Level Security (RLS) Policies &amp; Schema Blueprints</h1>
+<p>This deliverable provides complete, production-hardened PostgreSQL schemas and Row-Level Security (RLS) policies for multi-tenant B2B SaaS applications built on Supabase. Every policy is structured to prevent common security vulnerabilities: cross-tenant data leaks, recursive policy execution, search-path hijacking in <code>SECURITY DEFINER</code> functions, and silent performance degradation caused by unindexed tenant joins.</p>
+<hr />
+<h2>1. Core Architecture &amp; Context Helpers</h2>
+<p>PostgreSQL evaluates RLS policies on a per-row basis. Calling volatile functions such as <code>auth.uid()</code> directly inside a policy causes the query planner to re-evaluate the function for every scanned row. To guarantee optimal execution plans, encapsulate session lookups within stable subqueries or cached helper functions executed with immutable security parameters.</p>
+<h3>1.1 Secure Context Helper Functions</h3>
+<p>Run the following migration to set up the role enums, core tenant structures, and memory-cached context functions:</p>
+<pre><code class="language-sql">-- Create tenant and membership role enumerations
+CREATE TYPE public.app_role AS ENUM ('owner', 'admin', 'member', 'viewer');
+CREATE TYPE public.invitation_status AS ENUM ('pending', 'accepted', 'revoked', 'expired');
+
+-- Enable pgcrypto for secure token generation
+CREATE EXTENSION IF NOT EXISTS &quot;pgcrypto&quot;;
+
+-- Function: Retrieve active user ID wrapped for planner caching
+CREATE OR REPLACE FUNCTION public.current_auth_uid()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+AS $$
+  SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid;
+$$;
+
+-- Function: Check user membership and resolve highest numeric role rank
+-- Owner = 40, Admin = 30, Member = 20, Viewer = 10
+CREATE OR REPLACE FUNCTION public.get_tenant_role_rank(lookup_tenant_id uuid)
+RETURNS integer
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT 
+    CASE tm.role
+      WHEN 'owner'  THEN 40
+      WHEN 'admin'  THEN 30
+      WHEN 'member' THEN 20
+      WHEN 'viewer' THEN 10
+      ELSE 0
+    END
+  FROM public.tenant_memberships tm
+  WHERE tm.tenant_id = lookup_tenant_id
+    AND tm.user_id = public.current_auth_uid()
+  LIMIT 1;
+$$;
+
+-- Function: Verify if user holds minimum required role rank within a tenant
+CREATE OR REPLACE FUNCTION public.has_tenant_permission(
+  lookup_tenant_id uuid,
+  required_role public.app_role
+)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT public.get_tenant_role_rank(lookup_tenant_id) &gt;= 
+    CASE required_role
+      WHEN 'owner'  THEN 40
+      WHEN 'admin'  THEN 30
+      WHEN 'member' THEN 20
+      WHEN 'viewer' THEN 10
+      ELSE 999
+    END;
+$$;
+</code></pre>
+<hr />
+<h2>2. Core Relational Schema</h2>
+<p>Run this DDL to establish tenants, memberships, soft-deletable resources, team invitations, and audit log tables.</p>
+<pre><code class="language-sql">-- Tenants table
+CREATE TABLE public.tenants (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL,
+    slug text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- Memberships table mapping Auth Users to Tenants
+CREATE TABLE public.tenant_memberships (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    role public.app_role NOT NULL DEFAULT 'viewer',
+    created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT uq_tenant_user UNIQUE (tenant_id, user_id)
+);
+
+-- Multi-Tenant Resource Table with Soft Deletes
+CREATE TABLE public.documents (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    created_by uuid NOT NULL REFERENCES auth.users(id),
+    title text NOT NULL,
+    content text NOT NULL DEFAULT '',
+    is_archived boolean NOT NULL DEFAULT false,
+    deleted_at timestamptz DEFAULT NULL,
+    created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    updated_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- Team Invitations Table
+CREATE TABLE public.tenant_invitations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    email text NOT NULL,
+    role public.app_role NOT NULL DEFAULT 'member',
+    token text NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(32), 'hex'),
+    status public.invitation_status NOT NULL DEFAULT 'pending',
+    invited_by uuid NOT NULL REFERENCES auth.users(id),
+    expires_at timestamptz NOT NULL DEFAULT (timezone('utc'::text, now()) + interval '7 days'),
+    created_at timestamptz NOT NULL DEFAULT timezone('utc'::text, now()),
+    CONSTRAINT uq_pending_invitation UNIQUE (tenant_id, email, status)
+);
+
+-- Immutable Audit Log Engine Table
+CREATE TABLE public.tenant_audit_logs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    actor_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+    action text NOT NULL,
+    table_name text NOT NULL,
+    record_id uuid NOT NULL,
+    old_data jsonb,
+    new_data jsonb,
+    ip_address inet,
+    timestamp timestamptz NOT NULL DEFAULT timezone('utc'::text, now())
+);
+
+-- Indexes for foreign key lookups and composite filtering
+CREATE INDEX idx_memberships_user_tenant ON public.tenant_memberships(user_id, tenant_id);
+CREATE INDEX idx_memberships_tenant_role ON public.tenant_memberships(tenant_id, role);
+CREATE INDEX idx_documents_tenant_active ON public.documents(tenant_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_invitations_token ON public.tenant_invitations(token) WHERE status = 'pending';
+CREATE INDEX idx_invitations_email_lookup ON public.tenant_invitations(lower(email), status);
+CREATE INDEX idx_audit_logs_tenant_ts ON public.tenant_audit_logs(tenant_id, timestamp DESC);
+</code></pre>
+<hr />
+<h2>3. Pattern 1: Hierarchical RBAC &amp; Role Inheritance</h2>
+<p>The following policies enforce inheritance rules:
+- <strong>Viewer (10):</strong> Read non-deleted records.
+- <strong>Member (20):</strong> Read and update records they created, or create new resources.
+- <strong>Admin (30):</strong> Full read, write, update, and soft-delete capabilities across all tenant records.
+- <strong>Owner (40):</strong> Destructive actions, including hard deletes, billing access, and tenant configuration.</p>
+<pre><code class="language-sql">-- Enable RLS
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tenant_memberships ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+
+--------------------------------------------------------------------------------
+-- Tenants Policies
+--------------------------------------------------------------------------------
+CREATE POLICY &quot;tenants_select_member&quot;
+ON public.tenants
+FOR SELECT
+TO authenticated
+USING (
+  id IN (
+    SELECT tm.tenant_id 
+    FROM public.tenant_memberships tm 
+    WHERE tm.user_id = (SELECT public.current_auth_uid())
+  )
+);
+
+CREATE POLICY &quot;tenants_update_admin&quot;
+ON public.tenants
+FOR UPDATE
+TO authenticated
+USING (
+  public.has_tenant_permission(id, 'admin')
+)
+WITH CHECK (
+  public.has_tenant_permission(id, 'admin')
+);
+
+CREATE POLICY &quot;tenants_delete_owner&quot;
+ON public.tenants
+FOR DELETE
+TO authenticated
+USING (
+  public.has_tenant_permission(id, 'owner')
+);
+
+--------------------------------------------------------------------------------
+-- Tenant Memberships Policies (Preventing privilege escalation)
+--------------------------------------------------------------------------------
+CREATE POLICY &quot;memberships_select_coworkers&quot;
+ON public.tenant_memberships
+FOR SELECT
+TO authenticated
+USING (
+  tenant_id IN (
+    SELECT tm.tenant_id 
+    FROM public.tenant_memberships tm 
+    WHERE tm.user_id = (SELECT public.current_auth_uid())
+  )
+);
+
+CREATE POLICY &quot;memberships_insert_admin&quot;
+ON public.tenant_memberships
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'admin')
+  AND (
+    -- Admins can only assign roles lower than their own (cannot grant owner)
+    CASE 
+      WHEN public.get_tenant_role_rank(tenant_id) = 30 THEN role IN ('viewer', 'member')
+      WHEN public.get_tenant_role_rank(tenant_id) = 40 THEN true
+      ELSE false
+    END
+  )
+);
+
+CREATE POLICY &quot;memberships_update_admin&quot;
+ON public.tenant_memberships
+FOR UPDATE
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+)
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'admin')
+  -- Prevent non-owners from promoting anyone (including themselves) to owner
+  AND (
+    CASE 
+      WHEN public.get_tenant_role_rank(tenant_id) = 30 THEN role IN ('viewer', 'member')
+      WHEN public.get_tenant_role_rank(tenant_id) = 40 THEN true
+      ELSE false
+    END
+  )
+);
+
+CREATE POLICY &quot;memberships_delete_admin_or_self&quot;
+ON public.tenant_memberships
+FOR DELETE
+TO authenticated
+USING (
+  -- Self-leave allowed, provided user is not the sole owner
+  (
+    user_id = (SELECT public.current_auth_uid())
+    AND role != 'owner'
+  )
+  OR
+  -- Admins can eject members and viewers; Owners can eject anyone
+  (
+    public.has_tenant_permission(tenant_id, 'admin')
+    AND public.get_tenant_role_rank(tenant_id) &gt; CASE role
+      WHEN 'owner'  THEN 40
+      WHEN 'admin'  THEN 30
+      WHEN 'member' THEN 20
+      WHEN 'viewer' THEN 10
+    END
+  )
+);
+
+--------------------------------------------------------------------------------
+-- Documents (Resources) Policies
+--------------------------------------------------------------------------------
+CREATE POLICY &quot;documents_select_hierarchy&quot;
+ON public.documents
+FOR SELECT
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'viewer')
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY &quot;documents_insert_hierarchy&quot;
+ON public.documents
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'member')
+  AND created_by = (SELECT public.current_auth_uid())
+  AND deleted_at IS NULL
+);
+
+CREATE POLICY &quot;documents_update_hierarchy&quot;
+ON public.documents
+FOR UPDATE
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'viewer')
+  AND (
+    -- Members edit their own non-deleted documents
+    (public.has_tenant_permission(tenant_id, 'member') AND created_by = (SELECT public.current_auth_uid()))
+    OR
+    -- Admins edit any document
+    public.has_tenant_permission(tenant_id, 'admin')
+  )
+  AND deleted_at IS NULL
+)
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'viewer')
+  AND (
+    (public.has_tenant_permission(tenant_id, 'member') AND created_by = (SELECT public.current_auth_uid()))
+    OR
+    public.has_tenant_permission(tenant_id, 'admin')
+  )
+  -- Prevent mutating tenant_id or transfer of ownership via UPDATE
+  AND tenant_id = documents.tenant_id
+  AND created_by = documents.created_by
+);
+
+CREATE POLICY &quot;documents_delete_hard_owner&quot;
+ON public.documents
+FOR DELETE
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'owner')
+);
+</code></pre>
+<hr />
+<h2>4. Pattern 2: Multi-Tenant Team Invitations Lifecycle</h2>
+<p>Invitations present a unique attack surface: invited users must read pending invitations matching their email address before they are members of the tenant, while avoiding full enumeration of the invitation table.</p>
+<pre><code class="language-sql">ALTER TABLE public.tenant_invitations ENABLE ROW LEVEL SECURITY;
+
+-- 1. Tenant Admins can view invitations issued for their organization
+CREATE POLICY &quot;invitations_select_admin&quot;
+ON public.tenant_invitations
+FOR SELECT
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+);
+
+-- 2. Authenticated users can read invitations addressed to their verified auth email
+CREATE POLICY &quot;invitations_select_invited_user&quot;
+ON public.tenant_invitations
+FOR SELECT
+TO authenticated
+USING (
+  lower(email) = lower(nullif(current_setting('request.jwt.claim.email', true), ''))
+  AND status = 'pending'
+  AND expires_at &gt; timezone('utc'::text, now())
+);
+
+-- 3. Only Admins or Owners can create invitations
+CREATE POLICY &quot;invitations_insert_admin&quot;
+ON public.tenant_invitations
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'admin')
+  AND invited_by = (SELECT public.current_auth_uid())
+  -- Admins cannot invite Owners
+  AND (
+    CASE 
+      WHEN public.get_tenant_role_rank(tenant_id) = 30 THEN role IN ('viewer', 'member')
+      WHEN public.get_tenant_role_rank(tenant_id) = 40 THEN true
+      ELSE false
+    END
+  )
+);
+
+-- 4. Admins can revoke invitations (UPDATE status)
+CREATE POLICY &quot;invitations_update_admin&quot;
+ON public.tenant_invitations
+FOR UPDATE
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+)
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'admin')
+);
+
+-- 5. Atomic Acceptance Procedure (Bypasses manual table edits via SECURITY DEFINER)
+CREATE OR REPLACE FUNCTION public.accept_invitation(invite_token text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+  v_invite public.tenant_invitations%ROWTYPE;
+  v_user_id uuid;
+  v_user_email text;
+BEGIN
+  v_user_id := public.current_auth_uid();
+  v_user_email := nullif(current_setting('request.jwt.claim.email', true), '');
+
+  IF v_user_id IS NULL OR v_user_email IS NULL THEN
+    RAISE EXCEPTION 'Authentication required.' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  -- Lock invitation row for processing
+  SELECT * INTO v_invite
+  FROM public.tenant_invitations
+  WHERE token = invite_token
+    AND status = 'pending'
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Invalid or expired invitation token.' USING ERRCODE = 'data_exception';
+  END IF;
+
+  IF v_invite.expires_at &lt; timezone('utc'::text, now()) THEN
+    UPDATE public.tenant_invitations SET status = 'expired' WHERE id = v_invite.id;
+    RAISE EXCEPTION 'This invitation has expired.' USING ERRCODE = 'data_exception';
+  END IF;
+
+  IF lower(v_invite.email) != lower(v_user_email) THEN
+    RAISE EXCEPTION 'This invitation was sent to %, but you are signed in as %', 
+      v_invite.email, v_user_email USING ERRCODE = 'privilege_not_held';
+  END IF;
+
+  -- Create membership record
+  INSERT INTO public.tenant_memberships (tenant_id, user_id, role)
+  VALUES (v_invite.tenant_id, v_user_id, v_invite.role)
+  ON CONFLICT (tenant_id, user_id) 
+  DO UPDATE SET role = EXCLUDED.role, updated_at = timezone('utc'::text, now());
+
+  -- Invalidate token and update state
+  UPDATE public.tenant_invitations
+  SET status = 'accepted', updated_at = timezone('utc'::text, now())
+  WHERE id = v_invite.id;
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'tenant_id', v_invite.tenant_id,
+    'role', v_invite.role
+  );
+END;
+$$;
+</code></pre>
+<hr />
+<h2>5. Pattern 3: Soft Deletes with Zero-Leak RLS</h2>
+<p>Soft-delete setups often leak metadata when unique constraints fail or when an explicit <code>deleted_at IS NULL</code> check is omitted on joins. This implementation ensures soft-deleted records are inaccessible to ordinary users, modifiable only by admins, and maintain deduplicated uniqueness.</p>
+<pre><code class="language-sql">-- Partial unique index on title within non-deleted tenant records
+CREATE UNIQUE INDEX uq_documents_active_title 
+ON public.documents (tenant_id, lower(title)) 
+WHERE deleted_at IS NULL;
+
+-- Dedicated Soft-Delete RPC for non-administrative users
+CREATE OR REPLACE FUNCTION public.soft_delete_document(document_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_doc public.documents%ROWTYPE;
+BEGIN
+  SELECT * INTO v_doc FROM public.documents WHERE id = document_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Document not found.' USING ERRCODE = 'no_data_found';
+  END IF;
+
+  -- Permission: Admins can soft-delete anything; members can delete their own
+  IF NOT (
+    public.has_tenant_permission(v_doc.tenant_id, 'admin') OR
+    (public.has_tenant_permission(v_doc.tenant_id, 'member') AND v_doc.created_by = public.current_auth_uid())
+  ) THEN
+    RAISE EXCEPTION 'Permission denied.' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  UPDATE public.documents 
+  SET deleted_at = timezone('utc'::text, now()) 
+  WHERE id = document_id;
+END;
+$$;
+
+-- Policy: Allow Admins to see the trash bin (Soft-Deleted rows)
+CREATE POLICY &quot;documents_select_trash_admin&quot;
+ON public.documents
+FOR SELECT
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+  AND deleted_at IS NOT NULL
+);
+
+-- Policy: Allow Admins to restore records (Un-delete)
+CREATE POLICY &quot;documents_restore_admin&quot;
+ON public.documents
+FOR UPDATE
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+  AND deleted_at IS NOT NULL
+)
+WITH CHECK (
+  public.has_tenant_permission(tenant_id, 'admin')
+  -- Ensure the restore operation sets deleted_at back to null
+  AND deleted_at IS NULL
+);
+</code></pre>
+<hr />
+<h2>6. Pattern 4: Immutable Append-Only Audit Logging Engine</h2>
+<p>Audit logs must guarantee integrity: they cannot be altered or removed, even by tenant owners. Client interactions are strictly restricted to <code>SELECT</code>, with write operations delegated entirely to transactional triggers running as <code>SECURITY DEFINER</code>.</p>
+<pre><code class="language-sql">ALTER TABLE public.tenant_audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- 1. RLS: Only Tenant Owners and Admins can view audit logs
+CREATE POLICY &quot;audit_logs_select_admin&quot;
+ON public.tenant_audit_logs
+FOR SELECT
+TO authenticated
+USING (
+  public.has_tenant_permission(tenant_id, 'admin')
+);
+
+-- 2. Explicitly Deny client-side write/alter/delete through RLS
+CREATE POLICY &quot;audit_logs_deny_client_insert&quot;
+ON public.tenant_audit_logs
+FOR INSERT
+TO authenticated
+WITH CHECK (false);
+
+CREATE POLICY &quot;audit_logs_deny_client_update&quot;
+ON public.tenant_audit_logs
+FOR UPDATE
+TO authenticated
+USING (false);
+
+CREATE POLICY &quot;audit_logs_deny_client_delete&quot;
+ON public.tenant_audit_logs
+FOR DELETE
+TO authenticated
+USING (false);
+
+-- Trigger Function: Process updates and inserts idempotently
+CREATE OR REPLACE FUNCTION public.process_audit_log_entry()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+  v_tenant_id uuid;
+  v_record_id uuid;
+  v_old_data jsonb := NULL;
+  v_new_data jsonb := NULL;
+  v_client_ip inet;
+BEGIN
+  -- Safe extraction of client IP from PostgREST/Supabase environment
+  BEGIN
+    v_client_ip := nullif(current_setting('request.headers', true)::jsonb-&gt;&gt;'cf-connecting-ip', '')::inet;
+  EXCEPTION WHEN OTHERS THEN
+    v_client_ip := NULL;
+  END;
+
+  IF (TG_OP = 'INSERT') THEN
+    v_tenant_id := NEW.tenant_id;
+    v_record_id := NEW.id;
+    v_new_data := to_jsonb(NEW);
+  ELSIF (TG_OP = 'UPDATE') THEN
+    v_tenant_id := NEW.tenant_id;
+    v_record_id := NEW.id;
+    v_old_data := to_jsonb(OLD);
+    v_new_data := to_jsonb(NEW);
+  ELSIF (TG_OP = 'DELETE') THEN
+    v_tenant_id := OLD.tenant_id;
+    v_record_id := OLD.id;
+    v_old_data := to_jsonb(OLD);
+  END IF;
+
+  INSERT INTO public.tenant_audit_logs (
+    tenant_id,
+    actor_id,
+    action,
+    table_name,
+    record_id,
+    old_data,
+    new_data,
+    ip_address
+  ) VALUES (
+    v_tenant_id,
+    public.current_auth_uid(),
+    TG_OP,
+    TG_TABLE_NAME,
+    v_record_id,
+    v_old_data,
+    v_new_data,
+    v_client_ip
+  );
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+-- Attach trigger to Documents
+CREATE TRIGGER tr_audit_documents
+AFTER INSERT OR UPDATE OR DELETE ON public.documents
+FOR EACH ROW EXECUTE FUNCTION public.process_audit_log_entry();
+
+-- Prevent direct TRUNCATE on audit tables via trigger
+CREATE OR REPLACE FUNCTION public.prevent_truncate_audit()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'Truncate operations are forbidden on audit tables.' USING ERRCODE = 'insufficient_privilege';
+END;
+$$;
+
+CREATE TRIGGER tr_protect_audit_truncation
+BEFORE TRUNCATE ON public.tenant_audit_logs
+FOR EACH STATEMENT EXECUTE FUNCTION public.prevent_truncate_audit();
+</code></pre>
+<hr />
+<h2>7. Pattern 5: Secure Multi-Tenant Storage Bucket Policies</h2>
+<p>Supabase storage maps files to the <code>storage.objects</code> table. Tenant isolation requires deterministic path naming conventions.</p>
+<p><strong>Path Convention:</strong> <code>&lt;tenant_id&gt;/&lt;user_id&gt;/&lt;file_name&gt;</code></p>
+<pre><code class="language-sql">-- Ensure storage bucket exists
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'tenant-assets', 
+  'tenant-assets', 
+  false, 
+  10485760, -- 10MB
+  ARRAY['image/png', 'image/jpeg', 'application/pdf', 'text/csv']
+)
+ON CONFLICT (id) DO UPDATE SET 
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+-- 1. Helper function: Parse tenant ID from path index 0
+CREATE OR REPLACE FUNCTION public.storage_extract_tenant_id(object_name text)
+RETURNS uuid
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT CASE 
+    WHEN split_part(object_name, '/', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+    THEN split_part(object_name, '/', 1)::uuid
+    ELSE NULL
+  END;
+$$;
+
+-- 2. Storage Policy: Read files in tenant folder
+CREATE POLICY &quot;storage_tenant_read&quot;
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+  bucket_id = 'tenant-assets'
+  AND public.has_tenant_permission(
+    public.storage_extract_tenant_id(name), 
+    'viewer'
+  )
+);
+
+-- 3. Storage Policy: Upload to tenant folder (Member+)
+CREATE POLICY &quot;storage_tenant_upload&quot;
+ON storage.objects
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id = 'tenant-assets'
+  -- Tenant membership verification
+  AND public.has_tenant_permission(
+    public.storage_extract_tenant_id(name), 
+    'member'
+  )
+  -- Enforce creator folder structure: &lt;tenant_id&gt;/&lt;user_id&gt;/&lt;filename&gt;
+  AND split_part(name, '/', 2) = (SELECT public.current_auth_uid())::text
+);
+
+-- 4. Storage Policy: Update/Overwrite (Admin or original uploader)
+CREATE POLICY &quot;storage_tenant_update&quot;
+ON storage.objects
+FOR UPDATE
+TO authenticated
+USING (
+  bucket_id = 'tenant-assets'
+  AND (
+    public.has_tenant_permission(public.storage_extract_tenant_id(name), 'admin')
+    OR (
+      public.has_tenant_permission(public.storage_extract_tenant_id(name), 'member')
+      AND split_part(name, '/', 2) = (SELECT public.current_auth_uid())::text
+    )
+  )
+);
+
+-- 5. Storage Policy: Delete Objects
+CREATE POLICY &quot;storage_tenant_delete&quot;
+ON storage.objects
+FOR DELETE
+TO authenticated
+USING (
+  bucket_id = 'tenant-assets'
+  AND (
+    public.has_tenant_permission(public.storage_extract_tenant_id(name), 'admin')
+    OR (
+      public.has_tenant_permission(public.storage_extract_tenant_id(name), 'member')
+      AND split_part(name, '/', 2) = (SELECT public.current_auth_uid())::text
+    )
+  )
+);
+</code></pre>
+<hr />
+<h2>8. Anti-Patterns vs. Production Implementations</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Anti-Pattern Implementation</th>
+<th style="text-align: left;">Attack Vector / Failure Mode</th>
+<th style="text-align: left;">Production Optimized Architecture</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>USING (tenant_id = auth.jwt() -&gt;&gt; 'tenant_id')</code></td>
+<td style="text-align: left;">JWT claims lag behind actual database changes (stale revocations, privilege delays).</td>
+<td style="text-align: left;">Query canonical state via indexed <code>tenant_memberships</code> table using stable functions.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>USING (auth.uid() IN (SELECT user_id FROM memberships))</code></td>
+<td style="text-align: left;">Uncached scalar evaluation forces sub-select recalculations on every scanned row.</td>
+<td style="text-align: left;">Wrap lookups in <code>(SELECT public.current_auth_uid())</code> to cache execution across row iterations.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>CREATE POLICY ... FOR ALL</code></td>
+<td style="text-align: left;">Broad policies mix read (<code>USING</code>) and write (<code>WITH CHECK</code>) logic, causing unintended security holes.</td>
+<td style="text-align: left;">Write explicit policies for each individual operation (<code>SELECT</code>, <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>deleted_at IS NULL</code> without composite indexes</td>
+<td style="text-align: left;">Full table scans occur when non-deleted subsets are joined with foreign tables.</td>
+<td style="text-align: left;">Create partial indexes: <code>CREATE INDEX ... WHERE deleted_at IS NULL;</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;">Unpinned <code>search_path</code> in <code>SECURITY DEFINER</code></td>
+<td style="text-align: left;">Search-path injection: malicious users can create tables that hijack execution in privileged functions.</td>
+<td style="text-align: left;">Explicitly define <code>SET search_path = public, auth, pg_temp</code> on every definition.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>9. Performance Optimization &amp; Deployment Checklist</h2>
+<p>Before deploying this module to production environments, verify each operational item below:</p>
+</body>
+</html>

@@ -1,0 +1,721 @@
+# Module 4: Zero-Downtime Migration CI/CD & Production Security Audit Rubric
+
+## 1. Zero-Downtime Multi-Tenant Migration Architecture
+
+Altering shared tables across thousands of tenants without downtime requires strict enforcement of the **Expand/Contract (Parallel Run)** pattern. A table lock held for more than 50 milliseconds will stall incoming tenant queries, pool connections in PgBouncer/Supavisor, and cascade into a system-wide HTTP 504 outage.
+
+### The 4-Phase Expand/Contract Lifecycle
+
+```
+[Phase 1: Expand]
+  ├── Add nullable column or new table
+  └── Create backfill/sync trigger (writes to both Old and New)
+
+[Phase 2: Backfill]
+  └── Run throttled historical updates in batches (avoid lock escalation)
+
+[Phase 3: Dual-Read & App Switchover]
+  ├── Deploy application code that reads from New and writes to New
+  └── Verify 0 reads hitting the Old schema via pg_stat_statements
+
+[Phase 4: Contract]
+  ├── Drop triggers and sync functions
+  └── Drop Old column/table with explicit statement_timeout
+```
+
+---
+
+### Phase 1–4 Concrete Example: Splitting Tenant Profile Columns
+
+In this operational scenario, a multi-tenant `accounts` table stores an unstructured JSON blob containing both billing metadata and organization identity. The goal is to migrate `accounts.raw_metadata->>'vat_number'` to a strongly typed, encrypted column `accounts.tax_identifier` without dropping queries, taking locks, or allowing write splits.
+
+#### Phase 1: Expand Migration
+
+```sql
+-- Migration file: supabase/migrations/20241027100000_expand_tax_identifier.sql
+-- Set aggressive local timeouts to prevent queue-tail locking
+SET LOCAL lock_timeout = '3s';
+SET LOCAL statement_timeout = '10s';
+
+-- Step 1: Add new column as nullable first (Zero table lock duration)
+ALTER TABLE public.accounts 
+ADD COLUMN IF NOT EXISTS tax_identifier text;
+
+-- Step 2: Establish the synchronizing trigger function
+CREATE OR REPLACE FUNCTION public.sync_tax_identifier_forward()
+RETURNS TRIGGER 
+SECURITY DEFINER
+SET search_path = public, pg_temp
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Synchronize write from old schema to new schema
+    IF NEW.raw_metadata IS NOT NULL AND NEW.raw_metadata ? 'vat_number' THEN
+        NEW.tax_identifier := NEW.raw_metadata->>'vat_number';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- Step 3: Attach trigger for writes occurring during migration
+DROP TRIGGER IF EXISTS trg_sync_tax_identifier_forward ON public.accounts;
+
+CREATE TRIGGER trg_sync_tax_identifier_forward
+BEFORE INSERT OR UPDATE OF raw_metadata ON public.accounts
+FOR EACH ROW
+EXECUTE FUNCTION public.sync_tax_identifier_forward();
+```
+
+#### Phase 2: Throttled Batch Backfill Script
+
+Do not execute a bare `UPDATE public.accounts SET tax_identifier = raw_metadata->>'vat_number'`. On a table with 2,000,000 rows, this locks the table, causes disk bloat, saturates WAL generation, and starves replication slots. Execute this backfill via an idempotent SQL loop designed to process isolated, primary-key-indexed chunks:
+
+```sql
+-- Operational script: supabase/scripts/backfill_tax_identifier.sql
+DO $$
+DECLARE
+    v_cursor uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+    v_batch_size int := 1000;
+    v_rows_updated int := 0;
+    v_total_updated int := 0;
+BEGIN
+    RAISE NOTICE 'Starting backfill operation...';
+    LOOP
+        WITH batch AS (
+            SELECT id
+            FROM public.accounts
+            WHERE id > v_cursor
+              AND tax_identifier IS NULL
+              AND raw_metadata ? 'vat_number'
+            ORDER BY id ASC
+            LIMIT v_batch_size
+        )
+        UPDATE public.accounts a
+        SET tax_identifier = a.raw_metadata->>'vat_number'
+        FROM batch
+        WHERE a.id = batch.id;
+        
+        GET DIAGNOSTICS v_rows_updated = ROW_COUNT;
+        v_total_updated := v_total_updated + v_rows_updated;
+
+        -- Exit loop when no more rows match
+        EXIT WHEN v_rows_updated = 0;
+
+        -- Advance cursor to the max ID processed in current batch
+        SELECT MAX(id) INTO v_cursor FROM (
+            SELECT id FROM public.accounts 
+            WHERE id > v_cursor AND raw_metadata ? 'vat_number'
+            ORDER BY id ASC 
+            LIMIT v_batch_size
+        ) sub;
+
+        -- 100ms pause to let parallel client writes commit and autovacuum breathe
+        PERFORM pg_sleep(0.1);
+        
+        RAISE NOTICE 'Batch processed: % rows. Total so far: %', v_rows_updated, v_total_updated;
+    END LOOP;
+    RAISE NOTICE 'Backfill complete. Total records updated: %', v_total_updated;
+END $$;
+```
+
+#### Phase 3: Application Dual-Read / Cutover
+
+Deploy the application tier update. The application changes from querying `raw_metadata->>'vat_number'` to directly reading the indexed `tax_identifier` column. Writes now supply `tax_identifier` directly.
+
+#### Phase 4: Contract Migration
+
+Run this migration only after verifying application logs show zero read references to `raw_metadata->>'vat_number'` over a 72-hour window.
+
+```sql
+-- Migration file: supabase/migrations/20241030100000_contract_tax_identifier.sql
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '5s';
+
+-- Remove the backfill sync trigger
+DROP TRIGGER IF EXISTS trg_sync_tax_identifier_forward ON public.accounts;
+DROP FUNCTION IF EXISTS public.sync_tax_identifier_forward();
+
+-- Clean up old key from raw_metadata JSONB in a controlled non-locking way
+-- Or enforce NOT NULL on the migrated target if application constraints dictate:
+ALTER TABLE public.accounts 
+ADD CONSTRAINT check_tax_identifier_not_null 
+CHECK (tax_identifier IS NOT NULL) NOT VALID;
+
+-- Validate constraint asynchronously without locking the entire table
+ALTER TABLE public.accounts 
+VALIDATE CONSTRAINT check_tax_identifier_not_null;
+```
+
+---
+
+## 2. GitHub Actions CI/CD Pipeline
+
+The following production workflow runs on every pull request, spin-up tests against an ephemeral local Supabase stack, enforces strict linting, runs regression testing for cross-tenant isolation, applies the schema delta to dynamic staging targets, and executes deployment to production.
+
+Create the file `.github/workflows/database-ci-cd.yml`:
+
+```yaml
+name: Database CI/CD Engine
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+  SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+  STAGING_PROJECT_REF: ${{ secrets.STAGING_PROJECT_REF }}
+  PRODUCTION_PROJECT_REF: ${{ secrets.PRODUCTION_PROJECT_REF }}
+
+jobs:
+  validate-and-test:
+    name: Lint, Test, & Audit RLS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 1.145.4
+
+      - name: Cache Docker Images
+        uses: actions/cache@v3
+        with:
+          path: /var/lib/docker
+          key: ${{ runner.os }}-docker-supabase-${{ hashFiles('supabase/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-supabase-
+
+      - name: Boot Ephemeral Supabase Stack
+        run: |
+          supabase init
+          supabase start
+
+      - name: Run Schema Linter & Check for Missing Drops
+        run: |
+          # Fails if uncommitted migrations or dirty tracking files exist
+          supabase db lint --level error
+
+      - name: Execute pg_prove / pgTAP Multi-Tenant Regression Suite
+        run: |
+          # Executes all pgTAP suites within supabase/tests/
+          supabase test db
+
+      - name: Audit Unindexed Foreign Keys & RLS Violations
+        run: |
+          # Connect to local stack and execute security assertions
+          docker exec -i $(docker ps -qf "name=supabase_db_") psql -U postgres -d postgres -v ON_ERROR_STOP=1 << 'EOF'
+          
+          -- Block pull request if any public table has RLS disabled
+          DO $$
+          DECLARE
+              v_unsecured text;
+          BEGIN
+              SELECT string_agg(relname, ', ') INTO v_unsecured
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public'
+                AND c.relkind = 'r'
+                AND c.relrowsecurity = false;
+
+              IF v_unsecured IS NOT NULL THEN
+                  RAISE EXCEPTION 'CRITICAL: The following public tables lack Row Level Security: %', v_unsecured;
+              END IF;
+          END $$;
+
+          -- Block pull request if any tenant-bound foreign keys lack b-tree indexes
+          DO $$
+          DECLARE
+              v_missing_indexes text;
+          BEGIN
+              WITH fks AS (
+                  SELECT 
+                      conname,
+                      conrelid::regclass AS table_name,
+                      a.attname AS column_name
+                  FROM pg_constraint c
+                  CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS u(attnum, attposition)
+                  JOIN pg_attribute a ON a.attnum = u.attnum AND a.attrelid = c.conrelid
+                  WHERE c.contype = 'f'
+                    AND c.connamespace = 'public'::regnamespace
+              )
+              SELECT string_agg(format('%s (%s)', table_name, column_name), ', ')
+              INTO v_missing_indexes
+              FROM fks
+              WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM pg_index i
+                  JOIN pg_attribute ia ON ia.attrelid = i.indrelid AND ia.attnum = ANY(i.indkey)
+                  WHERE i.indrelid = fks.table_name::oid
+                    AND ia.attname = fks.column_name
+              );
+
+              IF v_missing_indexes IS NOT NULL THEN
+                  RAISE EXCEPTION 'CRITICAL: Foreign keys lack performance indexes: %', v_missing_indexes;
+              END IF;
+          END $$;
+          EOF
+
+  deploy-staging:
+    name: Apply Migrations to Staging
+    needs: [validate-and-test]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 1.145.4
+
+      - name: Link Staging Project
+        run: |
+          supabase link --project-ref ${{ env.STAGING_PROJECT_REF }}
+
+      - name: Apply Migrations
+        run: |
+          supabase db push
+
+  deploy-production:
+    name: Deploy to Production Stack
+    needs: [deploy-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://app.yourproductiondomain.com
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 1.145.4
+
+      - name: Link Production Project
+        run: |
+          supabase link --project-ref ${{ env.PRODUCTION_PROJECT_REF }}
+
+      - name: Apply Migrations with Fail-Safe Abort
+        run: |
+          # Apply down migrations if any pre-checks fail
+          supabase db push --include-all
+```
+
+---
+
+## 3. Automated RLS Regression Testing (pgTAP Test Suite)
+
+This test suite guarantees that **Tenant A cannot view, query, update, or delete data belonging to Tenant B**, even under bypass attempts, authenticated null identities, or missing authorization contexts.
+
+Save this file as `supabase/tests/database/01_tenant_isolation.test.sql`:
+
+```sql
+BEGIN;
+SELECT plan(14); -- Enforce strict test tally count
+
+-- 1. Initialize testing extensions
+CREATE EXTENSION IF NOT EXISTS pgtap;
+
+-- 2. Mock necessary tables for the test run
+CREATE TABLE IF NOT EXISTS public.tenants (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.documents (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+    title text NOT NULL,
+    payload text NOT NULL
+);
+
+-- Enable RLS
+ALTER TABLE public.tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+
+-- Apply Tenant Isolation Policy
+DROP POLICY IF EXISTS tenant_isolation_documents ON public.documents;
+CREATE POLICY tenant_isolation_documents ON public.documents
+    AS RESTRICTIVE
+    FOR ALL
+    TO authenticated
+    USING (
+        tenant_id = NULLIF(current_setting('request.jwt.claims', true)::json->>'tenant_id', '')::uuid
+    )
+    WITH CHECK (
+        tenant_id = NULLIF(current_setting('request.jwt.claims', true)::json->>'tenant_id', '')::uuid
+    );
+
+-- 3. Assert RLS is strictly enabled
+SELECT row_security_active('public.documents');
+SELECT row_security_active('public.tenants');
+
+-- 4. Seed isolated testing entities
+TRUNCATE public.tenants, public.documents CASCADE;
+
+INSERT INTO public.tenants (id, name) VALUES 
+    ('a0000000-0000-0000-0000-000000000001'::uuid, 'Tenant Alpha'),
+    ('b0000000-0000-0000-0000-000000000002'::uuid, 'Tenant Beta');
+
+INSERT INTO public.documents (id, tenant_id, title, payload) VALUES
+    ('11111111-1111-1111-1111-111111111111'::uuid, 'a0000000-0000-0000-0000-000000000001'::uuid, 'Alpha Contract', 'Sensitive Alpha Data'),
+    ('22222222-2222-2222-2222-222222222222'::uuid, 'b0000000-0000-0000-0000-000000000002'::uuid, 'Beta Strategy', 'Sensitive Beta Data');
+
+-- 5. Establish Authenticated Users Mock Context
+CREATE ROLE test_app_user IN ROLE authenticated;
+
+-- SWITCH TO LOW-PRIVILEGE TENANT CONTEXT (Simulate Tenant Alpha)
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub": "auth-alpha-user", "tenant_id": "a0000000-0000-0000-0000-000000000001"}';
+
+-- Test 5.1: Tenant Alpha can see their own document
+SELECT results_eq(
+    'SELECT id, title FROM public.documents',
+    $$ VALUES ('11111111-1111-1111-1111-111111111111'::uuid, 'Alpha Contract'::text) $$,
+    'Tenant Alpha must strictly read only their isolated rows.'
+);
+
+-- Test 5.2: Tenant Alpha cannot view Tenant Beta documents
+SELECT is_empty(
+    $$ SELECT * FROM public.documents WHERE tenant_id = 'b0000000-0000-0000-0000-000000000002'::uuid $$,
+    'Tenant Alpha should obtain 0 records when explicitly querying Tenant Beta data.'
+);
+
+-- Test 5.3: Tenant Alpha Cross-Tenant INSERT Attempt
+SELECT throws_bad_attach(
+    $$ INSERT INTO public.documents (id, tenant_id, title, payload) 
+       VALUES ('33333333-3333-3333-3333-333333333333'::uuid, 'b0000000-0000-0000-0000-000000000002'::uuid, 'Illegal Write', 'Malicious Data') $$,
+    'Authenticated tenant cannot insert records with another tenant id.'
+);
+
+-- Test 5.4: Tenant Alpha Cross-Tenant UPDATE Attempt
+SELECT results_eq(
+    $$ UPDATE public.documents 
+       SET payload = 'Hacked Payload' 
+       WHERE id = '22222222-2222-2222-2222-222222222222'::uuid
+       RETURNING id $$,
+    $$ SELECT NULL::uuid WHERE 1=0 $$,
+    'Tenant Alpha cross-tenant update should affect zero rows.'
+);
+
+-- SWITCH TO ANONYMOUS / NULL TENANT CONTEXT
+SET LOCAL ROLE anon;
+RESET request.jwt.claims;
+
+-- Test 5.5: Anon role read should yield absolute zero rows
+SELECT is_empty(
+    'SELECT * FROM public.documents',
+    'Anonymous context must see zero records in isolated documents table.'
+);
+
+-- SWITCH BACK TO TENANT BETA CONTEXT
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub": "auth-beta-user", "tenant_id": "b0000000-0000-0000-0000-000000000002"}';
+
+-- Test 5.6: Tenant Beta cannot delete Tenant Alpha documents
+SELECT is(
+    (WITH deleted AS (
+        DELETE FROM public.documents 
+        WHERE id = '11111111-1111-1111-1111-111111111111'::uuid 
+        RETURNING *
+    ) SELECT count(*)::int FROM deleted),
+    0,
+    'Tenant Beta cannot delete tenant Alpha records.'
+);
+
+-- Rollback entire session to retain database purity
+SELECT * FROM finish();
+ROLLBACK;
+```
+
+---
+
+## 4. Multi-Tenant Indexing Audit & Query Optimization
+
+RLS filters implicitly append `AND tenant_id = <jwt_claim>` to all client queries. Without explicit indexes containing `tenant_id`, every single API invocation escalates into a **Sequential Table Scan** across all tenants.
+
+### The Composite Index Rule for Multi-Tenant Systems
+
+Every compound query containing explicit customer filters MUST use a Composite B-Tree index structured in order:
+`[ tenant_id (Equality) ] -> [ status/state (Low Cardinality) ] -> [ created_at (Sort/Range) ]`
+
+```sql
+-- Optimal Composite Index for high-volume paginated tenant records
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_documents_tenant_created 
+ON public.documents (tenant_id, created_at DESC);
+```
+
+### Production Health Verification Queries
+
+#### 1. Audit Missing Foreign Key Indexes (Causes Cascading Lock Stalls)
+
+```sql
+SELECT
+    c.conrelid::regclass AS table_name,
+    string_agg(a.attname, ', ' ORDER BY u.attposition) AS foreign_key_columns,
+    c.conname AS constraint_name
+FROM pg_constraint c
+JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS u(attnum, attposition) ON true
+JOIN pg_attribute a ON a.attnum = u.attnum AND a.attrelid = c.conrelid
+WHERE c.contype = 'f'
+  AND c.connamespace = 'public'::regnamespace
+  AND NOT EXISTS (
+      SELECT 1
+      FROM pg_index i
+      WHERE i.indrelid = c.conrelid
+        AND (i.indkey[0:array_length(c.conkey, 1) - 1] @> c.conkey)
+  )
+GROUP BY c.conrelid, c.conname, c.conkey;
+```
+
+#### 2. Identify Sequential Scans Caused by Bad RLS Coverage
+
+Run this directly on your staging or production Supabase database via the SQL Editor:
+
+```sql
+SELECT 
+    schemaname,
+    relname AS table_name,
+    seq_scan,
+    seq_tup_read,
+    idx_scan,
+    idx_tup_fetch,
+    CASE 
+        WHEN (seq_scan + idx_scan) = 0 THEN 0.0
+        ELSE ROUND((seq_scan::numeric / (seq_scan + idx_scan)::numeric) * 100, 2)
+    END AS seq_scan_percentage
+FROM pg_stat_user_tables
+WHERE schemaname = 'public'
+  AND (seq_scan + idx_scan) > 50
+ORDER BY seq_scan_percentage DESC, seq_tup_read DESC
+LIMIT 20;
+```
+
+#### 3. Unpack RLS Evaluation Penalties with EXPLAIN ANALYZE
+
+To inspect whether PostgreSQL is executing your RLS policy inline or calling expensive foreign sub-plans on every row, evaluate the query using the following harness:
+
+```sql
+-- Set the mock context
+SET LOCAL ROLE authenticated;
+SET LOCAL "request.jwt.claims" = '{"sub": "user-uuid", "tenant_id": "a0000000-0000-0000-0000-000000000001"}';
+
+-- Evaluate the RLS filter cost
+EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS)
+SELECT * FROM public.documents 
+WHERE created_at >= NOW() - INTERVAL '7 days'
+ORDER BY created_at DESC;
+```
+
+**Look for this regression signature:**
+* `Filter: (tenant_id = ...)` executed under a `Seq Scan` with high rows filtered out.
+* Remedy: Build a partial or composite index including the sort key:
+  `CREATE INDEX idx_docs_tenant_filter ON public.documents (tenant_id, created_at DESC);`
+
+---
+
+## 5. Security Audit Rubric & Pre-Flight Production Checklist
+
+All engineers must pass this rubric prior to production deployments. Violations in Category 1 or 2 require immediate pull-request cancellation.
+
+| Category | Verification Item | Assessment Method | Pass/Fail Condition |
+| :--- | :--- | :--- | :--- |
+| **1. Access Controls** | Every table in the `public` schema has Row Level Security active. | Query `pg_tables` cross-referenced with `pg_class.relrowsecurity`. | **Pass:** 0 tables in `public` have `relrowsecurity = false`. |
+| **1. Access Controls** | Default Table Privileges do not expose sequences or tables to `anon`. | Audit `information_schema.role_table_grants` for `anon`. | **Pass:** Zero write privileges assigned to the `anon` role. |
+| **2. Function Isolation** | All Custom Functions declare explicit schemas and temp search paths. | Check functions for missing `SET search_path = public, pg_temp`. | **Pass:** Zero functions with variable search path resolution. |
+| **2. Function Isolation** | Functions marked `SECURITY DEFINER` do not leak execution contexts. | Verify `SECURITY DEFINER` functions perform auth/tenant parameter checks. | **Pass:** Caller identity verified against `auth.uid()` explicitly. |
+| **3. Performance & Locks** | Dynamic schema migrations apply locks with absolute timeouts. | Verify `lock_timeout` and `statement_timeout` are set locally. | **Pass:** `lock_timeout <= 4s`, `statement_timeout <= 15s`. |
+| **3. Performance & Locks** | Concurrent index building used across production environments. | Review DDL scripts for `CREATE INDEX CONCURRENTLY`. | **Pass:** Standard `CREATE INDEX` without `CONCURRENTLY` is rejected. |
+| **4. Storage Hardening** | Public storage buckets do not expose internal multi-tenant payloads. | Inspect `storage.buckets` configuration settings. | **Pass:** `public` set to `false`; object access policies bound to `tenant_id`. |
+| **5. Network Boundary** | Database direct access port (5432) blocked externally. | Verify only Supavisor/PgBouncer port (6543) and APIs are reachable. | **Pass:** No direct unpooled ingress from external IPs. |
+
+---
+
+## 6. Incident Recovery Runbooks (Cross-Tenant Leakage)
+
+If cross-tenant leakage or data spill is detected, execute the following protocol immediately. Every second the pooler remains connected risks tenant leaks being cached in client applications and proxies.
+
+### Step-by-Step Response Protocol
+
+```
+[T+00m] DETECT: Cross-tenant leakage verified
+   │
+[T+02m] SEVER: Terminate connection pooler & set DB to read-only
+   │
+[T+05m] CONTAIN: Revoke compromised JWT tokens and API keys
+   │
+[T+15m] AUDIT: Scan WAL/pg_stat_activity to isolate leaked data boundaries
+   │
+[T+45m] RESTORE: Execute Point-in-Time Recovery (PITR) or table rollback
+   │
+[T+90m] POST-INCIDENT: Audit log generation and tenant notifications
+```
+
+---
+
+### Step 1: Emergency Database Hard-Stop (Severing Connections)
+
+Execute within the Supabase SQL Console or secure root administrative shell:
+
+```sql
+-- 1. Put public schema into read-only transaction mode across all actors
+ALTER ROLE anon SET default_transaction_read_only = on;
+ALTER ROLE authenticated SET default_transaction_read_only = on;
+
+-- 2. Force terminate all existing backend client connections excluding admin connection
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE usename IN ('anon', 'authenticated', 'authenticator')
+  AND pid <> pg_backend_pid();
+```
+
+---
+
+### Step 2: Emergency RLS Fail-Safe Overrides
+
+Drop permissive and buggy policies, and re-apply an explicit fail-safe deny:
+
+```sql
+-- Lock down table instantly to ensure nothing leaks
+ALTER TABLE public.documents FORCE ROW LEVEL SECURITY;
+
+-- Apply absolute system-wide quarantine policy
+DROP POLICY IF EXISTS quarantine_lockdown ON public.documents;
+CREATE POLICY quarantine_lockdown ON public.documents
+    AS RESTRICTIVE
+    FOR ALL
+    TO PUBLIC
+    USING (false);
+```
+
+---
+
+### Step 3: Determining Data Boundary Leaks (Audit Extraction)
+
+Query the active log storage or `pg_stat_statements` to determine what data rows were returned to unauthorized tenant callers:
+
+```sql
+-- Identify IP addresses, execution metrics, and payloads from pg_stat_statements
+SELECT 
+    calls,
+    total_exec_time,
+    rows,
+    mean_exec_time,
+    query
+FROM pg_stat_statements
+WHERE query ILIKE '%public.documents%'
+ORDER BY total_exec_time DESC
+LIMIT 50;
+```
+
+---
+
+### Step 4: Step-by-Step Point-In-Time-Recovery (PITR) Restoration
+
+1. **Capture Point of Failure:** Identify the exact transaction or timestamp immediately preceding the bad migration or bad data leak deployment (e.g., `2024-10-27 14:22:18.104+00`).
+2. **Launch Recovery Node:**
+   - In Supabase Dashboard: Navigate to **Project Settings** -> **Backends / Infrastructure** -> **Database Backups**.
+   - Select **Point-in-Time Recovery**.
+   - Enter target timestamp directly: `YYYY-MM-DDTHH:MM:SSZ` corresponding to `t - 1 minute` before the incident.
+   - Designate a destination cloned project: `app-prod-restored-node`.
+3. **Data Verification:**
+   Verify row counts and verify cryptographic checksum of compromised tables inside `app-prod-restored-node`:
+   ```sql
+   SELECT count(*), md5(array_agg(id::text ORDER BY id)::text) 
+   FROM public.documents;
+   ```
+4. **Data Sync-Back to Primary Production Stack:**
+   Use `pg_dump` with direct standard-out piping via connection pooling ports:
+   ```bash
+   pg_dump -h db.restored-node.supabase.co -U postgres -d postgres \
+     --table=public.documents \
+     --data-only \
+     --inserts > recovered_documents_payload.sql
+
+   # Apply to production through direct transaction wrapping:
+   psql -h db.production-node.supabase.co -U postgres -d postgres -v ON_ERROR_STOP=1 << 'EOF'
+   BEGIN;
+   TRUNCATE TABLE public.documents CASCADE;
+   \i recovered_documents_payload.sql
+   COMMIT;
+   EOF
+   ```
+5. **Lift Global System Quarantine:**
+   Once schema and row levels are repaired and confirmed isolated:
+   ```sql
+   -- Remove the blanket deny
+   DROP POLICY IF EXISTS quarantine_lockdown ON public.documents;
+   
+   -- Restore standard transactional read/write modes
+   ALTER ROLE anon SET default_transaction_read_only = off;
+   ALTER ROLE authenticated SET default_transaction_read_only = off;
+   ```
+
+---
+
+## 7. Migration Incident Post-Mortem Template
+
+```markdown
+# Incident Post-Mortem: Cross-Tenant Data Isolation Breach
+
+## 1. Executive Summary
+- **Date of Incident:** YYYY-MM-DD
+- **Duration of Outage/Leak:** [HH:MM:SS]
+- **Incident Commander:** [Lead Platform Architect Name]
+- **Impact Assessment:** Tenant [ID] data exposed to Tenant [ID]. Total records impacted: [Count].
+- **Production Downtime:** [Minutes].
+
+## 2. Root Cause Analysis (5-Whys)
+1. **Why did the failure occur?**
+   A cross-tenant query leak returned data to an unauthenticated caller.
+2. **Why was the query able to execute?**
+   A migration updated table `public.documents` by executing `ALTER TABLE public.documents ADD COLUMN public_status text;`, which inadvertently dropped the restrictive RLS policy configuration.
+3. **Why did the migration alter security configurations?**
+   The developer ran a diff-based migration without checking against the pre-flight verification script.
+4. **Why did the CI/CD pipeline not catch the regression?**
+   The regression test runner skipped the pgTAP execution suite because of an invalid matrix branch configuration.
+5. **Why was there no automated fail-safe?**
+   Table lacked the automated `FORCE ROW LEVEL SECURITY` flag, letting postgres-role derivatives bypass context limits.
+
+## 3. Timeline of Events (UTC)
+| Timestamp | Event / Observation / Engineering Action Taken | Actor |
+| :--- | :--- | :--- |
+| **00:00:00** | Deployment triggered via GitHub Actions workflow run `#1234567`. | Engineer A |
+| **00:01:20** | Migration applied successfully to production database instance. | CLI Runner |
+| **00:04:15** | Synthetic anomaly alerts flag increased read volume on `public.documents`. | Datadog/PagerDuty |
+| **00:06:00** | Incident commander steps in. Runs Emergency Lockdown runbook. | Engineer B |
+| **00:07:30** | Pooled connections severed; read-only lock applied to authenticated roles. | Engineer B |
+| **00:22:00** | Faulty migration identified; root cause determined to be dropped policy. | Engineer C |
+| **00:35:00** | Corrective migration applied via isolated emergency pipeline. | Engineer B |
+| **00:41:00** | Automated pgTAP security assertions run green against production snapshot. | CI Runner |
+| **00:45:00** | Production database transactions set back to read-write mode. System normal. | Engineer B |
+
+## 4. Impacted Tenants & Records Audit
+```sql
+-- Query executed during incident analysis to isolate affected boundaries:
+SELECT DISTINCT 
+    (request.jwt.claims->>'tenant_id') AS affected_tenant,
+    count(*) AS exposed_rows
+FROM audit.logged_actions
+WHERE table_name = 'documents'
+  AND timestamp BETWEEN '2024-10-27 10:00:00+00' AND '2024-10-27 10:45:00+00'
+GROUP BY 1;
+```
+
+## 5. Preventative Remediation Action Items
+- [ ] **Action 1 (CI/CD):** Enforce mandatory branch protection rules forbidding merges when `pg_prove` step fails.
+- [ ] **Action 2 (Schema):** Apply `ALTER TABLE <table_name> FORCE ROW LEVEL SECURITY;` to all public schemas.
+- [ ] **Action 3 (Audit):** Enable persistent logging via `pgaudit` targeting explicit `SELECT` assertions across tenant tables.
+- [ ] **Action 4 (Runbook):** Conduct mock cross-tenant breach drill with engineering team within 30 days.
