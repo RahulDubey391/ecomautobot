@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The SaaS Retention & Onboarding Vault: 50+ Activation Playbooks, Email Flows & Churn Prevention Systems</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: The Core Activation Framework &amp; Product-Led Onboarding</h1>
+<p>User onboarding is not a UX tour, a product walkthrough, or a sequence of tooltips designed to point out interface chrome. It is an algorithmic path to value realization. </p>
+<p>If a user signs up for your SaaS and fails to reach the core value proposition within their first session, your 30-day retention curve collapses asymptotically toward zero. This module provides the operational frameworks, database schemas, instrumentation queries, and UX architectures required to compress Time-to-Value (TTV) to under 180 seconds, engineer predictable "AHA" moments, and implement progressive profiling engines that maximize conversion without introducing cognitive fatigue.</p>
+<hr />
+<h2>1. The Mathematical Engine of User Activation</h2>
+<p>Activation must be treated as a mathematical state change, not a subjective sentiment. A user is activated if and only if they complete a deterministic sequence of actions correlated with long-term retention at a statistically significant threshold ($p &lt; 0.01$).</p>
+<h3>The Activation Triad</h3>
+<p>Activation comprises three distinct chronological milestones:</p>
+<pre><code>[ Signup ] ──&gt; ( Setup Moment ) ──&gt; ( AHA Moment ) ──&gt; ( Habit Moment ) ──&gt; [ Retained ]
+</code></pre>
+<ol>
+<li><strong>The Setup Moment (Operational Threshold):</strong> The minimum baseline configuration required for the product to function (e.g., inviting 1 teammate, installing an npm package, uploading a single CSV, pointing a DNS record).</li>
+<li><strong>The AHA Moment (Cognitive Threshold):</strong> The precise emotional and intellectual inflection point where the user first extracts the core utility promise of the software (e.g., seeing their first live error trace in Datadog, reading an AI-generated summary of their own database, seeing a live Figma cursor).</li>
+<li><strong>The Habit Moment (Behavioral Threshold):</strong> The establishment of an organic re-engagement frequency within the natural usage cycle (e.g., creating 3 documents per week for 3 consecutive weeks; querying an analytics dashboard every morning at 09:00).</li>
+</ol>
+<h3>Diagnostic Benchmarks Across SaaS Archetypes</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">SaaS Archetype</th>
+<th style="text-align: left;">Setup Moment</th>
+<th style="text-align: left;">AHA Moment</th>
+<th style="text-align: left;">Habit Moment</th>
+<th style="text-align: left;">Target Median TTV</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>B2B Infrastructure / DevTool</strong></td>
+<td style="text-align: left;">API Key generation &amp; SDK initialization</td>
+<td style="text-align: left;">First ingest event visible in debugger UI</td>
+<td style="text-align: left;">$\ge 500$ production calls/day across 7 days</td>
+<td style="text-align: left;">$&lt; 180$ seconds</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Productivity / Work Management</strong></td>
+<td style="text-align: left;">Workspace created + 1 integration linked</td>
+<td style="text-align: left;">First task completed or first doc shared</td>
+<td style="text-align: left;">$\ge 3$ active days/week for 2 consecutive weeks</td>
+<td style="text-align: left;">$&lt; 120$ seconds</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Data Analytics / BI</strong></td>
+<td style="text-align: left;">Data source connected (DB or CSV)</td>
+<td style="text-align: left;">First chart render answering a specific query</td>
+<td style="text-align: left;">$\ge 2$ dashboards shared or exported/week</td>
+<td style="text-align: left;">$&lt; 300$ seconds</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>FinTech / Billing</strong></td>
+<td style="text-align: left;">Stripe/Plaid connection or KYC check</td>
+<td style="text-align: left;">First invoice generated or payout cleared</td>
+<td style="text-align: left;">Recurring weekly reconciliation cycle</td>
+<td style="text-align: left;">$&lt; 600$ seconds</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Marketing Automation / CRM</strong></td>
+<td style="text-align: left;">Contact list import or tracking pixel setup</td>
+<td style="text-align: left;">First campaign sent to $&gt; 10$ recipients</td>
+<td style="text-align: left;">Automated workflow triggered $&gt; 3\times$/week</td>
+<td style="text-align: left;">$&lt; 420$ seconds</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Zero-Friction Signup &amp; Progressive Profiling Architectures</h2>
+<p>The conventional wisdom that "fewer fields equal higher conversion" is incomplete. Low friction at signup that results in a generic, non-personalized empty state merely shifts friction into the core application, where drop-offs are permanent.</p>
+<p>The objective is to eliminate <strong>Extraneous Physical Friction</strong> (e.g., unnecessary password confirmations, reCAPTCHAs, legacy select boxes) while deliberately introducing <strong>Strategic Cognitive Alignment</strong> (profiling questions that immediately customize the application workspace).</p>
+<h3>Friction Audit Framework</h3>
+<pre><code>Total Session Friction = Cognitive Load (Decisions) + Physical Load (Keystrokes/Clicks) - Perceived Imminent Value
+</code></pre>
+<p>If <code>Perceived Imminent Value</code> falls below the combined load at any point before the AHA moment, the tab is closed.</p>
+<h3>Database Architecture: Schema for Stateful Onboarding</h3>
+<p>To prevent users from becoming trapped in broken onboarding loops across devices or encountering repetitive modals, onboarding state must be decoupled from generic user attributes and persisted in an immutable telemetry table alongside a dynamic state machine.</p>
+<pre><code class="language-sql">-- DDL for PostgreSQL / Supabase
+CREATE TYPE onboarding_step_status AS ENUM ('pending', 'in_progress', 'completed', 'skipped', 'failed');
+
+CREATE TABLE public.workspaces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE public.users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    role VARCHAR(50) DEFAULT 'member' NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE public.onboarding_states (
+    user_id UUID PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
+    persona_role VARCHAR(100),
+    team_size_bracket VARCHAR(50),
+    primary_use_case VARCHAR(100),
+    current_step VARCHAR(100) NOT NULL DEFAULT 'workspace_init',
+    completed_steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_activated BOOLEAN NOT NULL DEFAULT FALSE,
+    activated_at TIMESTAMPTZ,
+    time_to_value_seconds INTEGER,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE public.onboarding_telemetry_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    step_name VARCHAR(100) NOT NULL,
+    action onboarding_step_status NOT NULL,
+    time_spent_ms INTEGER,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX idx_telemetry_user_step ON public.onboarding_telemetry_events(user_id, step_name);
+</code></pre>
+<h3>The 3-Step Progressive Profiling Engine</h3>
+<p>Never ask for information you can infer from the user's domain, IP, or behavior. Collect profile data progressively across logical usage checkpoints:</p>
+<pre><code>Step 1: Identity &amp; Authentication (Email + OAuth only)
+            │
+            ▼
+Step 2: Intent Mapping (Select 1 of 3 concrete outcomes)
+            │
+            ▼
+Step 3: Immediate Workspace Pre-Population (No blank slate)
+</code></pre>
+<h4>Production React/Next.js Dynamic Profiling Component</h4>
+<p>This component runs entirely on the client, hydrates the onboarding state to the database, applies optimistic UI patterns, and triggers dynamic template instantiation based on user intent.</p>
+<pre><code class="language-tsx">// components/onboarding/ProgressiveProfiler.tsx
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+interface ProfilePayload {
+  role: string;
+  useCase: string;
+  teamSize: string;
+}
+
+const USE_CASES = [
+  {
+    id: 'api_monitoring',
+    title: 'Monitor Production APIs',
+    description: 'Set up synthetic checks, webhook alerts, and uptime SLAs.',
+    badge: 'Technical'
+  },
+  {
+    id: 'customer_analytics',
+    title: 'Track User Retention',
+    description: 'Measure cohorts, conversion funnels, and activation paths.',
+    badge: 'Growth'
+  },
+  {
+    id: 'internal_tooling',
+    title: 'Build Internal Dashboards',
+    description: 'Connect Postgres, Snowflake, or Airtable to instant UIs.',
+    badge: 'Operations'
+  }
+];
+
+export default function ProgressiveProfiler({ userId }: { userId: string }) {
+  const router = useRouter();
+  const [loading, setLoading] = useState&lt;boolean&gt;(false);
+  const [selectedUseCase, setSelectedUseCase] = useState&lt;string&gt;('api_monitoring');
+  const [role, setRole] = useState&lt;string&gt;('engineer');
+  const [teamSize, setTeamSize] = useState&lt;string&gt;('1-10');
+
+  const handleCompleteProfiling = async () =&gt; {
+    setLoading(true);
+    const startTime = window.performance.now();
+
+    try {
+      const response = await fetch('/api/v1/onboarding/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          persona_role: role,
+          primary_use_case: selectedUseCase,
+          team_size_bracket: teamSize,
+          client_timestamp: new Date().toISOString()
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to persist onboarding state');
+
+      const endTime = window.performance.now();
+      const durationMs = Math.round(endTime - startTime);
+
+      // Track telemetry
+      await fetch('/api/v1/telemetry/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          step_name: 'progressive_profiling',
+          action: 'completed',
+          time_spent_ms: durationMs,
+          metadata: { selectedUseCase, role, teamSize }
+        })
+      });
+
+      // Route to custom workspace hydrated with selected templates
+      router.push(`/dashboard?template=${selectedUseCase}&amp;hydrated=true`);
+    } catch (error) {
+      console.error('Profiling error:', error);
+      setLoading(false);
+    }
+  };
+
+  return (
+    &lt;div className=&quot;max-w-2xl mx-auto py-12 px-4 sm:px-6&quot;&gt;
+      &lt;div className=&quot;text-center mb-8&quot;&gt;
+        &lt;h1 className=&quot;text-3xl font-extrabold text-gray-900 tracking-tight&quot;&gt;
+          Tailor your workspace
+        &lt;/h1&gt;
+        &lt;p className=&quot;mt-2 text-sm text-gray-600&quot;&gt;
+          We will pre-configure your pipelines based on your operational target.
+        &lt;/p&gt;
+      &lt;/div&gt;
+
+      &lt;div className=&quot;space-y-6&quot;&gt;
+        &lt;div&gt;
+          &lt;label className=&quot;block text-sm font-medium text-gray-700 mb-2&quot;&gt;
+            What is your primary deployment objective?
+          &lt;/label&gt;
+          &lt;div className=&quot;grid grid-cols-1 gap-4&quot;&gt;
+            {USE_CASES.map((item) =&gt; (
+              &lt;div
+                key={item.id}
+                onClick={() =&gt; setSelectedUseCase(item.id)}
+                className={`relative flex cursor-pointer rounded-lg border p-4 shadow-sm focus:outline-none transition-all ${
+                  selectedUseCase === item.id
+                    ? 'border-indigo-600 ring-2 ring-indigo-600 bg-indigo-50/30'
+                    : 'border-gray-300 hover:border-gray-400 bg-white'
+                }`}
+              &gt;
+                &lt;div className=&quot;flex flex-1 items-center justify-between&quot;&gt;
+                  &lt;div className=&quot;block&quot;&gt;
+                    &lt;span className=&quot;block text-sm font-semibold text-gray-900&quot;&gt;
+                      {item.title}
+                    &lt;/span&gt;
+                    &lt;span className=&quot;block text-xs text-gray-500 mt-1&quot;&gt;
+                      {item.description}
+                    &lt;/span&gt;
+                  &lt;/div&gt;
+                  &lt;span className=&quot;ml-4 text-xs font-mono bg-gray-100 text-gray-700 px-2.5 py-1 rounded-full&quot;&gt;
+                    {item.badge}
+                  &lt;/span&gt;
+                &lt;/div&gt;
+              &lt;/div&gt;
+            ))}
+          &lt;/div&gt;
+        &lt;/div&gt;
+
+        &lt;div className=&quot;grid grid-cols-2 gap-4&quot;&gt;
+          &lt;div&gt;
+            &lt;label className=&quot;block text-sm font-medium text-gray-700 mb-1&quot;&gt;
+              Your Professional Role
+            &lt;/label&gt;
+            &lt;select
+              value={role}
+              onChange={(e) =&gt; setRole(e.target.value)}
+              className=&quot;mt-1 block w-full rounded-md border border-gray-300 bg-white py-2 px-3 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm&quot;
+            &gt;
+              &lt;option value=&quot;engineer&quot;&gt;Software Engineer&lt;/option&gt;
+              &lt;option value=&quot;product&quot;&gt;Product Manager&lt;/option&gt;
+              &lt;option value=&quot;data&quot;&gt;Data Scientist / Analyst&lt;/option&gt;
+              &lt;option value=&quot;founder&quot;&gt;Founder / Executive&lt;/option&gt;
+            &lt;/select&gt;
+          &lt;/div&gt;
+
+          &lt;div&gt;
+            &lt;label className=&quot;block text-sm font-medium text-gray-700 mb-1&quot;&gt;
+              Company Size
+            &lt;/label&gt;
+            &lt;select
+              value={teamSize}
+              onChange={(e) =&gt; setTeamSize(e.target.value)}
+              className=&quot;mt-1 block w-full rounded-md border border-gray-300 bg-white py-2 px-3 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-indigo-500 sm:text-sm&quot;
+            &gt;
+              &lt;option value=&quot;1&quot;&gt;Solo Operator (1)&lt;/option&gt;
+              &lt;option value=&quot;2-10&quot;&gt;Early Stage (2-10)&lt;/option&gt;
+              &lt;option value=&quot;11-50&quot;&gt;Scaleup (11-50)&lt;/option&gt;
+              &lt;option value=&quot;50+&quot;&gt;Enterprise (50+)&lt;/option&gt;
+            &lt;/select&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+
+        &lt;button
+          type=&quot;button&quot;
+          onClick={handleCompleteProfiling}
+          disabled={loading}
+          className=&quot;w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50&quot;
+        &gt;
+          {loading ? 'Initializing Custom Engine...' : 'Launch Workspace'}
+        &lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>3. Engineering the Sub-3-Minute Time-to-Value (TTV)</h2>
+<p>The single greatest point of failure in PLG software is the <strong>"Blank Canvas Paralysis"</strong>. When a user lands on an empty table, empty dashboard, or empty document, cognitive load spikes while motivation drops.</p>
+<h3>The "Blank Slate" Eradication Protocol</h3>
+<p>To guarantee sub-3-minute TTV, execute one of the following architectural strategies:</p>
+<pre><code>                  ┌─ Strategy A: The Interactive Sandbox
+                  │  (Pre-populate real data; user edits rather than creates)
+                  │
+Empty State ──────┼─ Strategy B: The Instant Integration Ingest
+Alternatives      │  (1-Click connect via OAuth pulls in active assets)
+                  │
+                  └─ Strategy C: The Algorithmic Scaffold
+                     (Answer 3 questions; generate complete working system)
+</code></pre>
+<ol>
+<li><strong>Synthetic Hydration (The Sandbox Model):</strong> Pre-populate the user's workspace with production-grade mock data tagged as <code>is_demo: true</code>. Let them interact, modify, and delete it immediately.</li>
+<li><strong>Reverse ETL Ingestion:</strong> During setup, provide a 1-click connect to Google Workspace, GitHub, or Slack. Pull existing team artifacts to immediately display the user's actual operating context.</li>
+<li><strong>Template Scaffolding:</strong> Never leave default text inputs blank. If the user creates a "Project," pre-fill sensible defaults based on their industry or selected persona.</li>
+</ol>
+<h3>Session Hydration Implementation</h3>
+<p>When the user enters the application, run an initialization script that verifies whether the workspace has production data. If not, seed high-fidelity mock entities immediately.</p>
+<pre><code class="language-typescript">// lib/onboarding/seedWorkspace.ts
+import { SupabaseClient } from '@supabase/supabase-js';
+
+interface SeedConfig {
+  workspaceId: string;
+  userId: string;
+  primaryUseCase: string;
+}
+
+export async function seedWorkspaceDefaults(
+  supabase: SupabaseClient,
+  config: SeedConfig
+): Promise&lt;{ success: boolean; seededCount: number }&gt; {
+  const { workspaceId, userId, primaryUseCase } = config;
+
+  // Determine mock payload according to use case
+  const demoEntities = primaryUseCase === 'api_monitoring' 
+    ? [
+        { name: 'Production Checkout API', endpoint: 'https://api.domain.com/v1/checkout', status: 200, latency_ms: 142 },
+        { name: 'Auth Gateway (OAuth2)', endpoint: 'https://auth.domain.com/token', status: 200, latency_ms: 89 },
+        { name: 'Webhooks Ingestion Worker', endpoint: 'https://hooks.domain.com/stripe', status: 504, latency_ms: 1250 }
+      ]
+    : [
+        { name: 'Self-Serve Conversion Flow', endpoint: 'funnel://app.core/signup-to-paid', status: 200, latency_ms: 45 },
+        { name: 'Team Invite Loop', endpoint: 'funnel://app.core/invitations', status: 200, latency_ms: 32 }
+      ];
+
+  const records = demoEntities.map(entity =&gt; ({
+    workspace_id: workspaceId,
+    created_by: userId,
+    title: entity.name,
+    target_resource: entity.endpoint,
+    last_status_code: entity.status,
+    observed_latency: entity.latency_ms,
+    is_synthetic_demo: true,
+    created_at: new Date().toISOString()
+  }));
+
+  const { data, error } = await supabase
+    .from('monitored_resources')
+    .insert(records)
+    .select();
+
+  if (error) {
+    console.error('Failed to seed sandbox entities:', error);
+    return { success: false, seededCount: 0 };
+  }
+
+  // Insert a marker that the user has reached the &quot;Setup Moment&quot; automatically
+  await supabase
+    .from('onboarding_states')
+    .update({ 
+      current_step: 'sandbox_hydrated',
+      completed_steps: ['workspace_init', 'sandbox_hydrated']
+    })
+    .eq('user_id', userId);
+
+  return { success: true, seededCount: data.length };
+}
+</code></pre>
+<hr />
+<h2>4. The AHA Moment Discovery &amp; Verification System</h2>
+<p>You cannot engineer the AHA moment until you mathematically isolate it from historical cohort data. The AHA moment is the interaction behavior that maximizes the combined metric of <strong>Coverage</strong> (% of retained users who did it) and <strong>Precision</strong> (% of users who did it that retained).</p>
+<h3>SQL Analysis Script: Isolating the AHA Event</h3>
+<p>Run this query against your event-tracking warehouse (PostgreSQL, Snowflake, or BigQuery) to determine which early product actions correlate most strongly with Day-30 retention.</p>
+<pre><code class="language-sql">-- PostgreSQL / Redshift Analytics Query: AHA Moment Correlation Engine
+WITH user_cohort AS (
+    SELECT 
+        u.id AS user_id,
+        u.created_at AS signup_date,
+        MAX(CASE WHEN a.occurred_at &gt;= u.created_at + INTERVAL '28 days' 
+                  AND a.occurred_at &lt;= u.created_at + INTERVAL '35 days' 
+                 THEN 1 ELSE 0 END) AS is_retained_d30
+    FROM users u
+    LEFT JOIN activity_logs a ON u.id = a.user_id
+    WHERE u.created_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '35 days'
+    GROUP BY u.id, u.created_at
+),
+event_matrix AS (
+    SELECT 
+        c.user_id,
+        c.is_retained_d30,
+        -- Event 1: Shared an asset within first 48 hours
+        MAX(CASE WHEN e.event_name = 'asset_shared' 
+                  AND e.created_at &lt;= c.signup_date + INTERVAL '48 hours' 
+                 THEN 1 ELSE 0 END) AS did_share_asset_48h,
+        -- Event 2: Invited teammate within first 48 hours
+        MAX(CASE WHEN e.event_name = 'team_invite_sent' 
+                  AND e.created_at &lt;= c.signup_date + INTERVAL '48 hours' 
+                 THEN 1 ELSE 0 END) AS did_invite_team_48h,
+        -- Event 3: Created &gt; 3 resources within first 48 hours
+        CASE WHEN COUNT(CASE WHEN e.event_name = 'resource_created' 
+                              AND e.created_at &lt;= c.signup_date + INTERVAL '48 hours' 
+                             THEN 1 END) &gt;= 3 
+             THEN 1 ELSE 0 END AS did_create_3_resources_48h
+    FROM user_cohort c
+    LEFT JOIN product_events e ON c.user_id = e.user_id
+    GROUP BY c.user_id, c.is_retained_d30
+)
+SELECT 
+    'Shared Asset Within 48h' AS behavioral_test,
+    COUNT(*) AS total_sample_size,
+    ROUND(AVG(did_share_asset_48h) * 100, 2) AS population_coverage_pct,
+    ROUND(AVG(CASE WHEN did_share_asset_48h = 1 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(AVG(did_share_asset_48h), 0) * 100, 2) AS precision_retained_pct,
+    ROUND(AVG(CASE WHEN did_share_asset_48h = 0 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(1 - AVG(did_share_asset_48h), 0) * 100, 2) AS control_retained_pct
+FROM event_matrix
+UNION ALL
+SELECT 
+    'Invited Teammate Within 48h',
+    COUNT(*),
+    ROUND(AVG(did_invite_team_48h) * 100, 2),
+    ROUND(AVG(CASE WHEN did_invite_team_48h = 1 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(AVG(did_invite_team_48h), 0) * 100, 2),
+    ROUND(AVG(CASE WHEN did_invite_team_48h = 0 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(1 - AVG(did_invite_team_48h), 0) * 100, 2)
+FROM event_matrix
+UNION ALL
+SELECT 
+    'Created 3 Resources Within 48h',
+    COUNT(*),
+    ROUND(AVG(did_create_3_resources_48h) * 100, 2),
+    ROUND(AVG(CASE WHEN did_create_3_resources_48h = 1 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(AVG(did_create_3_resources_48h), 0) * 100, 2),
+    ROUND(AVG(CASE WHEN did_create_3_resources_48h = 0 THEN is_retained_d30 ELSE 0 END) / 
+          NULLIF(1 - AVG(did_create_3_resources_48h), 0) * 100, 2)
+FROM event_matrix;
+</code></pre>
+<h3>AHA Discovery Decision Matrix</h3>
+<p>Use the resulting data to evaluate which event candidate to select as the primary product-led onboarding target:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Event Candidate</th>
+<th style="text-align: left;">Coverage (% Pop)</th>
+<th style="text-align: left;">Precision (D30 Ret%)</th>
+<th style="text-align: left;">Lift vs. Baseline</th>
+<th style="text-align: left;">Final Activation Choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Shared Asset $\le 48\text{h}$</strong></td>
+<td style="text-align: left;">$18.4\%$</td>
+<td style="text-align: left;">$64.2\%$</td>
+<td style="text-align: left;">$+38.1\%$</td>
+<td style="text-align: left;"><strong>Rejected:</strong> High precision, but coverage is too narrow.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Created 3 Resources $\le 48\text{h}$</strong></td>
+<td style="text-align: left;">$62.1\%$</td>
+<td style="text-align: left;">$52.8\%$</td>
+<td style="text-align: left;">$+26.7\%$</td>
+<td style="text-align: left;"><strong>SELECTED:</strong> Strong balance of coverage and lift.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Invited Teammate $\le 48\text{h}$</strong></td>
+<td style="text-align: left;">$8.2\%$</td>
+<td style="text-align: left;">$71.0\%$</td>
+<td style="text-align: left;">$+44.9\%$</td>
+<td style="text-align: left;"><strong>Secondary:</strong> Move to progressive prompt later.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>5. AI-Driven Dynamic Onboarding Flow System Prompt</h2>
+<p>Modern PLG products do not show identical onboarding screens to every user. Use this system prompt in your background personalization worker. The prompt takes the user's role, company size, intent, and raw inputs, then generates a customized onboarding sequence with concrete, tailored copy.</p>
+<pre><code class="language-markdown">You are an expert Principal Product-Led Growth (PLG) Architect and User Onboarding Engineer. 
+
+Your objective is to evaluate a newly signed-up SaaS user's input profile and output an ultra-tailored, zero-friction onboarding configuration in strict JSON format.
+
+### RULES:
+1. Every step must contain explicit, non-generic micro-copy matching the user's specific vertical.
+2. The sequence must minimize Time-To-Value (TTV) to under 180 seconds.
+3. Propose exactly 3-4 linear steps:
+   - Step 1: Automated Scaffold / Seed (Zero-effort configuration)
+   - Step 2: The Core AHA Action (Primary utility extraction)
+   - Step 3: Distribution or Collaboration (Locking in the Habit moment)
+4. Do NOT output markdown wrappers around the JSON. Return purely valid, parseable JSON.
+
+### INPUT SCHEMA EXPECTED:
+{
+  &quot;role&quot;: &quot;string&quot;,
+  &quot;industry&quot;: &quot;string&quot;,
+  &quot;team_size&quot;: &quot;string&quot;,
+  &quot;primary_use_case&quot;: &quot;string&quot;
+}
+
+### OUTPUT JSON SCHEMA:
+{
+  &quot;tailored_workspace_title&quot;: &quot;string&quot;,
+  &quot;primary_metric_to_track&quot;: &quot;string&quot;,
+  &quot;suggested_seed_asset_name&quot;: &quot;string&quot;,
+  &quot;steps&quot;: [
+    {
+      &quot;step_index&quot;: 1,
+      &quot;step_id&quot;: &quot;string&quot;,
+      &quot;target_route&quot;: &quot;string&quot;,
+      &quot;modal_title&quot;: &quot;string&quot;,
+      &quot;modal_instruction&quot;: &quot;string&quot;,
+      &quot;action_cta&quot;: &quot;string&quot;,
+      &quot;estimated_seconds_to_complete&quot;: 30
+    }
+  ],
+  &quot;fallback_empty_state_copy&quot;: {
+    &quot;heading&quot;: &quot;string&quot;,
+    &quot;subtext&quot;: &quot;string&quot;,
+    &quot;primary_button&quot;: &quot;string&quot;
+  }
+}
+
+### EXAMPLE EVALUATION:
+User Input:
+{
+  &quot;role&quot;: &quot;Security Engineer&quot;,
+  &quot;industry&quot;: &quot;HealthTech&quot;,
+  &quot;team_size&quot;: &quot;50-200&quot;,
+  &quot;primary_use_case&quot;: &quot;SOC2_compliance_automation&quot;
+}
+
+Expected Response:
+{
+  &quot;tailored_workspace_title&quot;: &quot;HIPAA &amp; SOC2 Compliance Pipeline&quot;,
+  &quot;primary_metric_to_track&quot;: &quot;Evidence Collection Pass Rate (%)&quot;,
+  &quot;suggested_seed_asset_name&quot;: &quot;AWS IAM Infrastructure Audit (Sample)&quot;,
+  &quot;steps&quot;: [
+    {
+      &quot;step_index&quot;: 1,
+      &quot;step_id&quot;: &quot;connect_read_only_cloud&quot;,
+      &quot;target_route&quot;: &quot;/settings/integrations/aws&quot;,
+      &quot;modal_title&quot;: &quot;Attach Read-Only Audit Role&quot;,
+      &quot;modal_instruction&quot;: &quot;Deploy our pre-audited CloudFormation template to verify HIPAA/SOC2 baseline controls automatically.&quot;,
+      &quot;action_cta&quot;: &quot;Deploy to AWS Console&quot;,
+      &quot;estimated_seconds_to_complete&quot;: 60
+    },
+    {
+      &quot;step_index&quot;: 2,
+      &quot;step_id&quot;: &quot;run_initial_gap_analysis&quot;,
+      &quot;target_route&quot;: &quot;/dashboard/audits/first-run&quot;,
+      &quot;modal_title&quot;: &quot;Run Baseline Security Audit&quot;,
+      &quot;modal_instruction&quot;: &quot;Execute an immediate scan across active S3 buckets and IAM roles to detect non-compliant assets.&quot;,
+      &quot;action_cta&quot;: &quot;Generate Audit Report&quot;,
+      &quot;estimated_seconds_to_complete&quot;: 30
+    },
+    {
+      &quot;step_index&quot;: 3,
+      &quot;step_id&quot;: &quot;invite_compliance_stakeholder&quot;,
+      &quot;target_route&quot;: &quot;/settings/team&quot;,
+      &quot;modal_title&quot;: &quot;Share Initial Gap Analysis&quot;,
+      &quot;modal_instruction&quot;: &quot;Loop in your external auditor or CTO with read-only executive summary privileges.&quot;,
+      &quot;action_cta&quot;: &quot;Send Auditor Invite&quot;,
+      &quot;estimated_seconds_to_complete&quot;: 30
+    }
+  ],
+  &quot;fallback_empty_state_copy&quot;: {
+    &quot;heading&quot;: &quot;No Active Security Frameworks Configured&quot;,
+    &quot;subtext&quot;: &quot;Select your target framework below to auto-scaffold evidence monitors.&quot;,
+    &quot;primary_button&quot;: &quot;Initialize SOC2 Controls&quot;
+  }
+}
+</code></pre>
+<hr />
+<h2>6. The Onboarding Launch Checklist &amp; QA Audit</h2>
+<p>Before shipping any onboarding flow or updating an activation path, verify every criteria on this production readiness checklist.</p>
+<h3>Step 1: Telemetry &amp; Event Instrument Verification</h3>
+<ul>
+<li>[ ] Every step transition fires both a client-side and a server-side telemetry event.</li>
+<li>[ ] Heartbeat analytics monitor the duration (in milliseconds) spent per step.</li>
+<li>[ ] Drop-off tracking flags exit intent per step (<code>beforeunload</code> listener configured).</li>
+<li>[ ] Telemetry events share a consistent schema: <code>(user_id, session_id, step_id, status, error_code, latency)</code>.</li>
+</ul>
+<h3>Step 2: Empty-State Eradication (Zero Blank Canvases)</h3>
+<ul>
+<li>[ ] The dashboard loads with mock, demo, or pre-seeded data on initial signup.</li>
+<li>[ ] Demo records are visually identifiable with an <code>is_demo</code> badge or banner.</li>
+<li>[ ] Users can delete all synthetic records with a single click ("Clear demo data").</li>
+<li>[ ] The primary Call-to-Action (CTA) replaces the empty state with a single, linear action.</li>
+</ul>
+<h3>Step 3: Progressive Profiling Friction Controls</h3>
+<ul>
+<li>[ ] Total input fields during registration are $\le 3$ (strictly Email/Password or Single Sign-On).</li>
+<li>[ ] No redundant confirmation fields (eliminate "Confirm Password").</li>
+<li>[ ] Dropdowns with more than 6 options include inline search/autocomplete.</li>
+<li>[ ] Every question asked explains <em>why</em> the product requires the input: <code>"To customize your templates"</code>.</li>
+</ul>
+<h3>Step 4: Technical Fail-safes &amp; Responsive Architecture</h3>
+<ul>
+<li>[ ] Users can refresh the page at any onboarding point without losing data or restarting the flow.</li>
+<li>[ ] The state machine routes the user back to their furthest completed step upon re-login.</li>
+<li>[ ] Modals and checklists are fully functional on viewports down to $375\text{px}$ (mobile responsive).</li>
+<li>[ ] All API requests within onboarding gracefully fall back to default states upon a $5\text{xx}$ error.</li>
+</ul>
+<h3>Step 5: Email &amp; Product Trigger Synchronization</h3>
+<ul>
+<li>[ ] Welcome emails match the specific persona captured during progressive profiling.</li>
+<li>[ ] If a user reaches the AHA moment in-app, kill the external "How to get started" email sequence.</li>
+<li>[ ] Behavioral triggers automatically fire a "Stuck in Setup" intervention after 24 hours of inactivity.</li>
+<li>[ ] Workspace invitees skip the initial profiling flow and land directly on the shared</li>
+</ul>
+</body>
+</html>

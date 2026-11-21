@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The SaaS Retention & Onboarding Vault: 50+ Activation Playbooks, Email Flows & Churn Prevention Systems</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Churn Deflection Engines &amp; Frictionless Offboarding Workflows</h1>
+<p>Retention is not the act of preventing cancellations by force; it is the deliberate architecture of value realization, intervention, and clean offboarding. Trapping users behind obfuscated cancellation buttons, mandatory customer support calls, or broken UI loops increases credit card chargebacks, burns brand equity, and violates FTC "Click-to-Cancel" enforcement guidelines.</p>
+<p>This module details production-ready systems for churn deflection: dynamic branching exit logic, algorithmic pause/discount matrices, involuntary churn dunning sequences, and structured self-serve downgrade architectures.</p>
+<hr />
+<h2>1. The 4-Stage Cancellation State Machine</h2>
+<p>A resilient cancellation flow routes users through a predictable, auditable state machine. The user must always retain the agency to complete their cancellation in fewer than four clicks, but each step provides an algorithmic opportunity to resolve the root dissatisfaction.</p>
+<pre><code>[ Active State ]
+       │
+       ▼ (User clicks &quot;Cancel Subscription&quot;)
+[ Stage 1: Diagnosis ] ──&gt; Dynamic Survey Engine (Extract Root Cause)
+       │
+       ▼
+[ Stage 2: Intervention ] ─┬─&gt; Offer Engine (Pause / Discount / Downgrade / Tech Support)
+       │                   ├─&gt; [ Intervention Accepted ] ──&gt; [ Active State (Modified) ]
+       ▼                   │
+[ Stage 3: Confirmation ] &lt;┘ (Intervention Declined)
+       │ ──&gt; Warn on Resource Loss (Data Deletion, Seats, Integrations)
+       ▼
+[ Stage 4: Execution ] ────&gt; Proration / Grace Period / Webhook Dispatch
+</code></pre>
+<h3>Core Operating Principles</h3>
+<ol>
+<li><strong>Never hide the primary exit path:</strong> The "Continue to Cancel" button must always be visible, distinct, and clickable.</li>
+<li><strong>One intervention per session:</strong> Never present a secondary discount if a user declines a pause offer. Multiple popups create hostility.</li>
+<li><strong>Persist the reason code:</strong> Write the cancellation reason directly to the customer's database record to inform lifecycle re-engagement loops and product roadmaps.</li>
+</ol>
+<hr />
+<h2>2. Dynamic Exit Survey Logic Tree</h2>
+<p>The frontend cancellation flow evaluates the selected churn reason and presents one targeted intervention. </p>
+<h3>Exit Survey Decision Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Stated Churn Reason</th>
+<th style="text-align: left;">Secondary Diagnostic Question</th>
+<th style="text-align: left;">Dynamic Intervention Offer</th>
+<th style="text-align: left;">Fallback Action (If Declined)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>"Too expensive / Not using enough"</strong></td>
+<td style="text-align: left;">"What target budget or cadence fits your current workflow?"</td>
+<td style="text-align: left;">50% discount for 2 months OR Account Pause (1 to 3 months)</td>
+<td style="text-align: left;">Process Cancellation at End of Period (EoP)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>"Missing required features"</strong></td>
+<td style="text-align: left;">"Which feature was critical to your project?" (Multi-select)</td>
+<td style="text-align: left;">Direct calendar route to Solutions Engineer OR Feature Beta Opt-in</td>
+<td style="text-align: left;">Process Cancellation at EoP + Tag in CRM for Feature Launch</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>"Bugs / Technical blockers"</strong></td>
+<td style="text-align: left;">"Which module failed?" (Input field + Error log attachment)</td>
+<td style="text-align: left;">High-Priority Escalate Ticket (Bypasses Tier 1 support)</td>
+<td style="text-align: left;">Process Cancellation at EoP + Schedule Post-Mortem</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>"Switching to a competitor"</strong></td>
+<td style="text-align: left;">"Which platform?" (Dropdown: Competitor A, B, C, Other)</td>
+<td style="text-align: left;">Feature/Pricing Comparison Sheet + Concierge Migration Review</td>
+<td style="text-align: left;">Process Immediate Cancellation (Offer Data Export)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>"Temporary project ended"</strong></td>
+<td style="text-align: left;">"When do you anticipate needing this workspace again?"</td>
+<td style="text-align: left;">"Hibernate Mode" ($5/mo to preserve all data, configs, and assets)</td>
+<td style="text-align: left;">Archive data for 90 days; Process Cancellation</td>
+</tr>
+</tbody>
+</table>
+<h3>State Engine Configuration (JSON Schema)</h3>
+<p>Use this schema in your frontend state router (React/Next.js/Vue) to drive the dynamic cancellation modal:</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;http://json-schema.org/draft-07/schema#&quot;,
+  &quot;flowId&quot;: &quot;saas_cancellation_deflection_v2&quot;,
+  &quot;states&quot;: {
+    &quot;INITIAL_STEP&quot;: {
+      &quot;step&quot;: 1,
+      &quot;title&quot;: &quot;We are sorry to see you go&quot;,
+      &quot;subtitle&quot;: &quot;Help us understand what went wrong with your subscription.&quot;,
+      &quot;reasons&quot;: [
+        {
+          &quot;id&quot;: &quot;too_expensive&quot;,
+          &quot;label&quot;: &quot;It is too expensive / Can't justify the cost&quot;,
+          &quot;nextAction&quot;: &quot;SHOW_OFFER_PRICE_SENSITIVITY&quot;
+        },
+        {
+          &quot;id&quot;: &quot;technical_issues&quot;,
+          &quot;label&quot;: &quot;I hit technical bugs or product limitations&quot;,
+          &quot;nextAction&quot;: &quot;SHOW_OFFER_CONCIERGE_SUPPORT&quot;
+        },
+        {
+          &quot;id&quot;: &quot;temporary_project&quot;,
+          &quot;label&quot;: &quot;My project ended / I only needed it temporarily&quot;,
+          &quot;nextAction&quot;: &quot;SHOW_OFFER_PAUSE_ACCOUNT&quot;
+        },
+        {
+          &quot;id&quot;: &quot;competitor_switch&quot;,
+          &quot;label&quot;: &quot;I am switching to another platform&quot;,
+          &quot;nextAction&quot;: &quot;SHOW_COMPETITOR_CAPTURE&quot;
+        }
+      ]
+    },
+    &quot;INTERVENTIONS&quot;: {
+      &quot;SHOW_OFFER_PRICE_SENSITIVITY&quot;: {
+        &quot;type&quot;: &quot;discount&quot;,
+        &quot;headline&quot;: &quot;Keep your plan at 50% off for the next 2 months&quot;,
+        &quot;description&quot;: &quot;We want to support your growth. Maintain full access to all your workflows at half the cost.&quot;,
+        &quot;ctaConfirm&quot;: &quot;Apply 50% Discount&quot;,
+        &quot;ctaDecline&quot;: &quot;No thanks, continue to cancel&quot;,
+        &quot;discountPayload&quot;: {
+          &quot;stripeCouponId&quot;: &quot;REDUCTION_50_2MO&quot;,
+          &quot;durationMonths&quot;: 2
+        }
+      },
+      &quot;SHOW_OFFER_PAUSE_ACCOUNT&quot;: {
+        &quot;type&quot;: &quot;pause&quot;,
+        &quot;headline&quot;: &quot;Pause your subscription instead of starting over&quot;,
+        &quot;description&quot;: &quot;Freeze billing for up to 90 days. We preserve your custom integrations, audit trails, and workspace settings.&quot;,
+        &quot;ctaConfirm&quot;: &quot;Pause Billing for 60 Days&quot;,
+        &quot;ctaDecline&quot;: &quot;I don't need this, continue to cancel&quot;,
+        &quot;pausePayload&quot;: {
+          &quot;durationDays&quot;: 60,
+          &quot;behavior&quot;: &quot;void_invoices_keep_read_only&quot;
+        }
+      },
+      &quot;SHOW_OFFER_CONCIERGE_SUPPORT&quot;: {
+        &quot;type&quot;: &quot;support_escalation&quot;,
+        &quot;headline&quot;: &quot;Let our engineering team resolve this for you&quot;,
+        &quot;description&quot;: &quot;Our product team will diagnose your issue directly within 4 hours. No canned responses.&quot;,
+        &quot;ctaConfirm&quot;: &quot;Open High-Priority Incident&quot;,
+        &quot;ctaDecline&quot;: &quot;Skip and finish cancellation&quot;,
+        &quot;ticketPayload&quot;: {
+          &quot;priority&quot;: &quot;P1&quot;,
+          &quot;slaHours&quot;: 4
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2>3. The Pause &amp; Discount Decision Matrix</h2>
+<p>Indiscriminately giving discounts conditions your customer base to threaten cancellation periodically. Enforce strict server-side eligibility rules before returning an offer payload to the client.</p>
+<h3>Customer Qualification Rules</h3>
+<pre><code>IF (Lifetime_Months &lt; 3) 
+    -&gt; DO NOT offer discount.
+    -&gt; DO NOT offer pause.
+    -&gt; Action: Route directly to single-question survey, then cancel.
+
+IF (Lifetime_Months &gt;= 3 AND Lifetime_Discounts_Applied == 0)
+    -&gt; IF (Reason == &quot;too_expensive&quot;) -&gt; Offer 50% discount for 2 months.
+    -&gt; IF (Reason == &quot;temporary_project&quot;) -&gt; Offer Free Billing Pause (up to 90 days).
+
+IF (Lifetime_Discounts_Applied &gt; 0)
+    -&gt; DO NOT offer discount.
+    -&gt; Action: Offer self-serve downgrade to lowest tier or Free plan.
+
+IF (Monthly_Active_Events == 0 in last 14 days)
+    -&gt; Suppress discount (discounts do not fix abandonment).
+    -&gt; Action: Offer 60-day billing pause + data retention guarantee.
+</code></pre>
+<h3>Server-Side Eligibility Endpoint (Node.js/Express)</h3>
+<pre><code class="language-typescript">import { Request, Response } from 'express';
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+  apiVersion: '2023-10-16',
+});
+
+interface UserRetentionProfile {
+  id: string;
+  stripeCustomerId: string;
+  subscriptionId: string;
+  createdAt: Date;
+  discountsReceivedCount: number;
+  monthlyActiveEvents: number;
+}
+
+export async function evaluateInterventionOffer(
+  user: UserRetentionProfile,
+  churnReason: string
+): Promise&lt;{ offerType: 'DISCOUNT' | 'PAUSE' | 'NONE'; payload?: Record&lt;string, unknown&gt; }&gt; {
+  const accountAgeDays = (Date.now() - user.createdAt.getTime()) / (1000 * 3600 * 24);
+
+  // Guardrail 1: Less than 90 days on platform gets zero retention credits
+  if (accountAgeDays &lt; 90) {
+    return { offerType: 'NONE' };
+  }
+
+  // Guardrail 2: Users who already used a retention discount
+  if (user.discountsReceivedCount &gt; 0) {
+    return { offerType: 'NONE' };
+  }
+
+  // Reason-based pathing
+  if (churnReason === 'too_expensive' &amp;&amp; user.monthlyActiveEvents &gt; 50) {
+    return {
+      offerType: 'DISCOUNT',
+      payload: {
+        stripeCouponId: 'COUPON_RETENTION_50_2M',
+        displayLabel: '50% off for 2 months',
+      },
+    };
+  }
+
+  if (churnReason === 'temporary_project' || user.monthlyActiveEvents === 0) {
+    return {
+      offerType: 'PAUSE',
+      payload: {
+        maxPauseDays: 90,
+        displayLabel: 'Pause billing for 30, 60, or 90 days',
+      },
+    };
+  }
+
+  return { offerType: 'NONE' };
+}
+</code></pre>
+<hr />
+<h2>4. Involuntary Churn &amp; Dunning Recovery System</h2>
+<p>Between 20% and 40% of all SaaS churn is involuntary, caused by expired payment methods, false-positive bank fraud blocks, or arbitrary network timeouts. </p>
+<h3>The Smart Dunning Cadence</h3>
+<pre><code>Day 0:   Payment Fails 
+         ├── Stripe Smart Retries triggered (background)
+         └── Internal Status: &quot;Past Due&quot; (Full App Access Maintained)
+         └── Email 1 (Silent alert / Tone: Low urgency)
+
+Day 3:   Retry #1 Fails
+         └── Email 2 (Action-oriented / Billing link authenticated)
+         └── In-App Banner (Dismissible, visible only to Admin/Owner)
+
+Day 5:   Retry #2 Fails
+         └── In-App Persistent Bar (Sticky, non-dismissible for Admins)
+
+Day 7:   Retry #3 Fails
+         └── Email 3 (Urgent / Warning of service interruption)
+         └── In-App Warning Modal at Login (Requires click-through to app)
+
+Day 14:  Final Retry Fails
+         └── App Access Frozen: Soft Lock (Read-only / Export-only state)
+         └── Email 4 (Final notice / Account suspended)
+
+Day 21:  Subscription Terminal State
+         └── Stripe marks subscription: &quot;Canceled&quot;
+         └── Data scheduled for permanent deletion in 30 days
+</code></pre>
+<h3>Transactional Dunning Email Templates</h3>
+<p>These emails must be plaintext-dominant. HTML marketing templates decrease transactional deliverability and look automated. Every link must bypass login screens using a signed, single-use billing authentication token.</p>
+<h4>Email 1: Day 0 (Payment Failed – Soft Tone)</h4>
+<ul>
+<li><strong>Subject:</strong> Problem processing your payment for {{workspace_name}}</li>
+<li><strong>Preview Text:</strong> We couldn't process your latest invoice. Your access is unaffected.</li>
+</ul>
+<pre><code class="language-text">Hi {{first_name}},
+
+We attempted to process your payment for {{workspace_name}} today, but the transaction was declined by your bank.
+
+This can happen for routine reasons, including card expiration, updated fraud algorithms, or billing address mismatches. 
+
+Your service has not been interrupted, and your workflows remain fully operational.
+
+You can verify or update your payment details directly using this secure link (valid for 72 hours, no login required):
+{{secure_billing_link}}
+
+If your card details are already up to date, you may need to authorize the transaction with your issuing bank.
+
+Best regards,  
+The {{company_name}} Billing Team
+</code></pre>
+<h4>Email 2: Day 3 (Escalation – Administrative Directness)</h4>
+<ul>
+<li><strong>Subject:</strong> Action required: Update payment method for {{workspace_name}}</li>
+<li><strong>Preview Text:</strong> Your payment failed a second time. Please update your card.</li>
+</ul>
+<pre><code class="language-text">Hi {{first_name}},
+
+Our second attempt to process payment for your {{workspace_name}} account has failed.
+
+To prevent any interruption to your production integrations and team access, please take two minutes to update your card on file:
+
+{{secure_billing_link}}
+
+Outstanding Balance: ${{invoice_amount}}
+Attempted Method: {{card_brand}} ending in {{card_last_four}}
+
+If this is not resolved by {{grace_period_date}}, your account will be placed into a restricted, read-only status.
+
+Best regards,  
+The {{company_name}} Billing Team
+</code></pre>
+<h4>Email 3: Day 7 (Pre-Suspension Notice)</h4>
+<ul>
+<li><strong>Subject:</strong> Urgent: Account suspension scheduled for {{workspace_name}}</li>
+<li><strong>Preview Text:</strong> We will suspend your workspace on {{suspension_date}} due to an unpaid balance.</li>
+</ul>
+<pre><code class="language-text">Hi {{first_name}},
+
+We have been unable to process your payment after multiple attempts. 
+
+As a result, your workspace ({{workspace_name}}) is scheduled for suspension on {{suspension_date}}.
+
+Once suspended:
+- All active API keys and integrations will be disabled.
+- Team members will lose editing permissions.
+- Automated pipeline schedules will pause.
+
+To keep your workspace active, update your payment details immediately:
+{{secure_billing_link}}
+
+If you need this invoice routed to an alternative accounts payable department, please reply directly to this email.
+
+Best regards,  
+The {{company_name}} Billing Team
+</code></pre>
+<h4>Email 4: Day 14 (Suspension Activated – Grace Period Recovery)</h4>
+<ul>
+<li><strong>Subject:</strong> Workspace suspended: {{workspace_name}}</li>
+<li><strong>Preview Text:</strong> Your account is suspended. Your data is preserved for 30 days.</li>
+</ul>
+<pre><code class="language-text">{{first_name}},
+
+Your subscription has ended and {{workspace_name}} has been suspended due to unpaid invoices totaling ${{invoice_amount}}.
+
+What this means right now:
+- Your workflows and endpoints are offline.
+- Your project configuration and historical data are stored securely.
+- You have 30 days to reactivate before your workspace is scheduled for permanent purging.
+
+To restore service immediately, settle your outstanding invoice here:
+{{secure_billing_link}}
+
+Once paid, your access and services will turn back on automatically within 5 minutes.
+
+The {{company_name}} Billing Team
+</code></pre>
+<hr />
+<h2>5. Stripe Webhook Infrastructure for Involuntary Churn</h2>
+<p>This production-ready webhook handler manages failed payments, sets grace period state flags, and initiates soft-locking using Stripe events.</p>
+<pre><code class="language-typescript">// pages/api/stripe-webhooks.ts
+import { buffer } from 'micro';
+import type { NextApiRequest, NextApiResponse } from 'next';
+import Stripe from 'stripe';
+import { db } from '@/lib/db'; // Your DB client
+import { sendDunningEmail } from '@/lib/email';
+
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+  apiVersion: '2023-10-16',
+});
+
+const webhookSecret = process.env.STRIPE_WEBHOOK_SIGNING_SECRET as string;
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const buf = await buffer(req);
+  const sig = req.headers['stripe-signature'] as string;
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(buf, sig, webhookSecret);
+  } catch (err: any) {
+    console.error(`Webhook signature verification failed: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  switch (event.type) {
+    case 'invoice.payment_failed': {
+      const invoice = event.data.object as Stripe.Invoice;
+      const customerId = invoice.customer as string;
+      const attemptCount = invoice.attempt_count;
+
+      const user = await db.user.findUnique({
+        where: { stripeCustomerId: customerId },
+      });
+
+      if (!user) break;
+
+      // Update workspace access state based on attempt cadence
+      if (attemptCount &gt;= 4) {
+        await db.workspace.update({
+          where: { id: user.workspaceId },
+          data: { 
+            accessState: 'RESTRICTED_READ_ONLY',
+            suspendedAt: new Date(),
+          },
+        });
+      } else {
+        await db.workspace.update({
+          where: { id: user.workspaceId },
+          data: { accessState: 'PAST_DUE' },
+        });
+      }
+
+      // Generate a single-use secure direct billing URL (Stripe Customer Portal)
+      const session = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: `${process.env.APP_URL}/dashboard/billing`,
+      });
+
+      // Trigger targeted lifecycle email based on attempt count
+      await sendDunningEmail({
+        userId: user.id,
+        email: user.email,
+        attemptCount,
+        invoiceAmount: (invoice.amount_due / 100).toFixed(2),
+        currency: invoice.currency.toUpperCase(),
+        billingLink: session.url,
+      });
+
+      break;
+    }
+
+    case 'customer.subscription.deleted': {
+      const subscription = event.data.object as Stripe.Subscription;
+      const customerId = subscription.customer as string;
+
+      const user = await db.user.findUnique({
+        where: { stripeCustomerId: customerId },
+      });
+
+      if (!user) break;
+
+      // Enter terminal deprovisioning state
+      await db.workspace.update({
+        where: { id: user.workspaceId },
+        data: {
+          subscriptionStatus: 'CANCELED',
+          accessState: 'SUSPENDED',
+          scheduledDataPurgeDate: new Date(Date.now() + 30 * 24 * 3600 * 1000), // 30 days
+        },
+      });
+
+      break;
+    }
+
+    default:
+      // Unhandled events fall through silently
+      break;
+  }
+
+  return res.status(200).json({ received: true });
+}
+</code></pre>
+<hr />
+<h2>6. Self-Serve Downgrade Architecture &amp; Account Deprovisioning</h2>
+<p>Do not treat a downgrade like a cancellation. A user downgrading from Pro ($99/mo) to Basic ($29/mo) or Free ($0/mo) is still an active user. The downgrade pipeline must reconcile capacity limits immediately to prevent resource abuse.</p>
+<h3>Resource Reconcile Checklist</h3>
+<p>When a customer initiates a self-serve downgrade, execute this evaluation pipeline:</p>
+<pre><code>[ Initiate Downgrade Intent ]
+         │
+         ├── Count Current Team Seats &gt; Target Plan Max?
+         ├── Count Storage Utilization &gt; Target Plan Limit?
+         ├── Count Active API Integrations &gt; Target Plan Allowance?
+         │
+         ▼
+[ Resources Within New Limits? ]
+         ├── YES ──&gt; Schedule Downgrade at End of Current Period (EoP)
+         │
+         └── NO ───&gt; Block Downgrade with Resource Resolution Screen:
+                     &quot;You must disconnect 2 seats and delete 14GB of 
+                      files before switching to the Starter plan.&quot;
+</code></pre>
+<h3>Downgrade Block Modal: UI Architecture</h3>
+<p>If the user exceeds target plan limits, do not fail silently. Display an asset reallocation checklist directly in the modal:</p>
+<pre><code class="language-markdown">+-----------------------------------------------------------------------+
+|  Action Required: Resolve Capacity Limits to Downgrade                |
+|                                                                       |
+|  To switch to the Starter Plan ($29/mo), please reconcile the         |
+|  following limits:                                                    |
+|                                                                       |
+|  [!] Seats: You have 7 of 3 allowed.                                  |
+|      -&gt; [Manage and Deactivate 4 Seats]                               |
+|                                                                       |
+|  [!] Webhooks: You have 12 active endpoints (Limit: 3).               |
+|      -&gt; [Open Integrations to Disable 9 Endpoints]                    |
+|                                                                       |
+|  Once your usage is within limits, your downgrade will take effect at |
+|  the end of your current billing cycle on October 14, 2024.           |
+|                                                                       |
+|  [ Keep Current Plan ]                        [ Recheck My Limits ]   |
++-----------------------------------------------------------------------+
+</code></pre>
+<h3>Account Deprovisioning Protocol: Code &amp; Database States</h3>
+<p>When a user rejects every intervention and confirms cancellation, execute this state transition:</p>
+<pre><code class="language-sql">-- 1. Mark subscription record for cancellation at period end (never immediately sever service paid for)
+UPDATE subscriptions
+SET 
+  cancel_at_period_end = TRUE,
+  cancellation_reason = 'too_expensive',
+  cancellation_feedback = 'Moving to internal spreadsheet solutions',
+  updated_at = NOW()
+WHERE stripe_subscription_id = 'sub_1OaBC123456789';
+
+-- 2. Log exit audit log
+INSERT INTO audit_logs (event, workspace_id, metadata, timestamp)
+VALUES (
+  'subscription.cancellation_scheduled', 
+  'ws_98765', 
+  '{&quot;effective_date&quot;: &quot;2024-11-01T00:00:00Z&quot;, &quot;reason&quot;: &quot;too_expensive&quot;}', 
+  NOW()
+);
+</code></pre>
+<h3>The Post-Cancellation Re-Engagement Engine</h3>
+<p>Once an account transitions to <code>CANCELED</code>, wait 21 days before triggering your winback loop. Never send winback emails immediately after cancellation.</p>
+<h4>Winback Email: 21 Days Post-Access Termination</h4>
+<ul>
+<li><strong>Trigger:</strong> <code>subscriptionStatus == 'CANCELED'</code> AND <code>daysSinceEnd == 21</code></li>
+<li><strong>Subject:</strong> Quick question regarding your {{company_name}} export</li>
+<li><strong>Goal:</strong> Re-open conversation without a hard sales pitch.</li>
+</ul>
+<pre><code class="language-text">Hi {{first_name}},
+
+It has been three weeks since your {{company_name}} workspace was closed.
+
+I am checking in to make sure you were able to export all of your project data, client logs, and analytics files without issue. If anything was missed, our data backup is preserved until {{purge_date}}.
+
+If you need temporary read-only access to download remaining files, let me know and I will open up your dashboard for 48 hours.
+
+Also, if you're open to sharing: what was the single biggest friction point that caused you to close the account? Brutal honesty helps our product team build better tools.
+
+Best,
+{{founder_name}}  
+CEO, {{company_name}}
+</code></pre>
+<hr />
+<h2>7. Operational Implementation Checklist</h2>
+<p>Deploying this module requires coordination across your payment processor, frontend application, and lifecycle email provider:</p>
+<ul>
+<li>[ ] <strong>Stripe Customer Portal Config:</strong> Turn off native "Cancel immediately." Ensure all portal cancellations apply strictly to <code>cancel_at_period_end</code>.</li>
+<li>[ ] <strong>Webhook Idempotency:</strong> Verify your webhook endpoint processes duplicate <code>invoice.payment_failed</code> payloads gracefully by checking against processing logs.</li>
+<li>[ ] <strong>Exclusivity Logic:</strong> Enforce database constraints so that an account cannot combine a <strong>billing pause</strong> and a <strong>retention discount</strong> within the same 12-month period.</li>
+<li>[ ] <strong>Data Retention Policy:</strong> Configure an automated cron job that scans for accounts where <code>scheduledDataPurgeDate &lt;= NOW()</code> to erase sensitive customer assets and meet GDPR storage limitation requirements.</li>
+<li>[ ] <strong>Telemetry:</strong> Track two core conversion metrics:</li>
+<li><strong>Deflection Rate:</strong> <code>(Offers Accepted / Total Cancellation Modal Opens) * 100</code> (Aim for 12% to 18%).</li>
+<li><strong>Involuntary Recovery Rate:</strong> <code>(Cured Invoices / Total Failed Invoices) * 100</code> (Aim for &gt;65%).</li>
+</ul>
+</body>
+</html>

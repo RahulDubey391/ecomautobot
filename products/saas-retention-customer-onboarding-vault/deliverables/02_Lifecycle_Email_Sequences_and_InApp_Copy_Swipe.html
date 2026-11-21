@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The SaaS Retention & Onboarding Vault: 50+ Activation Playbooks, Email Flows & Churn Prevention Systems</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Complete Lifecycle Email Sequences &amp; In-App Microcopy Swipes</h1>
+<p>This module provides production-ready behavioral lifecycle email templates and matching in-app microcopy UI strings. Every asset uses standardized Liquid personalization tags (<code>{{ user.first_name }}</code>, <code>{{ workspace.name }}</code>, <code>{{ event.metric_count }}</code>), pre-configured behavioral trigger rules, fallback parameters, and exact button targets.</p>
+<hr />
+<h2>1. Behavioral Event Schema &amp; Tracking Setup</h2>
+<p>Before deploying these sequences, configure your Customer.io, Klaviyo, Segment, or PostHog tracking to emit these exact event payloads.</p>
+<h3>Core User &amp; Workspace Event Taxonomy</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Event Name</th>
+<th style="text-align: left;">Trigger Context</th>
+<th style="text-align: left;">Required Properties</th>
+<th style="text-align: left;">Destination Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>workspace_created</code></td>
+<td style="text-align: left;">Signup flow Step 1 finished</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>created_at</code>, <code>plan_type</code></td>
+<td style="text-align: left;">Enters Day 0 Pipeline</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>core_setup_completed</code></td>
+<td style="text-align: left;">Connected data source or API</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>source_type</code>, <code>latency_ms</code></td>
+<td style="text-align: left;">Suppresses Setup Reminders</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>first_aha_moment</code></td>
+<td style="text-align: left;">Executed primary value action</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>output_id</code>, <code>time_to_value_sec</code></td>
+<td style="text-align: left;">Triggers Value Milestone Email</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>team_invite_sent</code></td>
+<td style="text-align: left;">Sent invite to colleague</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>invitee_role</code>, <code>invites_count</code></td>
+<td style="text-align: left;">Accelerates Team Expansion</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>usage_limit_reached</code></td>
+<td style="text-align: left;">Account hits 80% of plan limits</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>metric_name</code>, <code>percent_used</code></td>
+<td style="text-align: left;">Fires Upgrade Urgency Engine</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>session_stalled</code></td>
+<td style="text-align: left;">48 hours without core setup</td>
+<td style="text-align: left;"><code>workspace_id</code>, <code>last_step_completed</code>, <code>days_left</code></td>
+<td style="text-align: left;">Diverts to Friction Crusher Flow</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-json">{
+  &quot;event&quot;: &quot;first_aha_moment&quot;,
+  &quot;userId&quot;: &quot;usr_998241x&quot;,
+  &quot;timestamp&quot;: &quot;2025-03-30T10:14:00Z&quot;,
+  &quot;properties&quot;: {
+    &quot;workspace_id&quot;: &quot;ws_alpha_77&quot;,
+    &quot;workspace_name&quot;: &quot;Acme Metrics&quot;,
+    &quot;feature_used&quot;: &quot;automated_pipeline_sync&quot;,
+    &quot;records_processed&quot;: 1420,
+    &quot;time_to_setup_seconds&quot;: 184,
+    &quot;has_invited_team&quot;: false,
+    &quot;trial_days_remaining&quot;: 14
+  }
+}
+</code></pre>
+<hr />
+<h2>2. Day 0 &amp; First-72-Hour Activation Sequences</h2>
+<h3>Email 01: The Direct Single-Action Welcome</h3>
+<ul>
+<li><strong>Trigger:</strong> <code>workspace_created</code> immediately (Delay: 0 minutes).</li>
+<li><strong>Suppression:</strong> <code>core_setup_completed == true</code>.</li>
+<li><strong>Sender:</strong> <code>Founder Name &lt;founders@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Access your {{ workspace.name | default: 'new' }} dashboard</li>
+<li><strong>Preview Text:</strong> 3 minutes to verify your pipeline.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Your workspace for {{ workspace.name | default: 'your team' }} is deployed and live:
+https://app.yourdomain.com/workspaces/{{ workspace.id | default: 'default' }}
+
+You have one immediate objective today: connect your first data stream so you aren't looking at an empty dashboard.
+
+We built a 1-click import for your current stack:
+https://app.yourdomain.com/onboarding/connect?source=quickstart
+
+If you run into any permission roadblocks, reply directly to this email. It routes straight to our engineering team.
+
+Best,
+Alex Vance
+Co-Founder, YourSaaS
+</code></pre>
+<h4>Paired In-App Modal Microcopy: Zero-State First Login</h4>
+<ul>
+<li><strong>Component:</strong> Centered Overlay Modal (Cannot be dismissed by clicking backdrop)</li>
+<li><strong>Header:</strong> <code>Connect 1 data source to activate your dashboard</code></li>
+<li><strong>Body:</strong> <code>We cannot analyze metrics without an active connection. Choose your primary platform to populate your production baseline.</code></li>
+<li><strong>Primary Button:</strong> <code>Connect Source (60 seconds) →</code></li>
+<li><strong>Secondary Action Text:</strong> <code>I need to invite an engineer to handle keys</code> (Opens Invite Drawer)</li>
+</ul>
+<hr />
+<h3>Email 02: The Setup Drop-Off Interceptor</h3>
+<ul>
+<li><strong>Trigger:</strong> 4 hours after <code>workspace_created</code>.</li>
+<li><strong>Suppression Filter:</strong> <code>core_setup_completed == true</code> OR <code>first_aha_moment == true</code>.</li>
+<li><strong>Sender:</strong> <code>Platform Support &lt;support@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Quick question about your integration</li>
+<li><strong>Preview Text:</strong> Stuck on the API connection or permissions?</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+I noticed you created {{ workspace.name | default: 'your account' }} a few hours ago, but you haven't completed the final connection step yet.
+
+Usually, this means one of two things happened:
+1. You hit an unexpected permissions or API credential error.
+2. You got pulled into a meeting and ran out of time.
+
+If it's #1: Here is our 90-second connection documentation:
+https://docs.yourdomain.com/quickstart/permissions
+
+If it's #2: Pick up directly where you left off here:
+https://app.yourdomain.com/onboarding/resume?token={{ user.resume_token }}
+
+Need us to white-glove the setup? Reply with your current integration target and we will send the exact permissions policy required.
+
+— Sarah Jenkins, Customer Architecture
+</code></pre>
+<hr />
+<h3>Email 03: The "Aha!" Value Unlock (Self-Serve Path)</h3>
+<ul>
+<li><strong>Trigger:</strong> <code>core_setup_completed == true</code> (Delay: 10 minutes).</li>
+<li><strong>Suppression Filter:</strong> <code>first_aha_moment == true</code>.</li>
+<li><strong>Sender:</strong> <code>Alex Vance &lt;founders@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Your data is synced. Here is your first output.</li>
+<li><strong>Preview Text:</strong> See the initial baseline analysis for {{ workspace.name }}.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+Good news: The sync for {{ workspace.name | default: 'your workspace' }} completed successfully. We pulled in your initial records and mapped your schema.
+
+To run your first production analysis:
+1. Go to your Workbench: https://app.yourdomain.com/workbench
+2. Select your default template: &quot;{{ workspace.default_template | default: 'Core Performance Audit' }}&quot;
+3. Click &quot;Generate Report&quot;
+
+Click here to view your initial findings:
+https://app.yourdomain.com/reports/live?ref=email_activation_step3
+
+Most teams uncover 2 to 3 critical optimization blind spots on this first run. Let me know what your report flags.
+
+Alex
+</code></pre>
+<hr />
+<h3>Email 04: The Multi-Seat Force Multiplier</h3>
+<ul>
+<li><strong>Trigger:</strong> <code>first_aha_moment == true</code> (Delay: 24 hours).</li>
+<li><strong>Suppression Filter:</strong> <code>workspace.seat_count &gt; 1</code>.</li>
+<li><strong>Sender:</strong> <code>YourSaaS Growth Team &lt;team@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Don't run {{ workspace.name | default: 'this tool' }} as a solo silo</li>
+<li><strong>Preview Text:</strong> Add your team members to share automated alert workflows.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Yesterday you generated your first live output on {{ workspace.name | default: 'your account' }}.
+
+Right now, you are the only user receiving system alerts and performance flags. If you step away from your desk, your coverage stops.
+
+Add your engineering or operations teammates so alerts route to the right owners instantly:
+https://app.yourdomain.com/settings/team/invites?src=activation_single_player_nudge
+
+Team workspaces resolve data anomalies 4.2x faster than single-user accounts. 
+
+You can invite up to {{ workspace.allowed_trial_seats | default: '5' }} team members at no extra cost during your trial period.
+
+Best,
+The YourSaaS Team
+</code></pre>
+<h4>Paired In-App Microcopy: Slide-In Toast Notification</h4>
+<ul>
+<li><strong>Placement:</strong> Bottom-right viewport (Fired when user completes their 2nd standalone report)</li>
+<li><strong>Title:</strong> <code>Bring your team into the loop</code></li>
+<li><strong>Body:</strong> <code>You've run 2 reports as a single player. Invite your operators to automate resolution handoffs.</code></li>
+<li><strong>Primary Button:</strong> <code>Add Colleague</code></li>
+<li><strong>Secondary Action:</strong> <code>Dismiss</code></li>
+</ul>
+<hr />
+<h2>3. The Stalled User Recovery Engine</h2>
+<p>Deploy this sequence when an account goes dark between Days 2 and 7 without reaching the verified activation metric.</p>
+<pre><code>[Day 0: Workspace Created] ──(48 hrs no event: core_setup_completed)──&gt; [Email 05: The &quot;Escape Hatch&quot;]
+                                                                               │
+                                                      ┌────────────────────────┴────────────────────────┐
+                                            (User Clicks/Logs In)                             (Still No Activity: 72 hrs)
+                                                      │                                                 │
+                                           [App: Guided Onboarding]                           [Email 06: Plaintext Intervention]
+                                                                                                        │
+                                                                                              (Still No Activity: 48 hrs)
+                                                                                                        │
+                                                                                              [Email 07: Unblock Concierge]
+</code></pre>
+<h3>Email 05: The "Technical Escape Hatch"</h3>
+<ul>
+<li><strong>Trigger:</strong> 48 hours elapsed since signup.</li>
+<li><strong>Segment Criteria:</strong> <code>core_setup_completed == false</code>.</li>
+<li><strong>Sender:</strong> <code>Engineering Support &lt;eng@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Did our setup break on your environment?</li>
+<li><strong>Preview Text:</strong> Let us review your configuration logs.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Our logs show that you initiated your workspace setup on {{ user.created_at | date: &quot;%B %d&quot; }} but never received your first data payload.
+
+90% of the time, this is caused by one of three local configuration blocks:
+- Firewall or strict egress rules blocking our webhook endpoint.
+- Read-only permissions missing on the target schema.
+- Expired OAuth tokens during session authorization.
+
+Would you like one of our implementation engineers to review your error logs with you?
+
+You can grab a 10-minute setup screen-share here:
+https://cal.yourdomain.com/yoursaas-eng/onboarding-triage?email={{ user.email }}
+
+Prefer to self-debug? Use our CLI Diagnostics tool:
+`curl -sSL https://get.yourdomain.com/test-connection.sh | bash`
+
+We're here to help you get this across the finish line.
+
+David K.
+Solutions Engineering, YourSaaS
+</code></pre>
+<hr />
+<h3>Email 06: The Friction Elimination Plaintext</h3>
+<ul>
+<li><strong>Trigger:</strong> 72 hours elapsed since signup.</li>
+<li><strong>Segment Criteria:</strong> <code>core_setup_completed == false</code>.</li>
+<li><strong>Sender:</strong> <code>Alex Vance &lt;alex@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Quick check: Should I close your workspace?</li>
+<li><strong>Preview Text:</strong> Cleaning up inactive trial environments for this week.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+I see your workspace ({{ workspace.name }}) is still pending initialization. 
+
+I don't want to clutter your inbox if you've decided to postpone this project or go in another direction.
+
+If you are simply swamped right now, no stress. Your sandbox will stay reserved for another 11 days.
+
+If you hit a technical roadblock and want me to manually configure your account, just hit reply and paste the integration you're trying to set up. I'll personally send back the exact configuration steps.
+
+Alex Vance
+CEO, YourSaaS
+</code></pre>
+<hr />
+<h3>Email 07: The Pre-Built Sample Environment</h3>
+<ul>
+<li><strong>Trigger:</strong> 5 days elapsed since signup.</li>
+<li><strong>Segment Criteria:</strong> <code>core_setup_completed == false</code>.</li>
+<li><strong>Sender:</strong> <code>Product Education &lt;education@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Don't have time to sync? Test with our sandbox data.</li>
+<li><strong>Preview Text:</strong> Explore a fully populated enterprise account without connecting your data.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Connecting real production systems takes time, approvals, and security reviews.
+
+If you don't have the bandwidth to run an integration today, you can still evaluate our platform. We just launched a fully populated Mock Sandbox workspace:
+
+https://app.yourdomain.com/sandbox/demo-login?auth_token={{ user.sandbox_access_token }}
+
+This sandbox includes:
+- 150,000 synthetic transaction records pre-loaded.
+- 4 pre-configured automated alerts and incident triggers.
+- Live team collaboration threads and exportable audit reports.
+
+Click the link above to test drive the core interface without connecting any of your data assets.
+
+Best,
+The YourSaaS Product Team
+</code></pre>
+<h4>Paired In-App Microcopy: Empty Dashboard Rescue Banner</h4>
+<ul>
+<li><strong>Trigger Condition:</strong> User lands on <code>/dashboard</code> and <code>data_points_count == 0</code>.</li>
+<li><strong>Component:</strong> Global Sticky Alert Banner (Warning Yellow).</li>
+<li><strong>Text:</strong> <code>No production data found. You are currently viewing an empty state.</code></li>
+<li><strong>CTA Button 1:</strong> <code>Populate with Demo Data</code> (Runs background script generating dummy entities).</li>
+<li><strong>CTA Button 2:</strong> <code>Resume Setup Guide →</code></li>
+</ul>
+<hr />
+<h2>4. Usage-Based Milestones &amp; Momentum Drivers</h2>
+<p>These sequences trigger strictly off product metrics, locking in the habit loop when users experience quantifiable progress.</p>
+<h3>Email 08: First Value Milestone Celebration</h3>
+<ul>
+<li><strong>Trigger:</strong> <code>first_aha_moment == true</code> AND <code>event.metric_count &gt;= 100</code> (Delay: Immediate).</li>
+<li><strong>Sender:</strong> <code>The YourSaaS Team &lt;notifications@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Boom: You just processed your first 100 records</li>
+<li><strong>Preview Text:</strong> Here is your aggregate performance summary.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+Milestone reached: Your workspace, {{ workspace.name }}, just completed its 100th automated pipeline operation.
+
+Here is what you've unlocked so far:
+- Total runtime saved: ~{{ workspace.saved_hours | default: '3.5' }} engineering hours
+- Critical pipeline errors caught: {{ workspace.anomalies_detected | default: '0' }}
+- System status: 100% operational
+
+View your full milestone telemetry breakdown here:
+https://app.yourdomain.com/analytics/milestones?id=100_runs
+
+What's next? Turn on automated recurring reports so your team receives daily metrics without logging in:
+https://app.yourdomain.com/settings/schedules/create
+
+Keep up the great momentum,
+The YourSaaS Automation Engine
+</code></pre>
+<hr />
+<h3>Email 09: The 80% Quota Soft-Ceiling Notice</h3>
+<ul>
+<li><strong>Trigger:</strong> <code>usage_limit_reached == true</code> (Condition: <code>percent_used &gt;= 80</code> AND <code>plan_type == 'trial'</code>).</li>
+<li><strong>Sender:</strong> <code>Billing Alerts &lt;billing@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> [Notice] {{ workspace.name }} has consumed 80% of trial capacity</li>
+<li><strong>Preview Text:</strong> Avoid pipeline pauses by selecting your tier.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Your workspace has processed {{ workspace.current_usage }} of your {{ workspace.max_usage }} allocated trial units (80.4% of your limit).
+
+Because your usage is accelerating, you are on track to exhaust your sandbox capacity within the next 48 to 72 hours.
+
+When your limit is reached:
+- Inbound webhooks will be queued (not dropped) for 24 hours.
+- Automated Slack/Email alerts will temporarily pause.
+- Export functionality will lock until the account tier is confirmed.
+
+To ensure uninterrupted service for {{ workspace.name }}, lock in your production plan now:
+https://app.yourdomain.com/billing/upgrade?src=quota_80_percent
+
+Questions about volume tiers or need a custom allocation? Hit reply to connect directly with our billing team.
+
+Best,
+YourSaaS Billing Operations
+</code></pre>
+<h4>Paired In-App Microcopy: Meter Bar &amp; Contextual Alert</h4>
+<ul>
+<li><strong>Component:</strong> Global Navigation Progress Meter.</li>
+<li><strong>Label:</strong> <code>Trial Consumption: 80% Used</code></li>
+<li><strong>Meter Fill State:</strong> Amber (#F59E0B) transitioning to Red at 95%.</li>
+<li><strong>Hover Tooltip Copy:</strong> <code>You have used {{ workspace.current_usage }} of your {{ workspace.max_usage }} operations. Upgrade now to ensure background processing is not paused.</code></li>
+<li><strong>CTA Link:</strong> <code>Upgrade Limits →</code></li>
+</ul>
+<hr />
+<h3>Email 10: The Weekly Executive Digest</h3>
+<ul>
+<li><strong>Trigger:</strong> Scheduled CRON (Fires Mondays at 08:00 AM workspace-local time).</li>
+<li><strong>Segment Criteria:</strong> <code>workspace.is_active == true</code>.</li>
+<li><strong>Sender:</strong> <code>System Digest &lt;reports@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Weekly Digest: {{ workspace.name }} performance [{{ 'now' | date: '%b %d' }}]</li>
+<li><strong>Preview Text:</strong> {{ workspace.total_events_week }} actions processed this past week.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Here is how {{ workspace.name }} performed between {{ 'now' | date: &quot;%B %d&quot; | advance_days: -7 }} and {{ 'now' | date: &quot;%B %d&quot; }}:
+
+SUMMARY METRICS:
+- Total Operations Executed: {{ workspace.total_events_week | default: '0' }} ({{ workspace.events_velocity_change | default: '+0%' }} vs previous week)
+- System Errors Prevented: {{ workspace.errors_resolved_week | default: '0' }}
+- Active Operators: {{ workspace.active_users_week | default: '1' }} team members
+
+TOP PERFORMING WORKFLOW:
+&quot;{{ workspace.top_workflow_name | default: 'Primary Sync' }}&quot; ran {{ workspace.top_workflow_count | default: '0' }} times with zero failures.
+
+RECOMMENDED OPTIMIZATION:
+{{ workspace.optimization_tip | default: 'Your workspace has not configured an automated Slack webhook destination. Adding one drops incident response times by 55%.' }}
+
+Access your executive dashboard here:
+https://app.yourdomain.com/reports/weekly?week={{ 'now' | date: &quot;%W&quot; }}
+
+Have a productive week,
+The YourSaaS Intelligence System
+</code></pre>
+<hr />
+<h2>5. Trial Expiration &amp; Urgency Escalation Systems</h2>
+<p>This 4-part series triggers as the evaluation window closes, systematically transitioning users from product exploration to commercial conversion.</p>
+<pre><code>[Day T-3: Expiration Warning] ────&gt; [Day T-1: Access Lockout Safeguard]
+               │                                      │
+               ▼                                      ▼
+    In-App: Sticky Footer Banner           In-App: Modal Interstitial
+               │                                      │
+               ▼                                      ▼
+[Day T-0: Trial Complete]     ────&gt; [Day T+3: Data Deprecation Notice]
+</code></pre>
+<h3>Email 11: The T-3 Days Value Summary</h3>
+<ul>
+<li><strong>Trigger:</strong> Exactly 72 hours before <code>workspace.trial_expires_at</code>.</li>
+<li><strong>Sender:</strong> <code>Alex Vance &lt;alex@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> 3 days left on the {{ workspace.name }} trial</li>
+<li><strong>Preview Text:</strong> Your configuration, historic data, and pipelines will pause on Friday.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+Your 14-day evaluation of YourSaaS ends in exactly 3 days.
+
+Here is what your workspace has built since {{ workspace.created_at | date: &quot;%B %d&quot; }}:
+- {{ workspace.data_sources_connected }} production data connections configured.
+- {{ workspace.total_reports_generated }} custom reports delivered to your team.
+- {{ workspace.hours_automated }} hours saved across {{ workspace.seat_count }} registered users.
+
+On {{ workspace.trial_expires_at | date: &quot;%A, %B %d&quot; }}, your background processing jobs will freeze, and API sync endpoints will return 402 Payment Required status codes.
+
+To prevent your operational workflows from pausing, select your subscription tier here:
+https://app.yourdomain.com/billing/checkout?src=trial_t3
+
+Need to run an extension to finish your security audit or get procurement approval? Reply to this email with how many days you need, and I will gladly extend your window.
+
+Alex
+</code></pre>
+<hr />
+<h3>Email 12: The T-1 Day "Imminent Pause" Warning</h3>
+<ul>
+<li><strong>Trigger:</strong> Exactly 24 hours before <code>workspace.trial_expires_at</code>.</li>
+<li><strong>Sender:</strong> <code>Billing Operations &lt;billing@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> [Action Required] {{ workspace.name }} will pause tomorrow</li>
+<li><strong>Preview Text:</strong> Final 24 hours to secure your automated pipelines.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+This is a final operational notice: Your trial expires tomorrow, {{ workspace.trial_expires_at | date: &quot;%B %d at %I:%M %p %Z&quot; }}.
+
+If a payment method is not added before this deadline:
+1. Automated syncs will be suspended.
+2. Webhook events sent to your ingest URL will fail.
+3. Your team invites and access tokens will be temporarily locked.
+
+Select your plan to ensure continuous uptime:
+https://app.yourdomain.com/billing/checkout?src=trial_t1_lockout
+
+It takes less than 60 seconds to lock in your tier. You will not lose any configuration, historical data, or API keys.
+
+— YourSaaS Infrastructure Team
+</code></pre>
+<h4>Paired In-App Modal: Day T-1 Interstitial Screen</h4>
+<ul>
+<li><strong>Component:</strong> Full-screen blocking modal on login.</li>
+<li><strong>Header:</strong> <code>Your evaluation access expires in 24 hours</code></li>
+<li><strong>Subheader:</strong> <code>Your live integrations will pause tomorrow unless an active subscription is selected.</code></li>
+<li><strong>Plan Picker Cards:</strong></li>
+<li>Card 1: <strong>Starter</strong> | $99/mo | Up to 3 seats | <em>Select Starter</em></li>
+<li>Card 2: <strong>Pro (Most Popular)</strong> | $249/mo | Up to 10 seats + Webhooks | <em>Select Pro</em></li>
+<li><strong>Footer Bypass Link:</strong> <code>I understand my integrations will pause tomorrow. Continue to Dashboard →</code></li>
+</ul>
+<hr />
+<h3>Email 13: Day T-0: The Grace Period Notice</h3>
+<ul>
+<li><strong>Trigger:</strong> At <code>workspace.trial_expires_at</code> timestamp.</li>
+<li><strong>Sender:</strong> <code>Alex Vance &lt;alex@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Your workspace has been paused</li>
+<li><strong>Preview Text:</strong> We have archived your configuration for a 48-hour grace period.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+Your trial has officially completed, and background sync operations for {{ workspace.name }} are now paused.
+
+We understand software procurement can get delayed by internal approvals. To protect your hard work, we placed your workspace in an inactive **Safe Harbor Grace Period**:
+
+- Your integrations, models, and schema configurations are securely preserved.
+- We will retain your historical logs for 14 days before queueing them for operational deletion.
+
+To unpause your pipelines and restore immediate access, activate your workspace below:
+https://app.yourdomain.com/billing/reactivate?ws={{ workspace.id }}
+
+If you decided not to move forward, could you reply with a single sentence telling me why? Whether it was pricing, missing features, or bad UX, your raw feedback helps our team improve.
+
+Thank you for testing us out,
+Alex Vance
+</code></pre>
+<hr />
+<h3>Email 14: Day T+3 Post-Trial Safe Harbor Sunset</h3>
+<ul>
+<li><strong>Trigger:</strong> 72 hours <em>after</em> <code>workspace.trial_expires_at</code>.</li>
+<li><strong>Sender:</strong> <code>Data Operations &lt;data-ops@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Data retention policy notice for {{ workspace.name }}</li>
+<li><strong>Preview Text:</strong> Scheduled deletion of inactive schemas in 7 days.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+Per our automated data retention policies, inactive trial accounts are queued for cold storage purge 10 days post-expiration.
+
+For {{ workspace.name }}, this purge is scheduled for:
+{{ 'now' | date: &quot;%B %d&quot; | advance_days: 7 }}
+
+If you reactivate your subscription prior to this date, your schemas, pipelines, and historical analytics will be instantly restored to production status:
+https://app.yourdomain.com/billing/reactivate?ws={{ workspace.id }}&amp;src=data_sunset
+
+If you need a copy of your historical metrics exported into a CSV archive before deletion, log in below and download your compliance export:
+https://app.yourdomain.com/settings/compliance/export
+
+Best,
+The YourSaaS Engineering Team
+</code></pre>
+<hr />
+<h2>6. Inactive Win-Back &amp; Sunset Workflows</h2>
+<p>For accounts that completed their trial, churned, or abandoned the platform 30 to 60 days ago.</p>
+<h3>Email 15: The "Major Feature Release" Reactivation Loop</h3>
+<ul>
+<li><strong>Trigger:</strong> Manual Segment Campaign targeting churned/expired accounts (30–60 days inactive).</li>
+<li><strong>Sender:</strong> <code>Product Engineering &lt;updates@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> We completely rebuilt the {{ feature.name }} engine</li>
+<li><strong>Preview Text:</strong> The performance updates you asked for are now live.</li>
+</ul>
+<pre><code class="language-liquid">Hey {{ user.first_name | default: 'there' }},
+
+When you evaluated YourSaaS earlier this year, our platform struggled with slow synchronization times on massive schemas. 
+
+You and several other teams told us this was a dealbreaker. We listened.
+
+Over the last 6 weeks, our engineering team completely overhauled our sync engine. Here is what changed:
+- 10x Ingestion Speeds: Schemas with 1M+ rows now sync in under 4 minutes.
+- Native Snowflake &amp; BigQuery Reverse ETL: Zero custom scripts required.
+- Granular Role-Based Access Controls: Full support for enterprise enterprise permissions.
+
+We want to give you a chance to see the difference firsthand. 
+
+I've credited your account with a fresh 14-day Pro Trial (no credit card required):
+https://app.yourdomain.com/auth/claim-reactivation?token={{ user.reactivation_token }}
+
+Log in and run a test with our new ingestion engine.
+
+Best,
+Marcus Brody
+Head of Product, YourSaaS
+</code></pre>
+<hr />
+<h3>Email 16: The Decoupled Sunset/Permission to Close</h3>
+<ul>
+<li><strong>Trigger:</strong> 60 days of zero logins / churned status.</li>
+<li><strong>Sender:</strong> <code>Alex Vance &lt;alex@yourdomain.com&gt;</code></li>
+<li><strong>Subject:</strong> Permission to delete your account data?</li>
+<li><strong>Preview Text:</strong> Confirming deletion of {{ workspace.name }} records.</li>
+</ul>
+<pre><code class="language-liquid">{{ user.first_name | default: 'Hey' }},
+
+I am conducting our quarterly compliance sweep and scrubbing inactive workspaces from our production databases.
+
+Our records indicate you haven't logged into {{ workspace.name }} in over 60 days.
+
+Can I go ahead and permanently purge your configurations, API keys, and collected data?
+
+- If YES: You don't need to do anything. Your records will automatically cycle out of our system by {{ 'now' | date: &quot;%B %d&quot; | advance_days: 5 }}.
+- If NO: If you plan on picking this project back up next quarter, click here to prevent deletion and lock your configurations:
+https://app.yourdomain.com/settings/keep-alive?token={{ user.keep_alive_token }}
+
+Either way, thank you for checking out our platform.
+
+Alex Vance
+CEO
+</code></pre>
+<hr />
+<h2>7. Complete In-App Microcopy Swipe Vault</h2>
+<p>Copy and paste these exact text assets directly into your frontend codebases, component libraries, or headless CMS platforms (Appcues, Chameleon, Pendo).</p>
+<pre><code>┌────────────────────────────────────────────────────────┐
+│  Component: Onboarding Checklist Container             │
+├────────────────────────────────────────────────────────┤
+│  Title: Getting Started with YourSaaS [ 2 / 4 Done ]  │
+│                                                        │
+│  [✓] 1. Create your account                            │
+│  [✓] 2. Connect primary data source                   │
+│  [ ] 3. Run your first baseline analysis   [ Run → ]   │
+│  [ ] 4. Invite an operator to your team    [ Invite ]  │
+└────────────────────────────────────────────────────────┘
+</code></pre>
+<h3>UI Component Matrix: Activation Strings</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">UI Placement</th>
+<th style="text-align: left;">Visual State / Trigger</th>
+<th style="text-align: left;">Headline String</th>
+<th style="text-align: left;">Body Copy Micro-String</th>
+<th style="text-align: left;">CTA Primary</th>
+<th style="text-align: left;">CTA Secondary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Empty State</strong></td>
+<td style="text-align: left;">User opens Report Tab without any sync setup</td>
+<td style="text-align: left;"><code>No reports generated yet</code></td>
+<td style="text-align: left;"><code>Connect your data pipelines to trigger your first automated analysis. It takes less than 2 minutes.</code></td>
+<td style="text-align: left;"><code>Connect Pipeline →</code></td>
+<td style="text-align: left;"><code>Load Demo Data</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Empty State</strong></td>
+<td style="text-align: left;">Team Members directory with 1 seat</td>
+<td style="text-align: left;"><code>You are flying solo</code></td>
+<td style="text-align: left;"><code>Distributed teams catch configuration anomalies 4x faster. Add your teammates to automate incident notifications.</code></td>
+<td style="text-align: left;"><code>Invite Colleagues</code></td>
+<td style="text-align: left;"><code>View Role Types</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Inline Tooltip</strong></td>
+<td style="text-align: left;">Hovering over disabled "Run Sync" button</td>
+<td style="text-align: left;"><code>Sync Unavailable</code></td>
+<td style="text-align: left;"><code>You must add at least 1 validated API credential before executing an on-demand sync.</code></td>
+<td style="text-align: left;"><code>Add Credentials</code></td>
+<td style="text-align: left;">None</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sticky Banner</strong></td>
+<td style="text-align: left;">Trial has 2 days remaining</td>
+<td style="text-align: left;"><code>2 days remaining on your trial</code></td>
+<td style="text-align: left;"><code>Upgrade to a paid tier today to avoid paused webhooks and scheduled jobs.</code></td>
+<td style="text-align: left;"><code>Upgrade Tier</code></td>
+<td style="text-align: left;"><code>Dismiss</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Input Error State</strong></td>
+<td style="text-align: left;">Invalid API Token format on Setup</td>
+<td style="text-align: left;"><code>Invalid Key Format</code></td>
+<td style="text-align: left;"><code>That token does not match the standard 'sk_live_...' prefix. Verify your permissions in your source console.</code></td>
+<td style="text-align: left;"><code>View Docs</code></td>
+<td style="text-align: left;">None</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Toast Toast</strong></td>
+<td style="text-align: left;">Core Action Executed Successfully</td>
+<td style="text-align: left;"><code>Analysis Complete!</code></td>
+<td style="text-align: left;"><code>Your dashboard metrics have been updated to reflect your latest data sync.</code></td>
+<td style="text-align: left;"><code>View Audit Log</code></td>
+<td style="text-align: left;"><code>Close</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Confirmation Drawer</strong></td>
+<td style="text-align: left;">User attempts to downgrade plan</td>
+<td style="text-align: left;"><code>Wait—downgrading pauses pipelines</code></td>
+<td style="text-align: left;"><code>Switching to Free will instantly shut down your active webhooks and lock {{ workspace.seat_count }} seats.</code></td>
+<td style="text-align: left;"><code>Keep My Plan</code></td>
+<td style="text-align: left;"><code>Confirm Downgrade</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Code Implementation: Global Checklist Component Configuration</h3>
+<p>```typescript
+export const onboardingChecklistConfig = {
+  id: "workspace_activation_checklist",
+  title: "Complete your production deployment",
+  totalSteps: 4,
+  dismissable: false,
+  steps: [
+    {
+      id: "step_account_verified",
+      title: "Confirm workspace credentials",
+      description: "Secure your root account with two-factor authorization.",
+      isCompleted: true, // Handled at Auth0 level
+      ctaText: "Completed",
+      ctaUrl: null,
+    },
+    {
+      id: "step_connect_pipeline",
+      title: "Connect your first data source",
+      description: "Connect to Stripe, Segment, or a direct Postgres database.",
+      isCompleted: false,
+      ctaText: "Connect Source →",
+      ctaUrl: "/settings/integrations/new",
+    },
+    {
+      id: "step_generate_output",
+      title: "Execute automated audit",
+      description: "Run your first operational query to populate your production baseline.",
+      isCompleted: false,
+      ctaText: "Run Audit",</p>
+</body>
+</html>
