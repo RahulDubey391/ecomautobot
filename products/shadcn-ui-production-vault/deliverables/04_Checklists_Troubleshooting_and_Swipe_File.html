@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Shadcn UI & Tailwind Production Vault: 60+ Enterprise Components, Complex Data Tables, Dashboard Layouts & Accessible Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Accessibility Audits, Performance Optimization &amp; UI Review Rubric</h1>
+<h2>1. WCAG 2.1 AA Keyboard &amp; Screen-Reader Verification Checklist</h2>
+<p>Enterprise-grade interfaces require deterministic accessibility. Radix UI primitives provide foundational accessibility, but custom composition, dynamic state changes, TanStack table cells, and custom interactions can compromise compliance if unverified.</p>
+<h3>1.1 Primitive Verification Matrix</h3>
+<p>Use this matrix to manually verify complex interactive widgets before moving PRs to production.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Component Pattern</th>
+<th style="text-align: left;">Required ARIA Attributes</th>
+<th style="text-align: left;">Keyboard Traversal Requirements</th>
+<th style="text-align: left;">Focus Management Target</th>
+<th style="text-align: left;">Expected Screen Reader Output (NVDA/VoiceOver)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Modal Dialog</strong> (<code>&lt;Dialog /&gt;</code>)</td>
+<td style="text-align: left;"><code>role="dialog"</code>, <code>aria-modal="true"</code>, <code>aria-labelledby="[id]"</code>, <code>aria-describedby="[id]"</code></td>
+<td style="text-align: left;"><code>Tab</code> / <code>Shift+Tab</code> cycles inside bounds only. <code>Escape</code> dismisses.</td>
+<td style="text-align: left;">Element with <code>autofocus</code>, or first interactive descendant. On close, return to trigger.</td>
+<td style="text-align: left;">"Dialog name, dialog, [Description text]. Close button."</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Combobox / Autocomplete</strong> (<code>&lt;Command /&gt;</code>)</td>
+<td style="text-align: left;"><code>role="combobox"</code>, <code>aria-expanded="true\|false"</code>, <code>aria-controls="[list-id]"</code>, <code>aria-activedescendant="[opt-id]"</code></td>
+<td style="text-align: left;"><code>ArrowDown</code>/<code>ArrowUp</code> moves active descendant. <code>Enter</code> selects. <code>Escape</code> closes popup.</td>
+<td style="text-align: left;">Focus remains on the <code>&lt;input&gt;</code>. <code>aria-activedescendant</code> tracks visual selection.</td>
+<td style="text-align: left;">"[Count] results available. Option [X] of [Y], selected."</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Dropdown Menu</strong> (<code>&lt;DropdownMenu /&gt;</code>)</td>
+<td style="text-align: left;"><code>role="menu"</code>, <code>aria-haspopup="menu"</code>, <code>aria-expanded="true\|false"</code>, <code>role="menuitem"</code></td>
+<td style="text-align: left;"><code>ArrowDown</code>/<code>ArrowUp</code> moves focus. <code>Home</code>/<code>End</code> to boundaries. Typeahead by character key.</td>
+<td style="text-align: left;">First menuitem on open via keyboard; trigger element on dismissal.</td>
+<td style="text-align: left;">"Menu item, [X] of [Y]". Submenus announce "Submenu collapsed/expanded".</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Interactive Table</strong> (<code>&lt;Table /&gt;</code> / TanStack)</td>
+<td style="text-align: left;"><code>role="table"</code> (or semantic <code>&lt;table&gt;</code>), <code>aria-sort="ascending\|descending\|none"</code>, <code>aria-colindex</code>, <code>aria-rowindex</code></td>
+<td style="text-align: left;"><code>Tab</code> navigates interactive cells. Left/Right/Up/Down arrow navigation if grid mode is enabled.</td>
+<td style="text-align: left;">Active sort button retains focus through sorting state updates.</td>
+<td style="text-align: left;">"Column header, [Name], Sortable, Sorted ascending/descending, Column [X] of [Y]".</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tabs Layout</strong> (<code>&lt;Tabs /&gt;</code>)</td>
+<td style="text-align: left;"><code>role="tablist"</code>, <code>role="tab"</code>, <code>role="tabpanel"</code>, <code>aria-selected="true\|false"</code>, <code>aria-controls="[panel-id]"</code></td>
+<td style="text-align: left;"><code>ArrowLeft</code>/<code>ArrowRight</code> switches tabs (horizontal). <code>Tab</code> enters active panel.</td>
+<td style="text-align: left;">Selected tab retains focus; <code>Tab</code> key skips unselected tabs directly to content panel.</td>
+<td style="text-align: left;">"Tab, [Name], [X] of [Y], selected". Panel announces "Tabpanel, [Name]".</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Slide-over Sheet</strong> (<code>&lt;Sheet /&gt;</code>)</td>
+<td style="text-align: left;"><code>role="dialog"</code>, <code>aria-modal="true"</code>, <code>aria-label="[Title]"</code>, <code>inert</code> on root background app.</td>
+<td style="text-align: left;">Strict focus trap (<code>Tab</code>/<code>Shift+Tab</code>). <code>Escape</code> dismisses sheet immediately.</td>
+<td style="text-align: left;">First interactive control (or close button). Returns to triggering button on exit.</td>
+<td style="text-align: left;">"Dialog, [Title], Complementary/Region". Background DOM must be invisible to reader.</td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 Screen Reader Audit Protocol: NVDA &amp; VoiceOver</h3>
+<p>Run this test script before signing off on any custom composition or Radix-based component wrapper.</p>
+<pre><code class="language-markdown">### STEP 1: macOS VoiceOver (Cmd + F5) Testing Protocol
+1. Navigate to trigger using Control + Option + Right Arrow (VO + Right).
+2. Verify announcement: Ensure control role (button/link) and state (expanded/collapsed) are announced.
+3. Activate control with VO + Space (or Space/Enter).
+4. Verify initial focus: Does VoiceOver cursor jump to the panel root or dialog title without losing context?
+5. Read content sequentially using VO + Right.
+   - Verify every icon-only button (e.g., close buttons, row actions) has an unambiguous `sr-only` span or `aria-label`.
+   - Verify descriptive text reads completely without getting cut off by nested containers.
+6. Press Escape.
+   - Verify modal closes instantly.
+   - Verify VoiceOver cursor returns directly to the opening trigger element.
+
+### STEP 2: Windows NVDA (Insert + N) Testing Protocol
+1. Open NVDA Speech Viewer (NVDA Menu -&gt; Tools -&gt; Speech Viewer).
+2. Use pure keyboard navigation (Tab, Shift+Tab, Arrow keys) — DO NOT USE MOUSE.
+3. Verify Combobox / Popover transitions:
+   - When typing in an autocompleting Command primitive, does NVDA speak the number of matched results via an `aria-live` region?
+   - Does ArrowDown update speech output with the active item's text, index, and total count without moving physical DOM focus off the input?
+4. Verify Form Error States:
+   - Trigger a client-side validation error.
+   - Tab into the invalid input.
+   - Confirm NVDA announces: &quot;Invalid entry, [Field Name], edit, [Error message text]&quot;.
+   - Implementation check: Target input must have `aria-invalid=&quot;true&quot;` and `aria-describedby=&quot;[error-message-id]&quot;`.
+</code></pre>
+<hr />
+<h2>2. Tailwind CSS Bundle-Size Optimization &amp; Purging Guide</h2>
+<p>Unoptimized Tailwind setups in enterprise applications commonly suffer from CSS bloat caused by dynamic string interpolation, overly broad scanning paths (such as <code>node_modules</code>), and unpurged third-party CSS.</p>
+<h3>2.1 The Dynamic Class Anti-Pattern vs. Safe Construction</h3>
+<p>Tailwind extracts classes by scanning static tokens in your source files before executing JavaScript. Dynamically constructed strings break the scanner and either purge needed classes or force developers into massive, uncontrolled safelists.</p>
+<pre><code class="language-typescript">// ❌ CRITICAL ANTI-PATTERN: Scanner cannot extract dynamic template literals.
+// This results in missing production styles or broken variant states.
+export function MetricCard({ color = &quot;emerald&quot; }: { color: &quot;emerald&quot; | &quot;amber&quot; | &quot;rose&quot; }) {
+  return (
+    &lt;div className={`p-4 bg-${color}-500/10 border-${color}-500/20 text-${color}-600`}&gt;
+      Dynamic Content
+    &lt;/div&gt;
+  );
+}
+
+// ✅ PRODUCTION PATTERN 1: Static maps parsed cleanly by the Tailwind compiler.
+const COLOR_VARIANTS = {
+  emerald: &quot;bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400&quot;,
+  amber: &quot;bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400&quot;,
+  rose: &quot;bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400&quot;,
+} as const;
+
+export function MetricCardStatic({ color = &quot;emerald&quot; }: { color: keyof typeof COLOR_VARIANTS }) {
+  return (
+    &lt;div className={`p-4 border rounded-lg ${COLOR_VARIANTS[color]}`}&gt;
+      Safe Compiled Content
+    &lt;/div&gt;
+  );
+}
+
+// ✅ PRODUCTION PATTERN 2: class-variance-authority (cva) for type-safe variants.
+import { cva, type VariantProps } from &quot;class-variance-authority&quot;;
+import { cn } from &quot;@/lib/utils&quot;;
+
+const badgeVariants = cva(
+  &quot;inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors&quot;,
+  {
+    variants: {
+      intent: {
+        success: &quot;border-emerald-500/30 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300&quot;,
+        warning: &quot;border-amber-500/30 bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300&quot;,
+        destructive: &quot;border-rose-500/30 bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300&quot;,
+      },
+      size: {
+        sm: &quot;text-[10px] px-1.5 py-0.25&quot;,
+        md: &quot;text-xs px-2.5 py-0.5&quot;,
+      },
+    },
+    defaultVariants: {
+      intent: &quot;success&quot;,
+      size: &quot;md&quot;,
+    },
+  }
+);
+
+interface BadgeProps extends React.HTMLAttributes&lt;HTMLDivElement&gt;, VariantProps&lt;typeof badgeVariants&gt; {}
+
+export function StatusBadge({ className, intent, size, ...props }: BadgeProps) {
+  return &lt;div className={cn(badgeVariants({ intent, size }), className)} {...props} /&gt;;
+}
+</code></pre>
+<h3>2.2 Hardened <code>tailwind.config.ts</code> Configuration</h3>
+<p>This enterprise configuration targets your exact application files, ignores dev tools, and prevents <code>node_modules</code> pollution while handling isolated UI packages.</p>
+<pre><code class="language-typescript">import type { Config } from &quot;tailwindcss&quot;;
+import tailwindcssAnimate from &quot;tailwindcss-animate&quot;;
+
+const config: Config = {
+  darkMode: [&quot;class&quot;],
+  // Explicitly target components, apps, and packages. NEVER pass generic paths like &quot;./node_modules/**&quot;
+  content: [
+    &quot;./src/pages/**/*.{js,ts,jsx,tsx,mdx}&quot;,
+    &quot;./src/components/**/*.{js,ts,jsx,tsx,mdx}&quot;,
+    &quot;./src/app/**/*.{js,ts,jsx,tsx,mdx}&quot;,
+    // If using a monorepo structure with shared UI packages:
+    &quot;../../packages/ui/src/**/*.{js,ts,jsx,tsx}&quot;,
+  ],
+  // Prevent arbitrary wildcard additions. If you must safelist, scope to strict regex.
+  safelist: [
+    // Safelist only dynamic utility variations generated by external CMS content if mandatory:
+    {
+      pattern: /^(bg|text|border)-(emerald|amber|rose)-(500|600)\/(10|20|30)$/,
+    },
+  ],
+  theme: {
+    container: {
+      center: true,
+      padding: &quot;2rem&quot;,
+      screens: {
+        &quot;2xl&quot;: &quot;1400px&quot;,
+      },
+    },
+    extend: {
+      colors: {
+        border: &quot;hsl(var(--border))&quot;,
+        input: &quot;hsl(var(--input))&quot;,
+        ring: &quot;hsl(var(--ring))&quot;,
+        background: &quot;hsl(var(--background))&quot;,
+        foreground: &quot;hsl(var(--foreground))&quot;,
+        primary: {
+          DEFAULT: &quot;hsl(var(--primary))&quot;,
+          foreground: &quot;hsl(var(--primary-foreground))&quot;,
+        },
+        secondary: {
+          DEFAULT: &quot;hsl(var(--secondary))&quot;,
+          foreground: &quot;hsl(var(--secondary-foreground))&quot;,
+        },
+        destructive: {
+          DEFAULT: &quot;hsl(var(--destructive))&quot;,
+          foreground: &quot;hsl(var(--destructive-foreground))&quot;,
+        },
+        muted: {
+          DEFAULT: &quot;hsl(var(--muted))&quot;,
+          foreground: &quot;hsl(var(--muted-foreground))&quot;,
+        },
+        accent: {
+          DEFAULT: &quot;hsl(var(--accent))&quot;,
+          foreground: &quot;hsl(var(--accent-foreground))&quot;,
+        },
+        popover: {
+          DEFAULT: &quot;hsl(var(--popover))&quot;,
+          foreground: &quot;hsl(var(--popover-foreground))&quot;,
+        },
+        card: {
+          DEFAULT: &quot;hsl(var(--card))&quot;,
+          foreground: &quot;hsl(var(--card-foreground))&quot;,
+        },
+      },
+      borderRadius: {
+        lg: &quot;var(--radius)&quot;,
+        md: &quot;calc(var(--radius) - 2px)&quot;,
+        sm: &quot;calc(var(--radius) - 4px)&quot;,
+      },
+    },
+  },
+  plugins: [tailwindcssAnimate],
+};
+
+export default config;
+</code></pre>
+<h3>2.3 CI Bundle-Size Assertion Gate</h3>
+<p>Add this script to your build pipeline (<code>scripts/assert-css-size.mjs</code>). It checks the generated <code>.next/static/css</code> or <code>dist/assets</code> directory and halts deployment if production styles exceed the performance budget (max 45 KB gzipped).</p>
+<pre><code class="language-javascript">#!/usr/bin/env node
+import fs from &quot;node:fs&quot;;
+import path from &quot;node:path&quot;;
+import zlib from &quot;node:zlib&quot;;
+
+const CSS_DIRECTORY = path.resolve(process.cwd(), &quot;.next/static/css&quot;);
+const MAX_BUDGET_KB = 45; // Max allowed gzipped size for total production CSS
+
+if (!fs.existsSync(CSS_DIRECTORY)) {
+  console.error(`[CSS BUDGET] Directory not found: ${CSS_DIRECTORY}. Run 'next build' first.`);
+  process.exit(1);
+}
+
+const files = fs.readdirSync(CSS_DIRECTORY).filter((file) =&gt; file.endsWith(&quot;.css&quot;));
+let totalBytes = 0;
+let totalGzipBytes = 0;
+
+for (const file of files) {
+  const filePath = path.join(CSS_DIRECTORY, file);
+  const content = fs.readFileSync(filePath);
+  const gzipped = zlib.gzipSync(content);
+
+  totalBytes += content.length;
+  totalGzipBytes += gzipped.length;
+}
+
+const rawKb = (totalBytes / 1024).toFixed(2);
+const gzipKb = (totalGzipBytes / 1024).toFixed(2);
+
+console.log(`[CSS BUDGET] Total Generated CSS: ${rawKb} KB (${gzipKb} KB gzipped)`);
+
+if (totalGzipBytes &gt; MAX_BUDGET_KB * 1024) {
+  console.error(
+    `❌ [CSS BUDGET EXCEEDED] CSS exceeds maximum budget of ${MAX_BUDGET_KB} KB gzipped! (Current: ${gzipKb} KB)`
+  );
+  process.exit(1);
+}
+
+console.log(`✅ [CSS BUDGET PASSED] Within limits: ${gzipKb} KB &lt;= ${MAX_BUDGET_KB} KB`);
+process.exit(0);
+</code></pre>
+<p>Add this script to your <code>package.json</code>:</p>
+<pre><code class="language-json">{
+  &quot;scripts&quot;: {
+    &quot;build&quot;: &quot;next build&quot;,
+    &quot;postbuild&quot;: &quot;node scripts/assert-css-size.mjs&quot;
+  }
+}
+</code></pre>
+<hr />
+<h2>3. Cumulative Layout Shift (CLS) Debugging Cheat Sheet</h2>
+<p>Cumulative Layout Shift (CLS) degrades user experience and hurts Google Core Web Vitals rankings. Target a production CLS score under <strong>0.05</strong> (the WCAG / Web Vitals standard requires &lt; 0.1).</p>
+<h3>3.1 Layout Shift Score Formula &amp; Inspection</h3>
+<p>$$\text{Layout Shift Score} = \text{Impact Fraction} \times \text{Distance Fraction}$$</p>
+<ul>
+<li><strong>Impact Fraction:</strong> Area of viewport shifted by unstable elements.</li>
+<li><strong>Distance Fraction:</strong> Greatest distance unstable elements moved relative to the viewport dimension.</li>
+</ul>
+<h4>Diagnostic Workflow in Chrome DevTools:</h4>
+<ol>
+<li>Open Chrome DevTools -&gt; <strong>Performance Panel</strong>.</li>
+<li>Check <strong>Screenshots</strong> and <strong>Web Vitals</strong>.</li>
+<li>Click <strong>Record</strong>, interact with UI (toggle sorting, open tabs, load dashboard), click <strong>Stop</strong>.</li>
+<li>Check the <strong>Experience</strong> lane: Red blocks flag Layout Shifts.</li>
+<li>Select a layout shift entry: DevTools highlights the element, displays the shift score, and points directly to the offending DOM node in the bottom summary under <strong>Related Node</strong>.</li>
+</ol>
+<h3>3.2 Common UI Shift Triggers &amp; Fixes</h3>
+<pre><code class="language-markdown">| Root Cause | Mechanism | Mitigation Pattern |
+| :--- | :--- | :--- |
+| **Data Table Async Hydration** | Dynamic data fetched on client snaps table container from 0px to 600px. | Allocate explicit min-height or render exact-row Skeleton mirrors. |
+| **Icon / Avatar Placeholders** | Icons or user avatars render only after the script executes, shifting inline copy. | Render fixed-box placeholders (`w-4 h-4 aspect-square`) via `inline-block`. |
+| **Collapsible / Accordion Drawers** | Expanding elements adjust heights via `height: auto` without frame transition. | Use Radix Collapsible CSS variables: `--radix-collapsible-content-height`. |
+| **Custom Web Fonts** | Unstyled text renders, then snaps into new dimensions when web font swaps (FOUT). | Apply Next.js `next/font` with built-in size adjustment fallback parameters. |
+</code></pre>
+<h3>3.3 Zero-CLS Skeleton Mirror for TanStack Data Tables</h3>
+<p>To prevent layout shifts during filtering, page transitions, and data revalidation, your skeleton state must mirror the exact dimensions of the loaded table.</p>
+<pre><code class="language-typescript">import * as React from &quot;react&quot;;
+import { Skeleton } from &quot;@/components/ui/skeleton&quot;;
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from &quot;@/components/ui/table&quot;;
+
+interface DataTableSkeletonProps {
+  columnCount: number;
+  rowCount?: number;
+  isCompact?: boolean;
+}
+
+export function DataTableSkeleton({
+  columnCount,
+  rowCount = 10,
+  isCompact = false,
+}: DataTableSkeletonProps) {
+  const rowHeightClass = isCompact ? &quot;h-10&quot; : &quot;h-16&quot;;
+
+  return (
+    &lt;div className=&quot;w-full rounded-md border border-border bg-card&quot;&gt;
+      &lt;Table&gt;
+        &lt;TableHeader&gt;
+          &lt;TableRow className=&quot;hover:bg-transparent border-b border-border&quot;&gt;
+            {Array.from({ length: columnCount }).map((_, index) =&gt; (
+              &lt;TableHead key={`head-${index}`} className=&quot;h-11 px-4&quot;&gt;
+                &lt;Skeleton className=&quot;h-4 w-full max-w-[120px]&quot; /&gt;
+              &lt;/TableHead&gt;
+            ))}
+          &lt;/TableRow&gt;
+        &lt;/TableHeader&gt;
+        &lt;TableBody&gt;
+          {Array.from({ length: rowCount }).map((_, rowIndex) =&gt; (
+            &lt;TableRow
+              key={`row-${rowIndex}`}
+              className={`border-b border-border/50 hover:bg-transparent ${rowHeightClass}`}
+            &gt;
+              {Array.from({ length: columnCount }).map((_, colIndex) =&gt; (
+                &lt;TableCell key={`cell-${rowIndex}-${colIndex}`} className=&quot;px-4&quot;&gt;
+                  &lt;Skeleton
+                    className={`h-4 w-full ${
+                      colIndex === 0
+                        ? &quot;max-w-[180px]&quot;
+                        : colIndex === columnCount - 1
+                        ? &quot;max-w-[60px]&quot;
+                        : &quot;max-w-[100px]&quot;
+                    }`}
+                  /&gt;
+                &lt;/TableCell&gt;
+              ))}
+            &lt;/TableRow&gt;
+          ))}
+        &lt;/TableBody&gt;
+      &lt;/Table&gt;
+      {/* Explicit pagination height reservation */}
+      &lt;div className=&quot;flex items-center justify-between px-4 py-4 border-t border-border min-h-[60px]&quot;&gt;
+        &lt;Skeleton className=&quot;h-4 w-32&quot; /&gt;
+        &lt;div className=&quot;flex items-center space-x-2&quot;&gt;
+          &lt;Skeleton className=&quot;h-8 w-20&quot; /&gt;
+          &lt;Skeleton className=&quot;h-8 w-20&quot; /&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>4. Enterprise Component API Design Rubric &amp; Scorecard</h2>
+<p>Use this rubric during design reviews and pull request approvals. Components must score at least <strong>22 / 25</strong> points to be merged into the production codebase.</p>
+<h3>4.1 Evaluation Criteria</h3>
+<ol>
+<li><strong>Polymorphism &amp; Slot Pattern (0–5 pts):</strong> Uses Radix <code>Slot</code> (<code>asChild</code>) to let consumers swap the underlying DOM element without breaking markup hierarchies or accessibility trees.</li>
+<li><strong>Strict Styling Isolation (0–5 pts):</strong> Root containers expose <code>className</code> and wrap definitions in <code>cn()</code> to cleanly merge class names without <code>!important</code> overrides.</li>
+<li><strong>Encapsulated State Machine (0–5 pts):</strong> Supports both controlled and uncontrolled states (e.g., <code>value</code> + <code>onValueChange</code> alongside optional <code>defaultValue</code>).</li>
+<li><strong>Forwarded Refs &amp; HTML Attributes (0–5 pts):</strong> Exposes clean <code>React.forwardRef&lt;TargetElement, Props&gt;</code> types while extending standard HTML interfaces.</li>
+<li><strong>Strict Typing &amp; CVA Completeness (0–5 pts):</strong> Defines variants using <code>class-variance-authority</code>. Does not leak untyped strings or arbitrary property shapes.</li>
+</ol>
+<h3>4.2 Scorecard Template</h3>
+<pre><code class="language-markdown">### PR Review Scorecard: UI Component API
+**Evaluator:** Senior Frontend Architect
+**Target Component:** `&lt;MetricTrendCard /&gt;`
+
+| Category | Score (1-5) | Audit Observations |
+| :--- | :--- | :--- |
+| **1. Polymorphism (`asChild`)** | 5 / 5 | Full Radix Slot integration. Allows wrapping `next/link` cleanly. |
+| **2. Styling Merging &amp; Isolation** | 4 / 5 | Uses `cn()`. Missing responsive spacing on padding variable. |
+| **3. State Model (Ctrl vs Unctrl)** | 5 / 5 | Leverages Radix primitive control flow cleanly. |
+| **4. Ref Forwarding &amp; Prop Extension**| 5 / 5 | Ref passes directly to root `HTMLDivElement`. All native props bubble. |
+| **5. Strict Typing &amp; Variants** | 5 / 5 | `VariantProps&lt;typeof trendCardVariants&gt;` exposed and exported. |
+
+**TOTAL SCORE:** 24 / 25 -&gt; **STATUS: APPROVED**
+</code></pre>
+<h3>4.3 Production Refactor Example</h3>
+<h4>❌ The Anti-Pattern (Fails review: non-polymorphic, unforwarded ref, hardcoded styles, broken typing)</h4>
+<pre><code class="language-typescript">// FAILS: Score 6/25
+export const BadMetricCard = ({ title, value, change, isPositive, onClick }: any) =&gt; {
+  return (
+    &lt;div
+      onClick={onClick}
+      className={`p-6 border rounded-xl bg-white ${isPositive ? &quot;border-green-500&quot; : &quot;border-red-500&quot;}`}
+    &gt;
+      &lt;h3 className=&quot;text-gray-500 text-sm&quot;&gt;{title}&lt;/h3&gt;
+      &lt;div className=&quot;text-2xl font-bold&quot;&gt;{value}&lt;/div&gt;
+      &lt;span className={isPositive ? &quot;text-green-600&quot; : &quot;text-red-600&quot;}&gt;{change}&lt;/span&gt;
+    &lt;/div&gt;
+  );
+};
+</code></pre>
+<h4>✅ The Gold-Standard Vault Pattern (Meets all production requirements)</h4>
+<pre><code class="language-typescript">import * as React from &quot;react&quot;;
+import { Slot } from &quot;@radix-ui/react-slot&quot;;
+import { cva, type VariantProps } from &quot;class-variance-authority&quot;;
+import { cn } from &quot;@/lib/utils&quot;;
+
+const metricCardVariants = cva(
+  &quot;rounded-xl border p-6 shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2&quot;,
+  {
+    variants: {
+      trend: {
+        neutral: &quot;border-border bg-card text-card-foreground&quot;,
+        positive: &quot;border-emerald-500/20 bg-card text-card-foreground&quot;,
+        negative: &quot;border-rose-500/20 bg-card text-card-foreground&quot;,
+      },
+      density: {
+        compact: &quot;p-4&quot;,
+        normal: &quot;p-6&quot;,
+      },
+    },
+    defaultVariants: {
+      trend: &quot;neutral&quot;,
+      density: &quot;normal&quot;,
+    },
+  }
+);
+
+export interface MetricCardProps
+  extends React.HTMLAttributes&lt;HTMLDivElement&gt;,
+    VariantProps&lt;typeof metricCardVariants&gt; {
+  asChild?: boolean;
+}
+
+export const MetricCard = React.forwardRef&lt;HTMLDivElement, MetricCardProps&gt;(
+  ({ className, trend, density, asChild = false, ...props }, ref) =&gt; {
+    const Comp = asChild ? Slot : &quot;div&quot;;
+    return (
+      &lt;Comp
+        ref={ref}
+        className={cn(metricCardVariants({ trend, density }), className)}
+        {...props}
+      /&gt;
+    );
+  }
+);
+MetricCard.displayName = &quot;MetricCard&quot;;
+
+export const MetricCardHeader = React.forwardRef&lt;
+  HTMLDivElement,
+  React.HTMLAttributes&lt;HTMLDivElement&gt;
+&gt;(({ className, ...props }, ref) =&gt; (
+  &lt;div ref={ref} className={cn(&quot;flex items-center justify-between space-y-0 pb-2&quot;, className)} {...props} /&gt;
+));
+MetricCardHeader.displayName = &quot;MetricCardHeader&quot;;
+
+export const MetricCardTitle = React.forwardRef&lt;
+  HTMLHeadingElement,
+  React.HTMLAttributes&lt;HTMLHeadingElement&gt;
+&gt;(({ className, ...props }, ref) =&gt; (
+  &lt;h3 ref={ref} className={cn(&quot;text-sm font-medium text-muted-foreground&quot;, className)} {...props} /&gt;
+));
+MetricCardTitle.displayName = &quot;MetricCardTitle&quot;;
+
+export const MetricCardValue = React.forwardRef&lt;
+  HTMLDivElement,
+  React.HTMLAttributes&lt;HTMLDivElement&gt;
+&gt;(({ className, ...props }, ref) =&gt; (
+  &lt;div ref={ref} className={cn(&quot;text-2xl font-bold tracking-tight text-foreground&quot;, className)} {...props} /&gt;
+));
+MetricCardValue.displayName = &quot;MetricCardValue&quot;;
+</code></pre>
+<hr />
+<h2>5. AI Prompt Swipe File for Automated Audits &amp; Code Reviews</h2>
+<p>Use these prompts in your automated CI pipelines, Cursor rules, or manual Claude/GPT-4o audits.</p>
+<h3>5.1 WCAG 2.1 AA UI Regression Auditor</h3>
+<pre><code class="language-text">SYSTEM PROMPT:
+You are an expert accessibility engineer specialized in WCAG 2.1 AA specifications and Radix UI implementations.
+Audit the following React component diff for accessibility regressions.
+
+Review for the following issues:
+1. Interactive elements missing clear accessibility labels (e.g., button wrappers around Lucide icons missing aria-label or .sr-only inner descriptions).
+2. Keyboard traps or missing focus rings (e.g., classes stripping outline without providing focus-visible:ring replacements).
+3. State changes omitted from the accessibility tree (e.g., missing aria-expanded, aria-selected, or aria-controls on triggers).
+4. Insufficient color contrast ratios (e.g., text-muted-foreground against deep card backgrounds in dark mode).
+
+OUTPUT FORMAT:
+Return findings in a markdown table containing:
+| Severity (Critical/Major/Minor) | Line Numbers | Violation Details | Concrete Code Fix |
+</code></pre>
+<h3>5.2 Tailwind CSS Performance &amp; Purge Auditor</h3>
+<pre><code class="language-text">SYSTEM PROMPT:
+You are a Principal Frontend Architect reviewing Tailwind CSS implementations in Next.js applications.
+Evaluate the code below for bundle-size bloat and dynamic class generation issues.
+
+Review for the following issues:
+1. Dynamic class string interpolation (e.g., `text-${color}-500`, `bg-${status}`) that breaks the static purging engine.
+2. Inefficient utility combinations where standard design system classes should use class-variance-authority (cva).
+3. Overridden CSS styles using !important (e.g., &quot;!p-4&quot;) instead of properly composed cn() utilities.
+4. Redundant arbitrary values (e.g., `w-[324px]` instead of standardized theme spacing) that inflate utility scale.
+
+OUTPUT FORMAT:
+1. Bulleted list of detected build-size risks and purging vulnerabilities.
+2. Refactored code block providing a 100% production-ready replacement using cva and cn.
+</code></pre>
+<h3>5.3 Server/Client Component Boundary &amp; CLS Auditor</h3>
+<p>```text
+SYSTEM PROMPT:
+You are a Next.js (App Router) Performance Specialist focusing on Web Vitals, React Server Components (RSC), and Cumulative Layout Shift (CLS).
+Audit the component provided below.</p>
+<p>Review for the following issues:
+1. Unnecessary "use client" boundaries placed at container levels instead of isolated to interactive leaf nodes.
+2. Unsized dynamic content (cards, charts, data-tables) that will cause a layout shift (CLS) once data resolves.
+3. Font-display mismatch risks or unhandled asynchronous skeleton layouts.
+4. Event handlers bound inside server components, or heavy client libraries imported into pure rendering structures.</p>
+<p>OUTPUT FORMAT:
+Provide an architectural breakdown explaining:
+- Identified layout shifts and their calculated risk.
+- Structural boundary recommendations (which components remain server-side vs. which become interactive client leaves).
+- A complete, copy-pasteable refactor implementing explicit layout reservations (fixed dimensions, aspect ratios, or balanced skeleton fallbacks).</p>
+</body>
+</html>
