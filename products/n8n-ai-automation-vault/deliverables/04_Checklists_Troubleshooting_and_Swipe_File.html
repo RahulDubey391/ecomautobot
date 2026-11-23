@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The n8n AI Automation Architecture Vault: 50+ Production JSON Workflows, Webhook Handlers & Agentic Pipelines</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Production Audit Rubric, Performance Tuning &amp; Node Swipe File</h1>
+<p>This module serves as your production operational manual. When running high-throughput agentic workflows, autonomous scraping pipelines, and customer-facing API webhooks, standard out-of-the-box n8n configurations will degrade, leak memory, and crash under burst loads. </p>
+<p>Use this guide to audit your instance against enterprise reliability standards, tune Node.js runtime parameters, implement resilient backoff patterns, and copy-paste production-tested JavaScript transformations directly into your workflows.</p>
+<hr />
+<h2>1. Production Readiness &amp; Architectural Audit Rubric</h2>
+<p>Run through this 25-point audit rubric before deploying any mission-critical n8n workflow to production. Every item must achieve a <strong>PASS</strong> status.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Category</th>
+<th style="text-align: left;">Check ID</th>
+<th style="text-align: left;">Audit Item</th>
+<th style="text-align: left;">Verification Command / Target Standard</th>
+<th style="text-align: left;">Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Execution Architecture</strong></td>
+<td style="text-align: left;">ARC-01</td>
+<td style="text-align: left;">Queue Mode Activated</td>
+<td style="text-align: left;"><code>EXECUTIONS_MODE=queue</code> configured with Redis broker. Main process does not execute workflow jobs.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">ARC-02</td>
+<td style="text-align: left;">Multi-Worker Scaling</td>
+<td style="text-align: left;">Minimum 2 worker instances deployed across distinct vCPUs/hosts to prevent single-point-of-failure.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">ARC-03</td>
+<td style="text-align: left;">Webhook Isolation</td>
+<td style="text-align: left;">Dedicated webhook processor configured via <code>n8n webhook</code> command to isolate ingest traffic from execution jobs.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">ARC-04</td>
+<td style="text-align: left;">Process Supervisor</td>
+<td style="text-align: left;">Container orchestrated via Docker Swarm, Kubernetes, or Docker Compose with <code>restart: always</code> or <code>restart: unless-stopped</code>.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">ARC-05</td>
+<td style="text-align: left;">Binary Storage Offload</td>
+<td style="text-align: left;"><code>N8N_DEFAULT_BINARY_DATA_MODE=filesystem</code> or <code>s3</code> set. In-memory binary storage is disabled.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Database &amp; Pruning</strong></td>
+<td style="text-align: left;">DAT-01</td>
+<td style="text-align: left;">External PostgreSQL Engine</td>
+<td style="text-align: left;">SQLite is strictly eliminated. PostgreSQL 14+ used with a minimum pool size of 20 (<code>DB_POSTGRESDB_POOL_SIZE=20</code>).</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">DAT-02</td>
+<td style="text-align: left;">Execution Pruning Enabled</td>
+<td style="text-align: left;"><code>EXECUTIONS_DATA_PRUNE=true</code> active in environment variables.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">DAT-03</td>
+<td style="text-align: left;">Max Execution Age Cap</td>
+<td style="text-align: left;"><code>EXECUTIONS_DATA_MAX_AGE=168</code> (7 days max) or lower depending on regulatory/volume profiles.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">DAT-04</td>
+<td style="text-align: left;">Prune Execution Batching</td>
+<td style="text-align: left;"><code>EXECUTIONS_DATA_PRUNE_MAX_COUNT=50000</code> set to prevent Postgres locks during prune jobs.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">DAT-05</td>
+<td style="text-align: left;">Hard-Failure-Only Logging</td>
+<td style="text-align: left;"><code>EXECUTIONS_DATA_SAVE_ON_SUCCESS=none</code> active on high-concurrency workflows; only error context is persisted.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Memory &amp; Runtime</strong></td>
+<td style="text-align: left;">MEM-01</td>
+<td style="text-align: left;">V8 Heap Allocation</td>
+<td style="text-align: left;"><code>NODE_OPTIONS="--max-old-space-size=4096"</code> (or 8192) explicitly declared matching container cgroup allocations.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MEM-02</td>
+<td style="text-align: left;">Container Memory Headroom</td>
+<td style="text-align: left;">Container limit set to at least 1.25x the V8 max old space size (e.g., 5GB container limit for 4GB V8 heap).</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MEM-03</td>
+<td style="text-align: left;">Concurrency Throttle</td>
+<td style="text-align: left;"><code>N8N_CONCURRENCY_PRODUCTION_LIMIT</code> configured per worker to avoid saturating Node event loop thread pool.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MEM-04</td>
+<td style="text-align: left;">Payload Size Ceiling</td>
+<td style="text-align: left;"><code>N8N_PAYLOAD_SIZE_MAX=64</code> (in MB) set to drop memory-bomb payloads at ingress.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">MEM-05</td>
+<td style="text-align: left;">Event Loop Delay Alerting</td>
+<td style="text-align: left;">Prometheus metrics monitored; 99th percentile event loop lag does not exceed 100ms during peak load.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Security &amp; Auth</strong></td>
+<td style="text-align: left;">SEC-01</td>
+<td style="text-align: left;">Basic Auth / SAML Hardening</td>
+<td style="text-align: left;">Basic Auth disabled in favor of SSO/OIDC or protected behind reverse-proxy Cloudflare Access/Tailscale.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">SEC-02</td>
+<td style="text-align: left;">Webhook HMAC Validation</td>
+<td style="text-align: left;">All public-facing webhooks enforce cryptographic signature verification (HMAC-SHA256).</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">SEC-03</td>
+<td style="text-align: left;">Credential Encryption</td>
+<td style="text-align: left;"><code>N8N_ENCRYPTION_KEY</code> backed up securely in an external secret manager (AWS Secrets Manager, HashiCorp Vault).</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">SEC-04</td>
+<td style="text-align: left;">Environment Variable Masking</td>
+<td style="text-align: left;">Sensitive tokens, internal API keys, and database passwords isolated from workflow JSON export definitions.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">SEC-05</td>
+<td style="text-align: left;">Network Isolation</td>
+<td style="text-align: left;">n8n internal network prevents workers from hitting internal metadata endpoints (e.g., <code>169.254.169.254</code>).</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Reliability &amp; LLMs</strong></td>
+<td style="text-align: left;">REL-01</td>
+<td style="text-align: left;">LLM Circuit Breakers</td>
+<td style="text-align: left;">Every external AI model call implemented with a 30-to-60-second timeout and structured fallback branch.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">REL-02</td>
+<td style="text-align: left;">Rate Limit Backoff Logic</td>
+<td style="text-align: left;">All API nodes integrate explicit exponential backoff with random jitter on HTTP 429/503 responses.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">REL-03</td>
+<td style="text-align: left;">JSON Schema Defensive Parsing</td>
+<td style="text-align: left;">All structured LLM completions passed through a resilient sanitizer node handling incomplete JSON and code fences.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">REL-04</td>
+<td style="text-align: left;">Token Budget Thresholds</td>
+<td style="text-align: left;">Inputs trimmed dynamically with token estimators prior to context window injection to prevent silent context drops.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+<tr>
+<td style="text-align: left;"></td>
+<td style="text-align: left;">REL-05</td>
+<td style="text-align: left;">Global Error Workflow</td>
+<td style="text-align: left;"><code>Error Trigger</code> workflow configured globally at instance level, pinging an on-call PagerDuty/Slack routing channel.</td>
+<td style="text-align: left;">[ ]</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. High-Concurrency Performance Tuning &amp; Memory Optimization</h2>
+<p>Running production-grade agentic workflows with dozens of LLM tool interactions requires separating processes, shifting binary streams to disk, and tuning the Node.js V8 garbage collector.</p>
+<h3>Production <code>docker-compose.yml</code> Architecture</h3>
+<p>The architecture below isolates the <strong>Editor/Main UI</strong>, the <strong>Webhook Receiver</strong>, and auto-scalable <strong>Workers</strong> connected via a high-throughput Redis instance and an optimized PostgreSQL engine.</p>
+<pre><code class="language-yaml">version: &quot;3.8&quot;
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: n8n_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: n8n_db_user
+      POSTGRES_PASSWORD: ReplaceWithProductionSuperPassword123!
+      POSTGRES_DB: n8n_production
+    volumes:
+      - postgres_storage:/var/lib/postgresql/data
+    healthcheck:
+      test: [&quot;CMD-SHELL&quot;, &quot;pg_isready -U n8n_db_user -d n8n_production&quot;]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: &quot;4.0&quot;
+          memory: 4096M
+        reservations:
+          cpus: &quot;1.0&quot;
+          memory: 1024M
+
+  redis:
+    image: redis:7-alpine
+    container_name: n8n_redis
+    restart: always
+    command: [&quot;redis-server&quot;, &quot;--appendonly&quot;, &quot;yes&quot;, &quot;--maxmemory&quot;, &quot;2gb&quot;, &quot;--maxmemory-policy&quot;, &quot;noeviction&quot;]
+    volumes:
+      - redis_storage:/data
+    healthcheck:
+      test: [&quot;CMD&quot;, &quot;redis-cli&quot;, &quot;ping&quot;]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Webhook Ingestion Service (Stateless scale-out)
+  n8n-webhook:
+    image: docker.n8n.io/n8nio/n8n:latest
+    command: webhook
+    restart: always
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n_production
+      - DB_POSTGRESDB_USER=n8n_db_user
+      - DB_POSTGRESDB_PASSWORD=ReplaceWithProductionSuperPassword123!
+      - DB_POSTGRESDB_POOL_SIZE=20
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - N8N_PAYLOAD_SIZE_MAX=64
+      - NODE_OPTIONS=--max-old-space-size=2048
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_BINARY_DATA_STORAGE_PATH=/data/binary
+    volumes:
+      - shared_binary_storage:/data/binary
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: &quot;2.0&quot;
+          memory: 2560M
+
+  # Main Web Service (Editor and Task Orchestration)
+  n8n-main:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n_main
+    restart: always
+    ports:
+      - &quot;5678:5678&quot;
+    environment:
+      - N8N_ENCRYPTION_KEY=GenerateAndInsertA64CharacterHexSecretEncryptionKeyHere
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n_production
+      - DB_POSTGRESDB_USER=n8n_db_user
+      - DB_POSTGRESDB_PASSWORD=ReplaceWithProductionSuperPassword123!
+      - DB_POSTGRESDB_POOL_SIZE=30
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=72
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=25000
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=none
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_BINARY_DATA_STORAGE_PATH=/data/binary
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - N8N_PAYLOAD_SIZE_MAX=64
+      - N8N_METRICS=true
+      - N8N_METRICS_PREFIX=n8n_
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - shared_binary_storage:/data/binary
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: &quot;4.0&quot;
+          memory: 5120M
+
+  # Concurrency Worker Nodes
+  n8n-worker:
+    image: docker.n8n.io/n8nio/n8n:latest
+    command: worker --concurrency=10
+    restart: always
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n_production
+      - DB_POSTGRESDB_USER=n8n_db_user
+      - DB_POSTGRESDB_PASSWORD=ReplaceWithProductionSuperPassword123!
+      - DB_POSTGRESDB_POOL_SIZE=20
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - N8N_ENCRYPTION_KEY=GenerateAndInsertA64CharacterHexSecretEncryptionKeyHere
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_BINARY_DATA_STORAGE_PATH=/data/binary
+      - NODE_OPTIONS=--max-old-space-size=4096
+    volumes:
+      - shared_binary_storage:/data/binary
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: &quot;4.0&quot;
+          memory: 5120M
+
+volumes:
+  postgres_storage:
+  redis_storage:
+  n8n_storage:
+  shared_binary_storage:
+</code></pre>
+<h3>Critical Environment Parameter Matrix</h3>
+<p>To permanently prevent degraded execution loops, calibrate these system values:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: left;">Recommended Setting</th>
+<th style="text-align: left;">Failure Mechanism if Misconfigured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>NODE_OPTIONS</code></td>
+<td style="text-align: left;"><code>--max-old-space-size=4096</code></td>
+<td style="text-align: left;">Defaults to 1.4GB. Large JSON arrays from Vector Stores or document loaders will trigger out-of-memory container crashes.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>EXECUTIONS_DATA_SAVE_ON_SUCCESS</code></td>
+<td style="text-align: left;"><code>none</code></td>
+<td style="text-align: left;">Setting to <code>all</code> under 50+ concurrent requests per minute locks the Postgres execution table with write operations, cascading into timeouts across all jobs.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>N8N_DEFAULT_BINARY_DATA_MODE</code></td>
+<td style="text-align: left;"><code>filesystem</code></td>
+<td style="text-align: left;">Default is <code>default</code> (in-memory). Processing three concurrent 25MB PDF/Audio uploads will exhaust the Node heap space immediately.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>DB_POSTGRESDB_POOL_SIZE</code></td>
+<td style="text-align: left;"><code>20</code> to <code>50</code></td>
+<td style="text-align: left;">Default connection pool (10) exhausts instantly when multi-worker setups execute multi-branch sub-workflows, throwing connection timeout errors.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>N8N_CONCURRENCY_PRODUCTION_LIMIT</code></td>
+<td style="text-align: left;"><code>5</code> - <code>20</code> (per worker)</td>
+<td style="text-align: left;">If set to 0 (unlimited), workers accept all queued tasks immediately, locking the single-threaded Node event loop while parsing payloads.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. Execution Engine Troubleshooting &amp; Crash Playbook</h2>
+<p>When an n8n production node crashes or behaves unexpectedly, use this step-by-step diagnostic matrix to remediate the underlying issue.</p>
+<pre><code>                  [ Workflow Crash / Alert Detected ]
+                                   │
+         ┌─────────────────────────┴─────────────────────────┐
+         ▼                                                   ▼
+ [Container Exited?]                                [Execution Stalled / Timeout]
+         │                                                   │
+ ┌───────┴───────┐                                   ┌───────┴───────┐
+ ▼               ▼                                   ▼               ▼
+(Code 137: OOM)  (Crash on Boot)            (Postgres Pool Wait)   (Downstream 429)
+ │               │                                   │               │
+ V8 Heap Check   Enforce Permissions                 Increase Pool   Implement Jitter
+ Max-Old-Space   DB Migrations Lock                  Or Max Age      Backoff Loop
+</code></pre>
+<h3>1. <code>FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory</code></h3>
+<ul>
+<li><strong>Log Signature:</strong> Process terminates with exit code <code>137</code>. Docker displays <code>OOMKilled: true</code>.</li>
+<li><strong>Root Cause:</strong> Node runtime attempted to store dynamic data structures larger than V8's configured boundary. Frequently caused by loading 1,000+ full-text articles or high-dimensional embeddings directly into workflow memory.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Increase the container memory ceiling in your Docker/K8s orchestrator.</li>
+<li>Set <code>NODE_OPTIONS=--max-old-space-size=8192</code> (matching container memory).</li>
+<li>Refactor workflow: Use an iterative batching architecture. Split arrays into chunks of 100 with the <code>Split In Batches</code> node or an n8n custom code loop, clearing upstream references.</li>
+<li>Ensure <code>N8N_DEFAULT_BINARY_DATA_MODE=filesystem</code> is applied so binary buffers are streamed to disk rather than allocated on the heap.</li>
+</ul>
+<h3>2. <code>QueryFailedError: deadlock detected / connection pool exhausted</code></h3>
+<ul>
+<li><strong>Log Signature:</strong> <code>Connection terminated unexpectedly</code> or <code>timeout exceeded when trying to connect to the database</code>.</li>
+<li><strong>Root Cause:</strong> Multiple workers and high workflow concurrency are competing for PostgreSQL connection slots, compounded by executions writing every node state to the database.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Set <code>EXECUTIONS_DATA_SAVE_ON_SUCCESS=none</code>.</li>
+<li>Update PostgreSQL's server-level configuration: <code>max_connections = 200</code>.</li>
+<li>Increase n8n environment pool capacity: <code>DB_POSTGRESDB_POOL_SIZE=30</code> on every worker and main service.</li>
+<li>Configure PgBouncer in front of PostgreSQL using <code>transaction</code> pooling mode if scaling past 5 worker nodes.</li>
+</ul>
+<h3>3. <code>Workflow execution timed out</code> / Node Event Loop Freezing</h3>
+<ul>
+<li><strong>Log Signature:</strong> Executions remain in <code>running</code> status indefinitely until hitting execution timeout thresholds; UI feels unresponsive.</li>
+<li><strong>Root Cause:</strong> A Code node is executing CPU-intensive synchronous operations (e.g., synchronous regex on huge text corpora, non-async loops, massive JSON stringify operations), starving the Node.js event loop.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Convert all custom JavaScript string processing to stream-friendly or asynchronously chunked operations.</li>
+<li>Check for infinite loops in <code>while</code> or <code>for</code> loops within custom JavaScript nodes.</li>
+<li>Implement strict execution timeouts on every workflow under <strong>Workflow Settings</strong> -&gt; <strong>Timeout Workflow</strong> -&gt; Set to <code>300</code> seconds.</li>
+</ul>
+<h3>4. <code>413 Payload Too Large</code> / Webhook Rejection</h3>
+<ul>
+<li><strong>Log Signature:</strong> HTTP 413 returned to webhook caller; executions do not trigger.</li>
+<li><strong>Root Cause:</strong> Payloads exceed the default 16MB Express/body-parser boundary in n8n.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Add <code>N8N_PAYLOAD_SIZE_MAX=128</code> (sets maximum payload threshold to 128MB).</li>
+<li>If using an Nginx/Cloudflare reverse proxy, configure corresponding limits:<ul>
+<li>Nginx: <code>client_max_body_size 128M;</code></li>
+<li>Cloudflare: Webhooks exceeding 100MB must be split or transferred using pre-signed S3 links directly to cloud storage, triggering n8n with an S3 object key instead.</li>
+</ul>
+</li>
+</ul>
+<h3>5. <code>Error: listen EADDRINUSE: address already in use :::5678</code></h3>
+<ul>
+<li><strong>Log Signature:</strong> Container loops on restart, exiting immediately after initialization logs.</li>
+<li><strong>Root Cause:</strong> Two instances attempting to bind to the same network interface, or orphaned zombie processes holding ports inside a persistent volume environment.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Check process tree: <code>lsof -i :5678</code> or <code>netstat -nlp | grep 5678</code>.</li>
+<li>Kill lingering n8n processes: <code>kill -9 &lt;PID&gt;</code>.</li>
+<li>If operating on Docker Compose, ensure <code>n8n-worker</code> and <code>n8n-webhook</code> containers do <strong>not</strong> expose or publish <code>5678:5678</code> in their host port mappings. Only the <code>n8n-main</code> service should bind to port 5678.</li>
+</ul>
+<h3>6. <code>Database Migrations Locked / Cannot Acquire Lock</code></h3>
+<ul>
+<li><strong>Log Signature:</strong> <code>MigrationLockedError: Migrations are currently locked!</code></li>
+<li><strong>Root Cause:</strong> An unexpected shutdown occurred while a previous version upgrade or dynamic schema migration was mid-transaction.</li>
+<li><strong>Remediation Steps:</strong></li>
+<li>Stop all containers accessing the database: <code>docker compose down</code>.</li>
+<li>Connect directly to the PostgreSQL database via your database client or CLI:
+     <code>sql
+     SELECT * FROM migrations;
+     -- Clear the persistent migration lock safely:
+     DELETE FROM migrations WHERE locked = true;
+     -- Alternatively, for modern TypeORM structures used by n8n:
+     UPDATE migrations SET is_locked = 0;</code></li>
+<li>Restart only the <code>n8n-main</code> container to complete schema migrations before starting workers.</li>
+</ul>
+<hr />
+<h2>4. Resilient Rate-Limit Backoff &amp; Retry Architecture</h2>
+<p>High-volume calls to LLM providers (Anthropic, OpenAI) and enterprise APIs will inevitably trigger <code>HTTP 429 Too Many Requests</code>. Using fixed delays or basic retry counts often leads to "thundering herd" problems that permanently throttle your infrastructure.</p>
+<h3>The Algorithm: Truncated Exponential Backoff with Full Jitter</h3>
+<p>The formula for resilient backoff calculation is:</p>
+<p>$$T_{\text{sleep}} = \text{random}(0, \, \min(M, \, B \times 2^{\text{attempt}}))$$</p>
+<p>Where:
+* $B$ = Base interval (e.g., 1.5 seconds)
+* $\text{attempt}$ = Current zero-indexed retry count
+* $M$ = Maximum backoff cap (e.g., 60 seconds)
+* $\text{random}(0, x)$ = Uniform distribution providing jitter to de-synchronize concurrent workers</p>
+<pre><code>[ HTTP Request Node ] ──► [ Result HTTP 429? ]
+                               │
+                ┌──────────────┴──────────────┐
+               YES                            NO
+                │                             │
+    [ Backoff Evaluator Node ]          [ Continue ]
+                │
+    Wait (Calculated Jitter MS)
+                │
+       [ Route to Retry ]
+</code></pre>
+<h3>Concrete Implementation: JavaScript Backoff Engine Node</h3>
+<p>Configure your HTTP Request Node with <strong>Continue On Fail: True</strong>. Route its output into this custom JavaScript Code Node to calculate precise retry metrics:</p>
+<pre><code class="language-javascript">/**
+ * Production Algorithmic Backoff &amp; Jitter Evaluator
+ * Evaluates execution responses and computes dynamic delays.
+ */
+
+const baseDelaySeconds = 2.0;
+const maxDelaySeconds = 60.0;
+const maxAllowedRetries = 5;
+
+// Read execution context or initialize tracking
+const currentInput = $input.item(0).json;
+const errorResponse = currentInput.error || currentInput;
+const statusCode = Number(errorResponse.status || errorResponse.statusCode || (currentInput.headers &amp;&amp; currentInput.headers.status) || 200);
+
+// Detect rate limiting or transient upstream failures
+const isRateLimited = statusCode === 429;
+const isTransientServerError = statusCode &gt;= 500 &amp;&amp; statusCode &lt;= 504;
+const requiresRetry = isRateLimited || isTransientServerError;
+
+let retryCount = Number(currentInput._retryCount || 0);
+
+if (requiresRetry) {
+  if (retryCount &gt;= maxAllowedRetries) {
+    throw new Error(`CRITICAL: Max retries (${maxAllowedRetries}) reached. API failed with status ${statusCode}. Payload: ${JSON.stringify(errorResponse)}`);
+  }
+
+  retryCount += 1;
+
+  // Check if provider sent an explicit Retry-After header (in seconds or HTTP-Date)
+  let retryAfterSeconds = null;
+  const headers = currentInput.headers || (errorResponse.response &amp;&amp; errorResponse.response.headers);
+
+  if (headers) {
+    const rawHeader = headers['retry-after'] || headers['Retry-After'];
+    if (rawHeader) {
+      const parsedValue = Number(rawHeader);
+      if (!isNaN(parsedValue)) {
+        retryAfterSeconds = parsedValue;
+      } else {
+        // Parse HTTP Date string if applicable
+        const dateMs = Date.parse(rawHeader);
+        if (!isNaN(dateMs)) {
+          retryAfterSeconds = Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+        }
+      }
+    }
+  }
+
+  let delayMilliseconds = 0;
+
+  if (retryAfterSeconds !== null) {
+    // Add jitter to downstream explicit Retry-After header
+    const jitter = Math.random() * 1.5;
+    delayMilliseconds = Math.round((retryAfterSeconds + jitter) * 1000);
+  } else {
+    // Exponential Backoff with Full Jitter Calculation
+    const calculatedBackoff = Math.min(maxDelaySeconds, baseDelaySeconds * Math.pow(2, retryCount - 1));
+    // Full jitter selects randomly between 0 and calculatedBackoff
+    const sleepDurationSeconds = Math.random() * calculatedBackoff;
+    delayMilliseconds = Math.round(sleepDurationSeconds * 1000);
+  }
+
+  return [{
+    json: {
+      shouldRetry: true,
+      statusCode: statusCode,
+      _retryCount: retryCount,
+      delayMilliseconds: delayMilliseconds,
+      retryMessage: `Throttled (Status ${statusCode}). Retrying attempt ${retryCount}/${maxAllowedRetries} after ${delayMilliseconds}ms.`
+    }
+  }];
+}
+
+// Successful response path
+return [{
+  json: {
+    shouldRetry: false,
+    statusCode: statusCode,
+    _retryCount: retryCount,
+    data: currentInput
+  }
+}];
+</code></pre>
+<p>Route the <code>shouldRetry === true</code> output directly into an n8n <strong>Wait Node</strong>, mapping its interval property using the expression <code>{{ $json.delayMilliseconds }}ms</code>, then connect it back to the original HTTP Request Node.</p>
+<hr />
+<h2>5. The Production JavaScript Code Node Swipe File</h2>
+<p>These drop-in JavaScript code snippets resolve complex transformations, token safety checks, and payload validations without external library dependencies.</p>
+<h3>1. Token Counter &amp; Context Window Truncator</h3>
+<ul>
+<li><strong>Use Case:</strong> Accurately estimate BPE tokens for strings before injecting them into Claude/OpenAI context windows to prevent unexpected API parameter errors.</li>
+</ul>
+<pre><code class="language-javascript">/**
+ * Token Counter &amp; Context Window Safety Truncator
+ * Strips or truncates inputs that breach specified token allocations.
+ * Approximation: 1 token ~= 4 chars of standard English; accounts for token variance.
+ */
+
+const maxTokenLimit = 8000; // Define maximum budget allowed
+const charsPerTokenRatio = 3.6; // Conservative ratio for code, special chars, and prose
+
+for (const item of $input.all()) {
+  const content = item.json.content || item.json.prompt || item.json.body || &quot;&quot;;
+
+  if (typeof content !== 'string') {
+    item.json.sanitizedContent = content;
+    item.json.tokenStats = { estimatedTokens: 0, truncated: false };
+    continue;
+  }
+
+  const rawLength = content.length;
+  const estimatedTokens = Math.ceil(rawLength / charsPerTokenRatio);
+
+  if (estimatedTokens &gt; maxTokenLimit) {
+    const maxCharacterBoundary = Math.floor(maxTokenLimit * charsPerTokenRatio);
+    // Truncate cleanly at nearest line break or sentence terminus
+    let truncated = content.substring(0, maxCharacterBoundary);
+    const lastSafeBreak = Math.max(truncated.lastIndexOf('\n'), truncated.lastIndexOf('. '));
+
+    if (lastSafeBreak &gt; maxCharacterBoundary * 0.8) {
+      truncated = truncated.substring(0, lastSafeBreak);
+    }
+
+    item.json.sanitizedContent = truncated + &quot;\n...[CONTENT TRUNCATED FOR PROMPT SAFETY]...&quot;;
+    item.json.tokenStats = {
+      originalTokens: estimatedTokens,
+      estimatedTokens: maxTokenLimit,
+      truncated: true,
+      charactersRemoved: rawLength - truncated.length
+    };
+  } else {
+    item.json.sanitizedContent = content;
+    item.json.tokenStats = {
+      originalTokens: estimatedTokens,
+      estimatedTokens: estimatedTokens,
+      truncated: false,
+      charactersRemoved: 0
+    };
+  }
+}
+
+return $input.all();
+</code></pre>
+<hr />
+<h3>2. Structured JSON Schema Sanitizer &amp; Fallback Parser</h3>
+<ul>
+<li><strong>Use Case:</strong> Parse unstructured or dirty LLM outputs containing markdown code blocks, conversational prefixes, and trailing commas into valid JSON objects.</li>
+</ul>
+<p>```javascript
+/**
+ * Resilient LLM Output JSON Extractor &amp; Sanitizer
+ * Recovers malformed JSON, strips outer Markdown formatting, and parses dirty outputs.
+ */</p>
+<p>function sanitizeAndParseJSON(rawString) {
+  if (typeof rawString !== 'string') return rawString;</p>
+<p>let cleaned = rawString.trim();</p>
+<p>// Strip Markdown JSON code fences (<code>json ...</code> or <code>...)
+  cleaned = cleaned.replace(/^</code>(?:json)?\s<em>/i, '');
+  cleaned = cleaned.replace(/\s</em>```$/, '');
+  cleaned = cleaned.trim();</p>
+<p>// Isolate substring bounded by outer braces or brackets if extraneous text exists
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let startIdx = -1;</p>
+<p>if (firstBrace !== -1 &amp;&amp; firstBracket !== -1) {
+    startIdx = Math.min(firstBrace, firstBracket);
+  } else {
+    startIdx = Math.max(firstBrace, firstBracket);
+  }</p>
+<p>if (startIdx !== -1) {
+    const isObject = cleaned[startIdx] === '{';
+    const endChar = isObject ? '}' : ']';
+    const lastIdx = cleaned.lastIndexOf(endChar);</p>
+<pre><code>if (lastIdx &gt; startIdx) {
+  cleaned = cleaned.substring(startIdx, lastIdx + 1);
+}
+</code></pre>
+<p>}</p>
+<p>// Common LLM error: Remove invalid trailing commas before closing braces/brackets
+  cleaned = cleaned.replace(/,\s*([]}])/g, '$1');</p>
+<p>try {
+    return JSON.parse(cleaned);
+  } catch (primaryErr) {
+    // Secondary cleanup: Escape internal unescaped control tabs/newlines
+    try {
+      const secondaryClean = cleaned
+        .replace(/[\n\r]/g, "\n")
+        .replace(/\t/g, "\t");
+      return JSON.parse(secondaryClean);
+    } catch (secondaryErr) {
+      return {
+        parseError: true,
+        errorMessage: primaryErr.message,
+        rawContent: rawString
+      };
+    }
+  }
+}</p>
+<p>for (const item of $input.all()) {
+  // Check common LLM fields: text, content, response, message
+  const rawOutput = item.json.text || 
+                    (item.json.message &amp;&amp; item.json.message.content) || 
+                    item.json.response || 
+                    item.json.output;</p>
+<p>if (raw</p>
+</body>
+</html>

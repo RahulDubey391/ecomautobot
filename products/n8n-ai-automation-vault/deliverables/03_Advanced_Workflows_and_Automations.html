@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The n8n AI Automation Architecture Vault: 50+ Production JSON Workflows, Webhook Handlers & Agentic Pipelines</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Advanced Agentic Pipelines, Tool Calling &amp; Human-in-the-Loop Systems</h1>
+<p>Moving from simple single-prompt completions to production-grade agentic architectures requires deterministic control over non-deterministic models. In n8n, this transition demands a strict separation of concerns: execution runtime, state management, tool contracts, and validation loops.</p>
+<p>This guide details the concrete architectural patterns, schemas, and integration points required to run fault-tolerant, autonomous agents with dynamic tool calling, strict structured output validation, Telegram/Slack approval gates, and self-correcting reflection chains.</p>
+<hr />
+<h2>1. Dynamic Tool Calling Architecture</h2>
+<p>The n8n AI Agent node implements the ReAct (Reasoning + Acting) and OpenAI Function Calling loops. When an agent determines it must use external capabilities, it pauses generation, emits an argument object matching the tool's registered schema, receives the tool's execution output, and continues its reasoning trace.</p>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                       n8n AI Agent                          │
+│                (Tools Agent / ReAct Loop)                   │
+└──────┬──────────────────────▲─────────────────────────┬─────┘
+       │                      │                         │
+       │ 1. Arguments JSON    │ 3. Tool Return Payload  │ 4. Final Text
+       ▼                      │                         ▼
+┌──────────────┐       ┌──────┴───────┐          ┌──────────────┐
+│ Schema Guard │       │ Normalization│          │ Output Parser│
+└──────┬───────┘       └──────▲───────┘          └──────┬───────┘
+       │ 2. Validated Invocation│                       │
+       ▼                      │                         ▼
+┌─────────────────────────────┴───────┐          ┌──────────────┐
+│ Tool: Sub-Workflow / Code / HTTP API│          │ Downstream DB│
+└─────────────────────────────────────┘          └──────────────┘
+</code></pre>
+<h3>1.1 Tool Definitions: Sub-Workflow vs. Code vs. HTTP Request</h3>
+<p>n8n offers three primary mechanisms to expose tools to the AI Agent node:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Mechanism</th>
+<th style="text-align: left;">Latency Overhead</th>
+<th style="text-align: left;">Isolation Level</th>
+<th style="text-align: left;">Primary Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Custom n8n Workflow Tool</strong></td>
+<td style="text-align: left;">Medium (~150-300ms)</td>
+<td style="text-align: left;">Complete (separate execution scope)</td>
+<td style="text-align: left;">Complex multi-step business logic, enterprise APIs, multi-table DB lookups.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Custom Code Tool</strong></td>
+<td style="text-align: left;">Low (~5-15ms)</td>
+<td style="text-align: left;">In-process (sandboxed V8 runtime)</td>
+<td style="text-align: left;">Pure data transformations, cryptographic operations, math, local JSON restructuring.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>HTTP Request Tool</strong></td>
+<td style="text-align: left;">Low-Medium (~50-200ms)</td>
+<td style="text-align: left;">Network boundary</td>
+<td style="text-align: left;">Direct integration with third-party microservices and internal REST endpoints.</td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 Deterministic JSON Schema Contracts for Custom Tools</h3>
+<p>Ambiguous descriptions cause catastrophic model hallucination. Tool declarations must specify property boundaries, types, and descriptions explaining both <em>what</em> the argument is and <em>how</em> it must be formatted.</p>
+<p>Attach this JSON Schema directly to an n8n <strong>Custom Workflow Tool</strong> or <strong>Custom Code Tool</strong> configuration interface under the <code>Specification (JSON Schema)</code> field:</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;https://json-schema.org/draft/2020-12/schema&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;action&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [&quot;query&quot;, &quot;archive&quot;, &quot;quarantine&quot;],
+      &quot;description&quot;: &quot;The exact database operation to perform. 'query' reads record state. 'archive' flags records as inactive. 'quarantine' immediately revokes user token access and moves the record to the compliance review pool.&quot;
+    },
+    &quot;target_entity&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [&quot;user_account&quot;, &quot;api_key&quot;, &quot;workspace&quot;],
+      &quot;description&quot;: &quot;The entity scope of the operation.&quot;
+    },
+    &quot;entity_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[a-f0-9]{8}-[a-f0-9]{4}-[4][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$&quot;,
+      &quot;description&quot;: &quot;The UUIDv4 identifier of the target entity. Must adhere strictly to standard 36-character hyphenated UUID notation.&quot;
+    },
+    &quot;reason&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 10,
+      &quot;maxLength&quot;: 255,
+      &quot;description&quot;: &quot;Human-readable justification for running this tool. Required for enterprise audit logging.&quot;
+    }
+  },
+  &quot;required&quot;: [&quot;action&quot;, &quot;target_entity&quot;, &quot;entity_id&quot;, &quot;reason&quot;],
+  &quot;additionalProperties&quot;: false
+}
+</code></pre>
+<h3>1.3 Production Custom Code Tool: Zero-Dependency Sandbox</h3>
+<p>When using the <strong>Code Tool</strong>, do not rely on implicit return structures. The AI Agent expects a flat string or structured JSON stringified return. </p>
+<p>Place this code inside the n8n <strong>Code Tool</strong> node:</p>
+<pre><code class="language-javascript">// n8n Code Tool: Entity Security Interceptor
+// Inputs are populated into the execution scope via $fromAI()
+
+const action = $fromAI('action');
+const targetEntity = $fromAI('target_entity');
+const entityId = $fromAI('entity_id');
+const reason = $fromAI('reason');
+
+// Runtime validation guard
+if (!action || !targetEntity || !entityId || !reason) {
+  return JSON.stringify({
+    success: false,
+    error: &quot;MISSING_MANDATORY_PARAMETERS&quot;,
+    message: &quot;Parameters [action, target_entity, entity_id, reason] must all be provided.&quot;
+  });
+}
+
+const executionTimestamp = new Date().toISOString();
+
+try {
+  // Deterministic mock routing for sandboxed tool execution
+  const auditReceipt = {
+    receipt_id: `rcpt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    status: &quot;PROCESSED&quot;,
+    action_applied: action,
+    target: `${targetEntity}:${entityId}`,
+    compliance_reason: reason,
+    executed_at: executionTimestamp
+  };
+
+  if (action === &quot;quarantine&quot;) {
+    auditReceipt.access_revocation_event_emitted = true;
+    auditReceipt.state_override = &quot;LOCKED&quot;;
+  } else if (action === &quot;archive&quot;) {
+    auditReceipt.state_override = &quot;SOFT_DELETED&quot;;
+  } else {
+    auditReceipt.state_override = &quot;ACTIVE&quot;;
+    auditReceipt.read_count = 1;
+  }
+
+  // Always return stringified JSON to the agent
+  return JSON.stringify({
+    success: true,
+    data: auditReceipt
+  });
+
+} catch (error) {
+  return JSON.stringify({
+    success: false,
+    error: &quot;INTERNAL_TOOL_EXECUTION_FAILURE&quot;,
+    details: error.message
+  });
+}
+</code></pre>
+<hr />
+<h2>2. Deterministic Structured Output Parsing</h2>
+<p>AI Agents are notoriously unreliable when generating naked JSON, frequently including conversational preambles, trailing commas, or missing brackets. To enforce deterministic schema compliance, apply a combined approach: <strong>Model-Level Schema Enforcement</strong> backed by an <strong>Idempotent Repair Engine</strong>.</p>
+<h3>2.1 Schema Definition for the Structured Output Parser</h3>
+<p>Attach the <strong>Structured Output Parser</strong> sub-node to the <strong>OpenAI Chat Model</strong> or <strong>Anthropic Chat Model</strong> node. Configure the JSON Schema property with this rigorous definition:</p>
+<pre><code class="language-json">{
+  &quot;$schema&quot;: &quot;http://json-schema.org/draft-07/schema#&quot;,
+  &quot;title&quot;: &quot;AgentIncidentResolutionPayload&quot;,
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;incident_id&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^INC-[0-9]{6}$&quot;
+    },
+    &quot;severity&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [&quot;SEV-1&quot;, &quot;SEV-2&quot;, &quot;SEV-3&quot;, &quot;SEV-4&quot;]
+    },
+    &quot;root_cause_analysis&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 20
+    },
+    &quot;impacted_systems&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: { &quot;type&quot;: &quot;string&quot; },
+      &quot;minItems&quot;: 1
+    },
+    &quot;remediation_steps&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;properties&quot;: {
+          &quot;order&quot;: { &quot;type&quot;: &quot;integer&quot; },
+          &quot;command&quot;: { &quot;type&quot;: &quot;string&quot; },
+          &quot;automated&quot;: { &quot;type&quot;: &quot;boolean&quot; }
+        },
+        &quot;required&quot;: [&quot;order&quot;, &quot;command&quot;, &quot;automated&quot;],
+        &quot;additionalProperties&quot;: false
+      },
+      &quot;minItems&quot;: 1
+    },
+    &quot;resolution_confidence_score&quot;: {
+      &quot;type&quot;: &quot;number&quot;,
+      &quot;minimum&quot;: 0.0,
+      &quot;maximum&quot;: 1.0
+    }
+  },
+  &quot;required&quot;: [
+    &quot;incident_id&quot;,
+    &quot;severity&quot;,
+    &quot;root_cause_analysis&quot;,
+    &quot;impacted_systems&quot;,
+    &quot;remediation_steps&quot;,
+    &quot;resolution_confidence_score&quot;
+  ],
+  &quot;additionalProperties&quot;: false
+}
+</code></pre>
+<h3>2.2 System Prompt Directive for Structured Outputs</h3>
+<p>LLMs must be instructed on how to structure their chain of thought without contaminating the output payload:</p>
+<pre><code class="language-text">You are an advanced incident management runtime. 
+You MUST analyze the input telemetry and emit your final response exclusively conforming to the provided JSON Schema.
+
+OPERATIONAL INSTRUCTIONS:
+1. Do not prefix your response with &quot;```json&quot; or backticks.
+2. Do not append commentary, markdown, or apologies after the JSON.
+3. Validate all fields against constraints before outputting:
+   - incident_id must match regex: ^INC-[0-9]{6}$
+   - severity must be strictly one of: [&quot;SEV-1&quot;, &quot;SEV-2&quot;, &quot;SEV-3&quot;, &quot;SEV-4&quot;]
+   - resolution_confidence_score must be a float between 0.0 and 1.0
+4. Any deviation from the schema triggers an immediate hard rejection by the runtime parser.
+</code></pre>
+<h3>2.3 Resilient JSON Repair Engine (Code Node Fallback)</h3>
+<p>If the parser fails or you are using open models via Ollama/LocalAI that do not support strict grammar masks, insert this <strong>Code Node</strong> immediately after the model response:</p>
+<pre><code class="language-javascript">// Node: Resilient JSON Parsing &amp; Structural Repair Engine
+const rawInput = $input.first().json.output || $input.first().json.text || &quot;&quot;;
+
+function extractAndRepairJSON(text) {
+  if (typeof text === 'object' &amp;&amp; text !== null) {
+    return text;
+  }
+
+  // Step 1: Strip Markdown fences if present
+  let sanitized = text.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+
+  // Step 2: Extract text boundary between the first '{' and last '}'
+  const firstOpenBrace = sanitized.indexOf('{');
+  const lastCloseBrace = sanitized.lastIndexOf('}');
+
+  if (firstOpenBrace === -1 || lastCloseBrace === -1) {
+    throw new Error(&quot;PARSER_FATAL_NO_JSON_OBJECT_FOUND: Payload contains no root braces.&quot;);
+  }
+
+  sanitized = sanitized.substring(firstOpenBrace, lastCloseBrace + 1);
+
+  // Step 3: Handle structural edge-cases using aggressive regex repair
+  sanitized = sanitized
+    .replace(/,\s*([}\]])/g, '$1')            // Remove trailing commas before closing braces/brackets
+    .replace(/([{,]\s*)([a-zA-Z0-9_]+?)\s*:/g, '$1&quot;$2&quot;:') // Wrap unquoted keys
+    .replace(/:\s*'([^']*)'/g, ':&quot;$1&quot;');       // Convert single quoted string values to double quotes
+
+  try {
+    return JSON.parse(sanitized);
+  } catch (initialErr) {
+    // Step 4: Line break and unescaped character scrubbing
+    sanitized = sanitized.replace(/\n/g, &quot;\\n&quot;).replace(/\r/g, &quot;\\r&quot;).replace(/\t/g, &quot;\\t&quot;);
+    try {
+      return JSON.parse(sanitized);
+    } catch (secondaryErr) {
+      throw new Error(`PARSER_REPAIR_FAILED: Initial: [${initialErr.message}], Secondary: [${secondaryErr.message}]`);
+    }
+  }
+}
+
+try {
+  const parsedData = extractAndRepairJSON(rawInput);
+
+  // Mandatory Structural Validation Pass
+  const requiredKeys = [
+    &quot;incident_id&quot;, 
+    &quot;severity&quot;, 
+    &quot;root_cause_analysis&quot;, 
+    &quot;impacted_systems&quot;, 
+    &quot;remediation_steps&quot;, 
+    &quot;resolution_confidence_score&quot;
+  ];
+
+  for (const key of requiredKeys) {
+    if (!(key in parsedData)) {
+      throw new Error(`SCHEMA_VIOLATION: Missing mandatory root field: &quot;${key}&quot;`);
+    }
+  }
+
+  return [{
+    json: {
+      parse_success: true,
+      data: parsedData,
+      raw_bytes: Buffer.byteLength(JSON.stringify(parsedData), 'utf8')
+    }
+  }];
+} catch (err) {
+  return [{
+    json: {
+      parse_success: false,
+      error_code: &quot;PAYLOAD_DESTRUCTION&quot;,
+      error_message: err.message,
+      original_output: rawInput
+    }
+  }];
+}
+</code></pre>
+<hr />
+<h2>3. Human-in-the-Loop (HITL) Approval Gates</h2>
+<p>Autonomous agents handling critical workflows (financial operations, database writes, user communications) require deterministic approval barriers. n8n natively manages this via the <strong>Wait Node</strong> in conjunction with an external webhook trigger, pausing execution threads cleanly without consuming CPU cycles.</p>
+<pre><code>┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
+│ AI Agent Output │──────▶│ Telegram/Slack  │──────▶│ Wait Node       │
+│ Proposes Action │       │ Interactive Msg │       │ (Resume on Hook)│
+└─────────────────┘       └─────────────────┘       └────────┬────────┘
+                                                             │
+                  ┌──────────────────────────────────────────┘
+                  ▼
+         ┌───────────────────┐
+         │ Webhook Execution │
+         │   Verification    │
+         └────────┬──────────┘
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+   [APPROVED]          [REJECTED]
+        │                   │
+        ▼                   ▼
+ Execute Action      Halt &amp; Notify
+</code></pre>
+<h3>3.1 Slack Interactive Block Kit Configuration</h3>
+<p>When using the Slack node to construct interactive approval notifications:</p>
+<ol>
+<li>Add a <strong>Slack Node</strong> configured to <code>Resource: Message</code>, <code>Operation: Post</code>.</li>
+<li>Set <code>Authentication: Bot Token</code>.</li>
+<li>In the <strong>Blocks (JSON)</strong> field, insert the following structure. It uses n8n variables to embed execution IDs and the webhook callback target:</li>
+</ol>
+<pre><code class="language-json">[
+  {
+    &quot;type&quot;: &quot;header&quot;,
+    &quot;text&quot;: {
+      &quot;type&quot;: &quot;plain_text&quot;,
+      &quot;text&quot;: &quot;🚨 Critical Agent Approval Required&quot;,
+      &quot;emoji&quot;: true
+    }
+  },
+  {
+    &quot;type&quot;: &quot;section&quot;,
+    &quot;fields&quot;: [
+      {
+        &quot;type&quot;: &quot;mrkdwn&quot;,
+        &quot;text&quot;: &quot;*Execution ID:*\n`{{ $execution.id }}`&quot;
+      },
+      {
+        &quot;type&quot;: &quot;mrkdwn&quot;,
+        &quot;text&quot;: &quot;*Confidence Score:*\n`{{ $('Code Parser').item.json.data.resolution_confidence_score }}`&quot;
+      }
+    ]
+  },
+  {
+    &quot;type&quot;: &quot;section&quot;,
+    &quot;text&quot;: {
+      &quot;type&quot;: &quot;mrkdwn&quot;,
+      &quot;text&quot;: &quot;*Proposed Remediations:*\n```{{ JSON.stringify($('Code Parser').item.json.data.remediation_steps, null, 2) }}```&quot;
+    }
+  },
+  {
+    &quot;type&quot;: &quot;divider&quot;
+  },
+  {
+    &quot;type&quot;: &quot;actions&quot;,
+    &quot;elements&quot;: [
+      {
+        &quot;type&quot;: &quot;button&quot;,
+        &quot;text&quot;: {
+          &quot;type&quot;: &quot;plain_text&quot;,
+          &quot;text&quot;: &quot;Approve &amp; Execute&quot;,
+          &quot;emoji&quot;: true
+        },
+        &quot;style&quot;: &quot;primary&quot;,
+        &quot;value&quot;: &quot;approved&quot;,
+        &quot;action_id&quot;: &quot;approve_action&quot;,
+        &quot;url&quot;: &quot;https://n8n.yourdomain.com/webhook/hitl-resume?executionId={{ $execution.id }}&amp;action=approved&amp;token={{ $env.HITL_HMAC_SECRET }}&quot;
+      },
+      {
+        &quot;type&quot;: &quot;button&quot;,
+        &quot;text&quot;: {
+          &quot;type&quot;: &quot;plain_text&quot;,
+          &quot;text&quot;: &quot;Reject Action&quot;,
+          &quot;emoji&quot;: true
+        },
+        &quot;style&quot;: &quot;danger&quot;,
+        &quot;value&quot;: &quot;rejected&quot;,
+        &quot;action_id&quot;: &quot;reject_action&quot;,
+        &quot;url&quot;: &quot;https://n8n.yourdomain.com/webhook/hitl-resume?executionId={{ $execution.id }}&amp;action=rejected&amp;token={{ $env.HITL_HMAC_SECRET }}&quot;
+      }
+    ]
+  }
+]
+</code></pre>
+<h3>3.2 Telegram Inline Keyboard Markup Pattern</h3>
+<p>For Telegram deployments, instantiate an <strong>HTTP Request Node</strong> pointing to <code>https://api.telegram.org/bot&lt;TOKEN&gt;/sendMessage</code>.</p>
+<p><strong>Payload (Body Parameters):</strong></p>
+<pre><code class="language-json">{
+  &quot;chat_id&quot;: &quot;{{ $env.TELEGRAM_ADMIN_CHAT_ID }}&quot;,
+  &quot;parse_mode&quot;: &quot;MarkdownV2&quot;,
+  &quot;text&quot;: &quot;*AWAITING AGENT CONFIRMATION*\n\n*Incident:* `{{ $('Code Parser').item.json.data.incident_id.replace('-', '\\-') }}`\n*Severity:* `{{ $('Code Parser').item.json.data.severity }}`\n\nApprove destructive mitigation step?&quot;,
+  &quot;reply_markup&quot;: {
+    &quot;inline_keyboard&quot;: [
+      [
+        {
+          &quot;text&quot;: &quot;✅ Execute Patch&quot;,
+          &quot;url&quot;: &quot;https://n8n.yourdomain.com/webhook/hitl-resume?executionId={{ $execution.id }}&amp;action=approved&amp;token={{ $env.HITL_HMAC_SECRET }}&quot;
+        },
+        {
+          &quot;text&quot;: &quot;❌ Kill Thread&quot;,
+          &quot;url&quot;: &quot;https://n8n.yourdomain.com/webhook/hitl-resume?executionId={{ $execution.id }}&amp;action=rejected&amp;token={{ $env.HITL_HMAC_SECRET }}&quot;
+        }
+      ]
+    ]
+  }
+}
+</code></pre>
+<h3>3.3 The Wait Node &amp; Asynchronous Webhook Callback Receiver</h3>
+<p>The approval cycle uses two separate workflows: the <strong>Main Execution Pipeline</strong> and the <strong>HITL Webhook Receiver</strong>.</p>
+<h4>Workflow A: Main Execution Pipeline</h4>
+<ol>
+<li>Processing finishes at the <strong>Wait Node</strong>.</li>
+<li>Configure <strong>Wait Node</strong>:</li>
+<li><code>Resume</code>: <strong>On Webhook Call</strong></li>
+<li><code>Webhook Suffix</code>: <code>hitl-resume-{{ $execution.id }}</code></li>
+<li><code>Limit Wait Time</code>: Enabled (e.g., <code>24 Hours</code>).</li>
+<li><code>Fallback Strategy</code>: Continue workflow down the "Timeout" branch, automatically setting action to <code>REJECTED_TIMEOUT</code>.</li>
+</ol>
+<h4>Workflow B: HITL Webhook Receiver (Centralized Router)</h4>
+<p>This workflow handles inbound HTTP calls from Slack/Telegram, verifies security tokens, and completes execution using the n8n REST API.</p>
+<pre><code class="language-javascript">// Webhook Router Node: Validate Callback &amp; Resume Execution via n8n Internal API
+const query = $input.first().json.query;
+const headers = $input.first().json.headers;
+
+const executionId = query.executionId;
+const action = query.action;
+const providedToken = query.token;
+const internalSecret = $env.HITL_HMAC_SECRET;
+
+// 1. Authenticate Request
+if (!providedToken || providedToken !== internalSecret) {
+  return [{
+    json: {
+      httpStatus: 403,
+      responseBody: &quot;ACCESS_DENIED: Invalid security validation token.&quot;
+    }
+  }];
+}
+
+// 2. Validate Action Inputs
+if (!executionId || ![&quot;approved&quot;, &quot;rejected&quot;].includes(action)) {
+  return [{
+    json: {
+      httpStatus: 400,
+      responseBody: &quot;BAD_REQUEST: Missing valid executionId or action enum.&quot;
+    }
+  }];
+}
+
+// 3. Construct Payload to complete the Waiting Node via n8n API
+return [{
+  json: {
+    httpStatus: 200,
+    responseBody: `Success: Action [${action.toUpperCase()}] dispatched to execution ${executionId}.`,
+    targetUrl: `http://localhost:5678/rest/executions/${executionId}/resume`,
+    resumePayload: {
+      approved: action === &quot;approved&quot;,
+      decision_by: headers['x-forwarded-for'] || &quot;network_admin&quot;,
+      resolved_at: new Date().toISOString()
+    }
+  }
+}];
+</code></pre>
+<p>Direct the output of this Code node to an <strong>HTTP Request Node</strong> targeting the internal n8n REST endpoint to unpause the paused thread.</p>
+<hr />
+<h2>4. Enterprise State Persistence &amp; Thread Memory</h2>
+<p>Default in-memory agent buffers are ephemeral: when the container restarts or memory scales under load, all historical state is lost. Enterprise pipelines require an external, indexed persistence tier.</p>
+<h3>4.1 Memory Architecture Comparison</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Memory Provider</th>
+<th style="text-align: left;">Latency</th>
+<th style="text-align: left;">Distributed Support</th>
+<th style="text-align: left;">Cost</th>
+<th style="text-align: left;">Query/Filtering Capability</th>
+<th style="text-align: left;">Production Suitability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Window Buffer (In-Memory)</strong></td>
+<td style="text-align: left;">0ms</td>
+<td style="text-align: left;">❌ No</td>
+<td style="text-align: left;">Free</td>
+<td style="text-align: left;">None</td>
+<td style="text-align: left;">Prototype only. Discards historical state across workers.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Redis Chat Memory</strong></td>
+<td style="text-align: left;">&lt;2ms</td>
+<td style="text-align: left;">✅ Yes</td>
+<td style="text-align: left;">Low</td>
+<td style="text-align: left;">Limited (Key-Value/TTL based)</td>
+<td style="text-align: left;">High throughput, sub-millisecond session lookup.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>PostgreSQL Chat Memory</strong></td>
+<td style="text-align: left;">5-15ms</td>
+<td style="text-align: left;">✅ Yes</td>
+<td style="text-align: left;">Low-Medium</td>
+<td style="text-align: left;">Complete (Full SQL, JSONB search, ACID)</td>
+<td style="text-align: left;">Maximum resilience, auditability, structured entity tracking.</td>
+</tr>
+</tbody>
+</table>
+<h3>4.2 Production PostgreSQL Chat Memory DDL</h3>
+<p>Deploy the following relational schema into your persistence database to host conversation memory, tool telemetry, and audit trails:</p>
+<pre><code class="language-sql">-- Migration: Create Agent Memory and Telemetry Framework
+CREATE EXTENSION IF NOT EXISTS &quot;uuid-ossp&quot;;
+
+CREATE TABLE agent_conversations (
+    session_id VARCHAR(255) PRIMARY KEY,
+    organization_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_active_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_agent_conversations_org_user ON agent_conversations(organization_id, user_id);
+
+CREATE TABLE agent_messages (
+    message_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id VARCHAR(255) NOT NULL REFERENCES agent_conversations(session_id) ON DELETE CASCADE,
+    sender_type VARCHAR(32) NOT NULL CHECK (sender_type IN ('system', 'human', 'ai', 'tool')),
+    content TEXT NOT NULL,
+    tool_calls JSONB DEFAULT NULL,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_agent_messages_session_lookup ON agent_messages(session_id, created_at ASC);
+
+-- Telemetry log for analytics and debugging
+CREATE TABLE agent_execution_telemetry (
+    telemetry_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    execution_id VARCHAR(64) NOT NULL,
+    session_id VARCHAR(255) REFERENCES agent_conversations(session_id),
+    model_name VARCHAR(128) NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    estimated_cost_usd NUMERIC(10, 6) DEFAULT 0.000000,
+    error_occurred BOOLEAN DEFAULT FALSE,
+    error_payload JSONB DEFAULT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_agent_telemetry_exec_id ON agent_execution_telemetry(execution_id);
+</code></pre>
+<h3>4.3 Scoped Session Identification Pattern</h3>
+<p>Never permit unpartitioned user input to dictate memory keys. Implement this deterministic scoping structure inside an n8n Code Node directly before passing <code>sessionId</code> to the <strong>Postgres Chat Memory</strong> node:</p>
+<pre><code class="language-javascript">// Node: Dynamic Scoped Session Identifier Resolver
+const rawUserId = $input.first().json.user_id || &quot;anonymous_user&quot;;
+const organizationId = $input.first().json.org_id || &quot;default_tenant&quot;;
+const workflowContext = &quot;incident_management&quot;;
+
+// Create clean, collision-free deterministic keyspace
+const sanitizedOrg = organizationId.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+const sanitizedUser = rawUserId.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+const compoundSessionId = `org_${sanitizedOrg}:usr_${sanitizedUser}:ctx_${workflowContext}`;
+
+return [{
+  json: {
+    sessionId: compoundSessionId,
+    org_id: sanitizedOrg,
+    user_id: sanitizedUser,
+    session_initialized: new Date().toISOString()
+  }
+}];
+</code></pre>
+<p>Wire <code>{{ $json.sessionId }}</code> directly into the <strong>Session ID</strong> parameter of the <strong>Postgres Chat Memory</strong> node.</p>
+<hr />
+<h2>5. Self-Correcting Retry &amp; Reflection Chains</h2>
+<p>When an agent produces invalid structured data, breaks operational constraints, or fails code execution, it should not abort the execution run. The pipeline must route the error trace back to a critique agent to reconcile its own state.</p>
+<pre><code>                  ┌────────────────────────┐
+                  ▼                        │
+          ┌───────────────┐                │
+          │ LLM Generator │                │
+          └───────┬───────┘                │
+                  │                        │
+                  ▼                        │
+          ┌───────────────┐                │ Retry with
+          │ Code Sentinel │                │ Diagnostics
+          └───────┬───────┘                │
+                  │                        │
+         [Is Schema Valid?]                │
+            /          \                   │
+          (No)        (Yes)                │
+          /              \                 │
+         ▼                ▼                │
+┌────────────────┐  ┌───────────────────┐  │
+│ Limit Checker  │  │ Next Pipeline Step│  │
+│(Attempts &lt;= 3?)│  └───────────────────┘  │
+└───────┬────────┘                         │
+        │                                  │
+        └──────────────────────────────────┘
+</code></pre>
+<h3>5.1 The Validation &amp; Reflection Code Engine</h3>
+<p>This Code node acts as the deterministic gatekeeper. Place it directly downstream of the agent/LLM generator node:</p>
+<pre><code class="language-javascript">// Node: Structural Reflection &amp; Schema Sentinel
+const currentInput = $input.first().json;
+const MAX_PERMISSIBLE_RETRIES = 3;
+
+// Track or initialize iteration metadata
+let retryCount = currentInput._retry_context?.retry_count || 0;
+let diagnosticErrors = [];
+
+const payload = currentInput.data || currentInput.output || currentInput;
+
+// Deterministic Validation Rules
+if (!payload.incident_id || !/^INC-[0-9]{6}$/.test(payload.incident_id)) {
+  diagnosticErrors.push(&quot;Property 'incident_id' is missing or fails the required regex pattern: ^INC-[0-9]{6}$&quot;);
+}
+
+if (![&quot;SEV-1&quot;, &quot;SEV-2&quot;, &quot;SEV-3&quot;, &quot;SEV-4&quot;].includes(payload.severity)) {
+  diagnosticErrors.push(&quot;Property 'severity' must be one of strictly: ['SEV-1', 'SEV-2', 'SEV-3', 'SEV-4']&quot;);
+}
+
+if (!Array.isArray(payload.impacted_systems) || payload.impacted_systems.length === 0) {
+  diagnosticErrors.push(&quot;Property 'impacted_systems' must be a non-empty array of strings.&quot;);
+}
+
+if (!Array.isArray(payload.remediation_steps) || payload.remediation_steps.length === 0) {
+  diagnosticErrors.push(&quot;Property 'remediation_steps' must contain at least one remediation directive.&quot;);
+} else {
+  payload.remediation_steps.forEach((step, idx) =&gt; {
+    if (typeof step.order !== 'number' || typeof step.command !== 'string' || typeof step.automated !== 'boolean') {
+      diagnosticErrors.push(`Remediation step at index [${idx}] fails the schema contract: {order: integer, command: string, automated: boolean}.`);
+    }
+  });
+}
+
+// Route Decision
+if (diagnosticErrors.length === 0) {
+  // Validation Passed: Proceed to operational stages
+  return [{
+    json: {
+      validation_status: &quot;PASSED&quot;,
+      sanitized_payload: payload,
+      total_retries_required: retryCount
+    }
+  }];
+} else {
+  // Increment failure loop
+  retryCount++;
+
+  if (retryCount &gt; MAX_PERMISSIBLE_RETRIES) {
+    throw new Error(`CIRCUIT_BREAKER_TRIGGERED: Maximum agent retries (${MAX_PERMISSIBLE_RETRIES}) exhausted. Diagnostics: ${diagnosticErrors.join(' | ')}`);
+  }
+
+  // Validation Failed: Construct self-correction context for loopback
+  return [{
+    json: {
+      validation_status: &quot;FAILED_RETRY_REQUIRED&quot;,
+      _retry_context: {
+        retry_count: retryCount,
+        max_retries: MAX_PERMISSIBLE_RETRIES,
+        diagnostic_feedback: diagnosticErrors,
+        failed_payload: payload
+      }
+    }
+  }];
+}
+</code></pre>
+<h3>5.2 Reflection Sub-Prompt Directive</h3>
+<p>Feed the <code>FAILED_RETRY_REQUIRED</code> branch of an <strong>If Node</strong> directly into a secondary corrective LLM node or loop back to the primary agent using this prompt configuration:</p>
+<pre><code class="language-text">CRITICAL NOTICE: Your previous output failed schema validation.
+
+VALIDATION ENGINE DIAGNOSTICS:
+{{ $('Sentinel Code').item.json._retry_context.diagnostic_feedback.map((msg, i) =&gt; `${i + 1}. ${msg}`).join('\n') }}
+
+ORIGINAL MALFORMED SUBMISSION:
+```json
+{{ JSON.stringify($('Sentinel Code').item.json._retry_context.failed_payload, null, 2) }}
+</code></pre>
+<p>INSTRUCTIONS FOR REPAIR:
+1. Fix every listed diagnostic violation directly.
+2. Maintain all other correct payload elements unchanged.
+3. Emit exclusively the corrected JSON object.
+4. Attempt Number: {{ $('Sentinel Code').item.json._retry_context.retry_count }} of {{ $('Sentinel Code').item.json._retry_context.max_retries }}.</p>
+<pre><code>
+---
+
+## 6. End-to-End Orchestration Blueprint
+
+The following system reference card provides an architectural blueprint for connecting all components of this module into a single production workflow.
+
+### 6.1 Complete Workflow Topology
+
+</code></pre>
+<p>[Webhook: Postmortem Intake]
+              │
+              ▼
+    [Code: Scope Session]
+              │
+              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ n8n AI Agent Engine                                         │
+│                                                             │
+│  [OpenAI Chat Model] (Temp = 0.1)                           │
+│  [Postgres Memory]   (Session = $json.sessionId)            │
+│  [Structured Parser] (Incident Schema Contract)             │
+│  [Code Tool]         (Entity Security Interceptor)          │
+└─────────────────────────────┬───────────────────────────────┘
+                              │
+                              ▼
+                [Code</p>
+</body>
+</html>
