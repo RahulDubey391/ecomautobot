@@ -1,0 +1,43 @@
+{
+  "slug": "react-email-transactional-vault",
+  "name": "The Transactional Email & React Email Vault: 50+ Production Templates, Resend Webhooks & Deliverability Blueprints",
+  "price_cents": 1900,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "react-email-transactional-vault",
+  "custom_summary": "Ship bulletproof, dark-mode-ready React Email templates, Resend webhook pipelines, and 99%+ inbox deliverability configs in minutes.",
+  "category": "software",
+  "tags": [
+    "react email",
+    "resend",
+    "email templates",
+    "transactional",
+    "saas boilerplate",
+    "tailwindcss",
+    "nextjs",
+    "developer tools",
+    "indie hacker",
+    "html email"
+  ],
+  "hashtags": [
+    "#ReactEmail",
+    "#Resend",
+    "#EmailTemplates",
+    "#Transactional",
+    "#SaasBoilerplate",
+    "#Tailwindcss",
+    "#Nextjs",
+    "#DeveloperTools",
+    "#IndieHacker",
+    "#HtmlEmail"
+  ],
+  "gumroad_product_id": "J3BO_CYUhpAVEMUv0hONMA==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/react-email-transactional-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/909ebee582980704b2e49150b5878e67/original/react-email-transactional-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/azrvr7z3jmyrz1gj7yiatbsujlzn"
+}

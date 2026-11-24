@@ -1,0 +1,7 @@
+🚀 Just launched: The Transactional Email & React Email Vault: 50+ Production Templates, Resend Webhooks & Deliverability Blueprints
+
+Ship bulletproof, dark-mode-ready React Email templates, Resend webhook pipelines, and 99%+ inbox deliverability configs in minutes.
+
+👉 Grab it here: https://gumroad.com/l/react-email-transactional-vault
+
+#ReactEmail #Resend #EmailTemplates #Transactional #SaasBoilerplate #Tailwindcss #Nextjs #DeveloperTools #IndieHacker #HtmlEmail

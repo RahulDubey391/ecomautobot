@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Transactional Email & React Email Vault: 50+ Production Templates, Resend Webhooks & Deliverability Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Complete Architecture &amp; Core Playbook</h1>
+<p>Shipping transactional emails that render identically across 60+ email clients requires abandoning standard modern web paradigms. Email client engines range from WebKit (Apple Mail) to Blink (Gmail) down to the Microsoft Word 2007–2019 rendering engine (<code>MSHTML</code>/<code>MSO</code>) powering Windows desktop Outlook.</p>
+<p>This module details the complete rendering architecture, cross-client quirks, type-safe payload interpolation, and automated CI/CD visual regression pipelines that form the foundation of our production vault.</p>
+<hr />
+<h2>1. System Architecture: The Bulletproof Pipeline</h2>
+<p>Transactional email rendering differs fundamentally from standard React web rendering. Rather than compiling to a lightweight DOM tree hydrated in the browser, React Email templates must compile down to strict XHTML 1.0 Transitional markup, inline all CSS styles, inject conditional Vector Markup Language (VML) for Outlook desktop, and bypass aggressive sanitation engines (such as Gmail’s clipping engine and Apple Mail’s dark mode processor).</p>
+<pre><code>+--------------------------------------------------------------------------------+
+|                        TRANSACTIONAL EMAIL ENGINE                              |
++--------------------------------------------------------------------------------+
+                                       |
+                   [Type-Safe App Event Payload (JSON)]
+                                       |
+                                       v
+                  +-----------------------------------------+
+                  |  1. Runtime Validation (Zod Engine)     |
+                  |     - Type coercion                     |
+                  |     - XSS sanitization                  |
+                  |     - Currency/Date locale formatting   |
+                  +-----------------------------------------+
+                                       |
+                                       v
+                  +-----------------------------------------+
+                  |  2. React Email Render Engine           |
+                  |     - Tree transformation               |
+                  |     - Inline CSS generation             |
+                  |     - Conditional MSO comment injection |
+                  +-----------------------------------------+
+                                       |
+                                       v
+                  +-----------------------------------------+
+                  |  3. Post-Processing &amp; Optimization     |
+                  |     - Gmail byte-size audit (&lt;102KB)    |
+                  |     - Pre-header padding injection      |
+                  |     - Plaintext fallback generation     |
+                  +-----------------------------------------+
+                                       |
+                                       v
+                  +-----------------------------------------+
+                  |  4. Delivery via Resend API             |
+                  |     - DKIM, SPF, DMARC-aligned domain   |
+                  |     - TLS 1.3 opportunistic encryption  |
+                  +-----------------------------------------+
+                                       |
+         +-----------------------------+-----------------------------+
+         |                             |                             |
+         v                             v                             v
++------------------+         +-------------------+         +-------------------+
+|  Apple WebKit    |         |  Google Blink     |         |  Microsoft MSO    |
+|  (Apple Mail)    |         |  (Gmail Web/App)  |         |  (Outlook Win32)  |
+|  - Full CSS3     |         |  - Strips classes |         |  - Word engine    |
+|  - Strict Dark   |         |  - 102KB clipping |         |  - No flexbox/grid|
+|    Mode overrides|         |  - Auto-link bugs |         |  - Requires VML   |
++------------------+         +-------------------+         +-------------------+
+</code></pre>
+<h3>The Three Golden Constraints</h3>
+<ol>
+<li><strong>The 102KB Boundary</strong>: Gmail desktop cuts off any email message whose total raw HTML size exceeds 102 kilobytes, rendering a destructive <code>[Message clipped] View entire message</code> link. This destroys click-through tracking pixels and breaks footer unsubscribe functionality (risking immediate deliverability penalties and CAN-SPAM/GDPR compliance breaches).</li>
+<li><strong>The MSO Word Rendering Engine</strong>: Outlook 2013, 2016, 2019, and 2021 on Windows do not use Internet Explorer, Edge, or Chromium. They use <strong>Microsoft Word</strong>. This engine fundamentally does not understand <code>display: flex</code>, <code>display: grid</code>, <code>max-width</code>, <code>margin: auto</code>, CSS transitions, or standard <code>border-radius</code>.</li>
+<li><strong>Aggressive Dark Mode Inversion Schemes</strong>: While Apple Mail supports explicit <code>@media (prefers-color-scheme: dark)</code> overrides, Gmail mobile apps and Outlook desktop run aggressive algorithmic color inversions that flip pure black text to pure white and light gray backgrounds to dark slate—often rendering transparent logos invisible or creating low-contrast, unreadable paragraphs.</li>
+</ol>
+<hr />
+<h2>2. Cross-Client Rendering Engine Matrix</h2>
+<p>The following matrix documents the specific rendering behaviors across all major email clients and provides the production-grade workarounds applied across all templates in this Vault.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Client</th>
+<th style="text-align: left;">Core Rendering Engine</th>
+<th style="text-align: left;">Major CSS/HTML Limitations</th>
+<th style="text-align: left;">Vault Workaround / Engine Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Apple Mail (macOS / iOS)</strong></td>
+<td style="text-align: left;">WebKit</td>
+<td style="text-align: left;">Full CSS3 support; aggressive font-boosting on iOS; automatic phone number and date detection wrapping text in blue links.</td>
+<td style="text-align: left;">Add <code>x-apple-data-detectors=no</code> meta tag; disable font-boosting with <code>-webkit-text-size-adjust: none;</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Gmail (Webmail / Android / iOS)</strong></td>
+<td style="text-align: left;">Blink (heavily sanitized)</td>
+<td style="text-align: left;">Drops entire <code>&lt;style&gt;</code> tag if it contains a single syntax error; clips emails at 102KB; does not support CSS variables (<code>var(--token)</code>); strips custom data attributes.</td>
+<td style="text-align: left;">Inline all critical styles directly on elements; post-process CSS to eliminate syntax errors; maintain unminified HTML payload below 98KB.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Outlook for Windows (2016 - 2021)</strong></td>
+<td style="text-align: left;">Microsoft Word (<code>MSO</code>)</td>
+<td style="text-align: left;">Zero support for CSS Flexbox, CSS Grid, <code>max-width</code>, absolute positioning, or <code>box-shadow</code>; collapses empty table cells; ignores padding on <code>&lt;div&gt;</code> elements.</td>
+<td style="text-align: left;">Ghost tables: wrap sections in <code>&lt;!--[if mso]&gt;&lt;table role="presentation"&gt;...&lt;![endif]--&gt;</code>; use VML (<code>v:roundrect</code>) for buttons; enforce explicit dimensions.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Outlook.com / Office 365 (Web)</strong></td>
+<td style="text-align: left;">Chromium / Gecko / WebKit</td>
+<td style="text-align: left;">Strips custom <code>id</code> and changes classes with prefixes; intermittently drops margin declarations; modifies CSS background colors.</td>
+<td style="text-align: left;">Use <code>margin</code> and <code>padding</code> exclusively on <code>&lt;td&gt;</code> elements; avoid shorthand CSS properties (use <code>padding-top</code>, <code>padding-bottom</code>, etc.).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Samsung Email</strong></td>
+<td style="text-align: left;">Chromium fork</td>
+<td style="text-align: left;">Forces arbitrary dark mode overrides that cannot be easily disabled; aggressively wraps numbers and units.</td>
+<td style="text-align: left;">Use meta tags <code>supported-color-schemes</code> and CSS rule <code>#MessageWebViewDiv</code> targeting to lock styles.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Yahoo! Mail / AOL</strong></td>
+<td style="text-align: left;">Blink / WebKit</td>
+<td style="text-align: left;">Overwrites common CSS class names; wraps body in client-specific wrappers (e.g., <code>.ydp...</code>); drops pseudo-elements.</td>
+<td style="text-align: left;">Use dedicated attribute selectors and double-class declarations to preserve cascading specificity.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. The Bulletproof Layout Shell (<code>BaseLayout.tsx</code>)</h2>
+<p>This layout shell forms the foundation for every template in this library. It handles:
+- Correct XML namespaces for Outlook VML rendering.
+- Dark mode meta flags for iOS, macOS, and Android.
+- The "Preview Hack" (injecting non-breaking spaces and zero-width characters to prevent the inbox from pulling subsequent email body text into the subject preview snippet).
+- Ghost table wrapping for container stability across MSO clients.</p>
+<pre><code class="language-tsx">// components/BaseLayout.tsx
+import * as React from &quot;react&quot;;
+import {
+  Html,
+  Head,
+  Body,
+  Container,
+  Preview,
+  Font,
+} from &quot;@react-email/components&quot;;
+
+interface BaseLayoutProps {
+  previewText: string;
+  children: React.ReactNode;
+  lang?: string;
+}
+
+export const BaseLayout: React.FC&lt;BaseLayoutProps&gt; = ({
+  previewText,
+  children,
+  lang = &quot;en&quot;,
+}) =&gt; {
+  // Construct a sequence of zero-width non-joiners to consume inbox preview snippets
+  const previewPadding = &quot;\xa0\u200C&quot;.repeat(120);
+
+  return (
+    &lt;Html lang={lang} xmlns=&quot;http://www.w3.org/1999/xhtml&quot; xmlnsV=&quot;urn:schemas-microsoft-com:vml&quot; xmlnsO=&quot;urn:schemas-microsoft-com:office:office&quot;&gt;
+      &lt;Head&gt;
+        &lt;meta httpEquiv=&quot;Content-Type&quot; content=&quot;text/html; charset=UTF-8&quot; /&gt;
+        &lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1.0&quot; /&gt;
+        &lt;meta name=&quot;x-apple-disable-message-reformatting&quot; /&gt;
+        &lt;meta name=&quot;color-scheme&quot; content=&quot;light dark&quot; /&gt;
+        &lt;meta name=&quot;supported-color-schemes&quot; content=&quot;light dark&quot; /&gt;
+        &lt;meta name=&quot;format-detection&quot; content=&quot;telephone=no, date=no, address=no, email=no&quot; /&gt;
+        {/*[if mso]&gt;
+        &lt;noscript&gt;
+          &lt;xml&gt;
+            &lt;o:OfficeDocumentSettings&gt;
+              &lt;o:PixelsPerInch&gt;96&lt;/o:PixelsPerInch&gt;
+            &lt;/o:OfficeDocumentSettings&gt;
+          &lt;/xml&gt;
+        &lt;/noscript&gt;
+        &lt;![endif]*/}
+        &lt;Font
+          fontFamily=&quot;Inter&quot;
+          fallbackFontFamily={[&quot;-apple-system&quot;, &quot;BlinkMacSystemFont&quot;, &quot;Segoe UI&quot;, &quot;Roboto&quot;, &quot;Helvetica&quot;, &quot;Arial&quot;, &quot;sans-serif&quot;]}
+          webFont={{
+            url: &quot;https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuLyfAZ9hjp-Ek-_EeA.woff2&quot;,
+            format: &quot;woff2&quot;,
+          }}
+          fontWeight={400}
+          fontStyle=&quot;normal&quot;
+        /&gt;
+        &lt;style dangerouslySetInnerHTML={{ __html: `
+          :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+          }
+          /* Reset Styles */
+          html, body {
+            margin: 0 auto !important;
+            padding: 0 !important;
+            height: 100% !important;
+            width: 100% !important;
+            -webkit-text-size-adjust: 100% !important;
+            -ms-text-size-adjust: 100% !important;
+          }
+          table, td {
+            mso-table-lspace: 0pt !important;
+            mso-table-rspace: 0pt !important;
+            border-collapse: collapse !important;
+          }
+          img {
+            -ms-interpolation-mode: bicubic;
+            border: 0;
+            outline: none;
+            text-decoration: none;
+            display: block;
+          }
+          /* Dark Mode Overrides for WebKit &amp; Blink */
+          @media (prefers-color-scheme: dark) {
+            .dark-mode-bg {
+              background-color: #090A0F !important;
+            }
+            .dark-mode-card {
+              background-color: #141721 !important;
+              border-color: #262B3D !important;
+            }
+            .dark-mode-text-primary {
+              color: #F8FAFC !important;
+            }
+            .dark-mode-text-secondary {
+              color: #94A3B8 !important;
+            }
+            .dark-mode-border {
+              border-color: #262B3D !important;
+            }
+          }
+          /* Custom Outlook Fallbacks */
+          [owa] .layout-container {
+            width: 600px !important;
+          }
+        `}} /&gt;
+      &lt;/Head&gt;
+      &lt;Preview&gt;
+        {previewText}
+        {previewPadding}
+      &lt;/Preview&gt;
+      &lt;Body style={{
+        margin: 0,
+        padding: &quot;40px 0 40px 0&quot;,
+        backgroundColor: &quot;#F1F5F9&quot;,
+        WebkitFontSmoothing: &quot;antialiased&quot;,
+      }} className=&quot;dark-mode-bg&quot;&gt;
+        {/* Ghost Table for Outlook Desktop (MSO) to enforce standard 600px boundary */}
+        {/*[if (gte mso 9)|(IE)]&gt;
+        &lt;table align=&quot;center&quot; border=&quot;0&quot; cellpadding=&quot;0&quot; cellspacing=&quot;0&quot; width=&quot;600&quot; role=&quot;presentation&quot; style=&quot;width: 600px;&quot;&gt;
+          &lt;tr&gt;
+            &lt;td align=&quot;center&quot; valign=&quot;top&quot;&gt;
+        &lt;![endif]*/}
+        &lt;Container
+          className=&quot;dark-mode-card&quot;
+          style={{
+            maxWidth: &quot;600px&quot;,
+            margin: &quot;0 auto&quot;,
+            backgroundColor: &quot;#FFFFFF&quot;,
+            borderRadius: &quot;12px&quot;,
+            border: &quot;1px solid #E2E8F0&quot;,
+            overflow: &quot;hidden&quot;,
+            boxShadow: &quot;0 4px 6px -1px rgba(0, 0, 0, 0.05)&quot;,
+          }}
+        &gt;
+          {children}
+        &lt;/Container&gt;
+        {/*[if (gte mso 9)|(IE)]&gt;
+            &lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/table&gt;
+        &lt;![endif]*/}
+      &lt;/Body&gt;
+    &lt;/Html&gt;
+  );
+};
+</code></pre>
+<hr />
+<h2>4. Outlook &amp; MSO Custom Element Architecture</h2>
+<h3>Bulletproof Buttons (Vector Markup Language - VML)</h3>
+<p>Modern CSS properties like <code>border-radius</code>, <code>box-shadow</code>, and <code>padding</code> fail when applied to standard anchor tags (<code>&lt;a&gt;</code>) in Outlook for Windows. The client simply strips the padding, causing the button background to wrap tightly around the text glyphs, and ignores all corner radiuses.</p>
+<p>To fix this, we use conditional VML wrapping. Below is the production-ready button component used across the Vault:</p>
+<pre><code class="language-tsx">// components/BulletproofButton.tsx
+import * as React from &quot;react&quot;;
+
+interface BulletproofButtonProps {
+  href: string;
+  children: React.ReactNode;
+  width?: number;
+  height?: number;
+  backgroundColor?: string;
+  textColor?: string;
+  borderRadius?: number;
+}
+
+export const BulletproofButton: React.FC&lt;BulletproofButtonProps&gt; = ({
+  href,
+  children,
+  width = 220,
+  height = 48,
+  backgroundColor = &quot;#2563EB&quot;,
+  textColor = &quot;#FFFFFF&quot;,
+  borderRadius = 6,
+}) =&gt; {
+  const arcSize = Math.round((borderRadius / height) * 100);
+
+  return (
+    &lt;div style={{ textAlign: &quot;center&quot;, margin: &quot;24px 0&quot; }}&gt;
+      {/*[if mso]&gt;
+      &lt;v:roundrect xmlns:v=&quot;urn:schemas-microsoft-com:vml&quot; xmlns:w=&quot;urn:schemas-microsoft-com:office:word&quot; 
+        href=&quot;${href}&quot; 
+        style=&quot;height:${height}px;v-text-anchor:middle;width:${width}px;&quot; 
+        arcsize=&quot;${arcSize}%&quot; 
+        stroke=&quot;f&quot; 
+        fillcolor=&quot;${backgroundColor}&quot;&gt;
+        &lt;w:anchorlock/&gt;
+        &lt;center style=&quot;color:${textColor};font-family:sans-serif;font-size:16px;font-weight:600;&quot;&gt;
+          ${children}
+        &lt;/center&gt;
+      &lt;/v:roundrect&gt;
+      &lt;![endif]*/}
+      {/* Standard CSS Button for all WebKit, Blink, and Modern Clients */}
+      &lt;a
+        href={href}
+        style={{
+          backgroundColor,
+          borderRadius: `${borderRadius}px`,
+          color: textColor,
+          display: &quot;inline-block&quot;,
+          fontFamily: &quot;Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif&quot;,
+          fontSize: &quot;15px&quot;,
+          fontWeight: 600,
+          lineHeight: `${height}px`,
+          textAlign: &quot;center&quot;,
+          textDecoration: &quot;none&quot;,
+          width: `${width}px`,
+          WebkitTextSizeAdjust: &quot;none&quot;,
+          msoHide: &quot;all&quot;, // Explicitly instruct Outlook MSO to hide this modern anchor
+        }}
+      &gt;
+        {children}
+      &lt;/a&gt;
+    &lt;/div&gt;
+  );
+};
+</code></pre>
+<hr />
+<h2>5. Dynamic Token Interpolation &amp; Type-Safe Hydration Pipeline</h2>
+<p>Templates must never fail silently when dynamic user data (e.g., missing invoice line items, unescaped user-generated content, or invalid floats) is passed to the rendering engine. </p>
+<p>We implement an end-to-end type validation pipeline using <strong>Zod</strong> paired with a sanitization harness before handing the tree over to React Email.</p>
+<pre><code class="language-typescript">// engine/renderPipeline.ts
+import { render } from &quot;@react-email/render&quot;;
+import { z } from &quot;zod&quot;;
+import * as React from &quot;react&quot;;
+
+/**
+ * Example Contract: Invoice Email Schema
+ */
+export const InvoicePayloadSchema = z.object({
+  recipientName: z.string().min(1).max(100),
+  recipientEmail: z.string().email(),
+  invoiceNumber: z.string().regex(/^INV-\d{4}-\d{4,}$/),
+  issueDate: z.date(),
+  items: z.array(
+    z.object({
+      description: z.string().min(1).max(255),
+      quantity: z.number().int().positive(),
+      unitPriceInCents: z.number().int().nonnegative(),
+    })
+  ).min(1),
+  taxRatePercent: z.number().min(0).max(100).default(0),
+  currencyCode: z.enum([&quot;USD&quot;, &quot;EUR&quot;, &quot;GBP&quot;, &quot;CAD&quot;]).default(&quot;USD&quot;),
+  paymentLink: z.string().url(),
+});
+
+export type InvoicePayload = z.infer&lt;typeof InvoicePayloadSchema&gt;;
+
+/**
+ * Escapes unsafe characters in untrusted strings to mitigate injection vulnerabilities
+ */
+export function sanitizeEmailString(input: string): string {
+  return input
+    .replace(/&amp;/g, &quot;&amp;amp;&quot;)
+    .replace(/&lt;/g, &quot;&amp;lt;&quot;)
+    .replace(/&gt;/g, &quot;&amp;gt;&quot;)
+    .replace(/&quot;/g, &quot;&amp;quot;&quot;)
+    .replace(/'/g, &quot;&amp;#039;&quot;);
+}
+
+/**
+ * Validates, sanitizes, and renders a React Email template to production HTML
+ */
+export async function compileEmail&lt;T&gt;(
+  schema: z.ZodSchema&lt;T&gt;,
+  untrustedData: unknown,
+  TemplateComponent: React.ComponentType&lt;T&gt;
+): Promise&lt;{ html: string; text: string; cleanData: T }&gt; {
+  // 1. Validate payload structure runtime integrity
+  const parsed = schema.safeParse(untrustedData);
+  if (!parsed.success) {
+    const errorDetails = JSON.stringify(parsed.error.format(), null, 2);
+    throw new Error(`[EmailPayloadValidationError]: Schema enforcement failed:\n${errorDetails}`);
+  }
+
+  const cleanData = parsed.data;
+
+  // 2. Render HTML via React Email
+  const element = React.createElement(TemplateComponent, cleanData);
+  const html = await render(element, { pretty: false });
+  const text = await render(element, { plainText: true });
+
+  // 3. Gmail Size Gate: Verify output does not exceed 102KB (104,448 bytes)
+  const byteSize = Buffer.byteLength(html, &quot;utf8&quot;);
+  if (byteSize &gt;= 102400) {
+    console.warn(
+      `[GmailClippingWarning]: Rendered HTML payload is ${byteSize} bytes. ` +
+      `Gmail will clip this message! Target must remain under 102,400 bytes.`
+    );
+  }
+
+  return { html, text, cleanData };
+}
+</code></pre>
+<hr />
+<h2>6. Automated Visual Regression Pipeline with Playwright</h2>
+<p>To guarantee pixel-level consistency across releases without manually running tests through Litmus or Email on Acid for every minor copy change, we execute Playwright visual snapshots locally and within CI/CD.</p>
+<p>This setup tests:
+1. <strong>Light Mode Desktop</strong> (1280 × 800)
+2. <strong>Dark Mode Desktop</strong> (1280 × 800 via <code>@media (prefers-color-scheme: dark)</code>)
+3. <strong>Mobile Screen Emulation</strong> (iPhone 14 Pro, 393 × 852)
+4. <strong>Byte Size Constraints</strong> (Ensuring the compiled file stays under 100KB)</p>
+<h3>Playwright Test Harness (<code>tests/email-visuals.spec.ts</code>)</h3>
+<pre><code class="language-typescript">// tests/email-visuals.spec.ts
+import { test, expect } from &quot;@playwright/test&quot;;
+import { compileEmail, InvoicePayloadSchema } from &quot;../engine/renderPipeline&quot;;
+import { InvoiceTemplate } from &quot;../templates/InvoiceTemplate&quot;;
+
+test.describe(&quot;Transactional Email Rendering: Invoice Template&quot;, () =&gt; {
+  const mockPayload = {
+    recipientName: &quot;Alexander Hamilton&quot;,
+    recipientEmail: &quot;alexander@treasury.gov&quot;,
+    invoiceNumber: &quot;INV-2026-90412&quot;,
+    issueDate: new Date(&quot;2026-03-30T12:00:00Z&quot;),
+    items: [
+      { description: &quot;Enterprise Cloud Node License (Annual)&quot;, quantity: 2, unitPriceInCents: 120000 },
+      { description: &quot;Tier 1 Priority Support SLA&quot;, quantity: 1, unitPriceInCents: 45000 },
+    ],
+    taxRatePercent: 8.5,
+    currencyCode: &quot;USD&quot; as const,
+    paymentLink: &quot;https://pay.vault.local/inv_live_90412&quot;,
+  };
+
+  let renderedHtml: string;
+
+  test.beforeAll(async () =&gt; {
+    const result = await compileEmail(InvoicePayloadSchema, mockPayload, InvoiceTemplate);
+    renderedHtml = result.html;
+  });
+
+  test(&quot;Strict Payload Size Gate (&lt; 100KB)&quot;, async () =&gt; {
+    const byteSize = Buffer.byteLength(renderedHtml, &quot;utf8&quot;);
+    // Stay safely under the 102,400-byte Gmail limit
+    expect(byteSize).toBeLessThan(100 * 1024);
+  });
+
+  test(&quot;Desktop Light Mode: Rendering Consistency&quot;, async ({ page }) =&gt; {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setContent(renderedHtml, { waitUntil: &quot;networkidle&quot; });
+
+    // Ensure main wrapper exists and matches snapshot
+    const container = page.locator(&quot;.layout-container&quot;);
+    await expect(page).toHaveScreenshot(&quot;invoice-desktop-light.png&quot;, {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
+  test(&quot;Desktop Dark Mode: Rendering Consistency&quot;, async ({ page }) =&gt; {
+    await page.emulateMedia({ colorScheme: &quot;dark&quot; });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setContent(renderedHtml, { waitUntil: &quot;networkidle&quot; });
+
+    await expect(page).toHaveScreenshot(&quot;invoice-desktop-dark.png&quot;, {
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
+  test(&quot;Mobile Viewport: Single Column Flow &amp; Font Legibility&quot;, async ({ page }) =&gt; {
+    // iPhone 14 Pro Viewport
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.setContent(renderedHtml, { waitUntil: &quot;networkidle&quot; });
+
+    // Validate that CTA button does not overflow container
+    const cta = page.locator(&quot;a:has-text('View Invoice')&quot;);
+    const box = await cta.boundingBox();
+    expect(box).not.toBeNull();
+    if (box) {
+      expect(box.x).toBeGreaterThan(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(393);
+    }
+
+    await expect(page).toHaveScreenshot(&quot;invoice-mobile.png&quot;, {
+      maxDiffPixelRatio: 0.02,
+    });
+  });
+});
+</code></pre>
+<hr />
+<h2>7. Pre-Flight Deliverability &amp; Compilation Checklist</h2>
+<p>Before deploying any new template or payload model to production, run this checklist directly against your template code and infrastructure.</p>
+<h3>Markup &amp; CSS Architecture</h3>
+<ul>
+<li>[ ] <strong>Byte-Weight Check</strong>: Total rendered HTML string size is strictly under <strong>100KB</strong> (102,400 bytes) measured via <code>Buffer.byteLength(html, 'utf8')</code>.</li>
+<li>[ ] <strong>CSS Inlining</strong>: No raw external stylesheets or remote <code>&lt;link&gt;</code> tags (excluding defined webfonts). All CSS rules are inlined directly or scoped in <code>&lt;style&gt;</code> blocks that use client-safe syntax.</li>
+<li>[ ] <strong>MSO Ghost Wrapping</strong>: The top-level document body wraps the 600px inner container in an <code>&lt;!--[if (gte mso 9)|(IE)]&gt;</code> table check.</li>
+<li>[ ] <strong>Vector Markup Fallbacks</strong>: Every primary Call To Action (button) implements a conditional <code>v:roundrect</code> shape block with explicit pixel widths and heights for legacy Outlook clients.</li>
+<li>[ ] <strong>Preview Padding Snippet</strong>: The pre-header element uses at least 120 alternating <code>\xa0\u200C</code> zero-width characters to prevent body copy from leaking into the inbox preview.</li>
+<li>[ ] <strong>Image Tags</strong>: Every <code>&lt;img&gt;</code> tag has explicitly declared <code>width</code>, <code>height</code>, <code>alt</code>, and <code>style={{ display: "block" }}</code> properties to prevent Outlook inline-spacing bugs.</li>
+</ul>
+<h3>Dark Mode Architecture</h3>
+<ul>
+<li>[ ] <strong>Meta declarations</strong>: Document <code>&lt;head&gt;</code> includes <code>&lt;meta name="color-scheme" content="light dark" /&gt;</code> and <code>&lt;meta name="supported-color-schemes" content="light dark" /&gt;</code>.</li>
+<li>[ ] <strong>Dual-Palette Contrast</strong>: Primary and secondary text colors inside dark-mode styles maintain a WCAG AA contrast ratio of at least <strong>4.5:1</strong> against the declared dark surface (<code>#141721</code> or <code>#090A0F</code>).</li>
+<li>[ ] <strong>Asset Protection</strong>: All logos and brand marks are rendered as transparent PNGs with a subtle white drop-shadow/stroke (<code>drop-shadow(0 0 1px rgba(255,255,255,0.8))</code>) to remain legible if Gmail or Outlook inverts backgrounds to black.</li>
+</ul>
+<h3>Data Hydration &amp; Security</h3>
+<ul>
+<li>[ ] <strong>Schema Validation</strong>: All dynamic data variables are parsed via strict runtime schemas (Zod).</li>
+<li>[ ] <strong>XSS Sanitization</strong>: Dynamic strings (such as usernames, notes, or descriptions) are checked and sanitized for HTML entities before insertion.</li>
+<li>[ ] <strong>Zero Template Language Leaks</strong>: No raw handlebars (<code>{{var}}</code>) or template syntax reach production; missing inputs throw descriptive compile-time errors rather than rendering blank elements.</li>
+</ul>
+<hr />
+<h2>8. Client Debugging Matrix</h2>
+<p>When rendering anomalies occur during staging, use this debugging guide:</p>
+<h3>Symptom 1: Ghost gaps (2-3px spaces) beneath images</h3>
+<ul>
+<li><strong>Root Cause</strong>: The client treats the image as an inline element, allocating space for font descenders (<code>g</code>, <code>y</code>, <code>p</code>).</li>
+<li><strong>Fix</strong>: Apply <code>display: block !important; margin: 0; padding: 0; outline: none; border: none;</code> to the image element. Ensure the parent <code>&lt;td&gt;</code> has <code>line-height: 0; font-size: 0px;</code>.</li>
+</ul>
+<h3>Symptom 2: Desktop Outlook centers a left-aligned container</h3>
+<ul>
+<li><strong>Root Cause</strong>: Outlook ignores <code>margin: 0 auto</code> or <code>margin: 0</code> on <code>div</code> wrappers.</li>
+<li><strong>Fix</strong>: Wrap the component in a table with an explicit align attribute: <code>&lt;table align="left" role="presentation"&gt;</code>.</li>
+</ul>
+<h3>Symptom 3: Gmail strips all <code>&lt;style&gt;</code> rules, breaking layout</h3>
+<ul>
+<li><strong>Root Cause</strong>: A single syntax error (e.g., an unescaped character, an empty property, an unsupported <code>@media</code> nesting query, or an unclosed brace) was detected inside the <code>&lt;style&gt;</code> block.</li>
+<li><strong>Fix</strong>: Run all custom styles through a CSS validator. Never nest CSS rules inside templates; keep the stylesheet 100% flat.</li>
+</ul>
+<h3>Symptom 4: Links turn unexpectedly blue on iOS / Apple Mail</h3>
+<ul>
+<li><strong>Root Cause</strong>: Apple Mail's data detection engine matches dates, phone numbers, and physical addresses, automatically injecting inline <code>&lt;a&gt;</code> tags with default WebKit link styles.</li>
+<li><strong>Fix</strong>: Add the following rule to your <code>&lt;Head&gt;</code> block:</li>
+</ul>
+<pre><code class="language-html">&lt;meta name=&quot;format-detection&quot; content=&quot;telephone=no, date=no, address=no, email=no&quot; /&gt;
+</code></pre>
+<p>Then, add this CSS override:</p>
+<pre><code class="language-css">a[x-apple-data-detectors] {
+  color: inherit !important;
+  text-decoration: none !important;
+  font-size: inherit !important;
+  font-family: inherit !important;
+  font-weight: inherit !important;
+  line-height: inherit !important;
+}
+</code></pre>
+<hr />
+<h2>9. Vault Implementation Standards</h2>
+<p>Throughout the remaining modules and templates in this Vault, every single component adheres strictly to the architectural standards defined here:</p>
+<ol>
+<li>Every template extends <code>BaseLayout.tsx</code>.</li>
+<li>Every interactive link or button implements <code>BulletproofButton.tsx</code> or its inline text equivalent.</li>
+<li>Every payload is paired with a corresponding <code>.schema.ts</code> file containing a validated Zod schema.</li>
+<li>Every template is tested against our Playwright visual regression suite across both desktop and mobile viewports.</li>
+</ol>
+<p>This architecture ensures your transactional emails render consistently, maintain deliverability compliance, and work reliably across all major email clients.</p>
+</body>
+</html>

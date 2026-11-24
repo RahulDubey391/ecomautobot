@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Transactional Email & React Email Vault: 50+ Production Templates, Resend Webhooks & Deliverability Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Ready-to-Use Templates, Prompts &amp; Configurations</h1>
+<p>This module delivers drop-in, type-safe React Email templates, complete dispatch pipelines, and the exact system prompt harness used to generate dark-mode-resilient transactional emails that render consistently across Apple Mail, Gmail, Outlook 2016–365, and mobile web clients.</p>
+<hr />
+<h2>1. Design System Tokens &amp; Base Wrapper</h2>
+<p>All templates inherit from this foundational layout component. It injects required MSO conditional comments, defines light/dark CSS variables, handles Apple Mail link-color auto-detection, and standardizes spacing.</p>
+<h3><code>emails/components/BaseLayout.tsx</code></h3>
+<pre><code class="language-tsx">import * as React from &quot;react&quot;;
+import {
+  Body,
+  Container,
+  Head,
+  Html,
+  Preview,
+  Section,
+  Text,
+  Tailwind,
+  pixelBorders,
+} from &quot;@react-email/components&quot;;
+
+interface BaseLayoutProps {
+  previewText: string;
+  children: React.ReactNode;
+  footerText?: string;
+}
+
+export const BaseLayout = ({
+  previewText,
+  children,
+  footerText = &quot;Acme Corp, Inc. • 100 Montgomery St, Suite 400, San Francisco, CA 94104&quot;,
+}: BaseLayoutProps) =&gt; {
+  return (
+    &lt;Html lang=&quot;en&quot;&gt;
+      &lt;Head&gt;
+        &lt;meta name=&quot;color-scheme&quot; content=&quot;light dark&quot; /&gt;
+        &lt;meta name=&quot;supported-color-schemes&quot; content=&quot;light dark&quot; /&gt;
+        &lt;style&gt;{`
+          :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+          }
+          @media (prefers-color-scheme: dark) {
+            .email-bg { background-color: #0b0f19 !important; }
+            .content-card { background-color: #111827 !important; border-color: #1f2937 !important; }
+            .primary-text { color: #f9fafb !important; }
+            .secondary-text { color: #9ca3af !important; }
+            .meta-border { border-color: #374151 !important; }
+            .code-box { background-color: #1f2937 !important; color: #f3f4f6 !important; }
+          }
+          /* Outlook table alignment normalization */
+          table { border-collapse: collapse; }
+          img { -ms-interpolation-mode: bicubic; }
+        `}&lt;/style&gt;
+      &lt;/Head&gt;
+      &lt;Preview&gt;{previewText}&lt;/Preview&gt;
+      &lt;Tailwind
+        config={{
+          theme: {
+            extend: {
+              colors: {
+                brand: &quot;#0284c7&quot;,
+                brandDark: &quot;#0369a1&quot;,
+              },
+            },
+          },
+        }}
+      &gt;
+        &lt;Body className=&quot;email-bg bg-[#f3f4f6] font-sans m-0 p-0 text-[#111827]&quot;&gt;
+          &lt;Container className=&quot;max-w-[580px] mx-auto pt-6 pb-12 px-3&quot;&gt;
+            {/* Header / Brand Logo */}
+            &lt;Section className=&quot;py-4 text-center&quot;&gt;
+              &lt;Text className=&quot;text-xl font-bold tracking-tight text-brand m-0&quot;&gt;
+                ACME&lt;span className=&quot;text-[#111827] primary-text&quot;&gt;ENGINE&lt;/span&gt;
+              &lt;/Text&gt;
+            &lt;/Section&gt;
+
+            {/* Main Content Box */}
+            &lt;Section className=&quot;content-card bg-white border border-solid border-[#e5e7eb] rounded-xl px-8 py-7 shadow-sm&quot;&gt;
+              {children}
+            &lt;/Section&gt;
+
+            {/* Footer */}
+            &lt;Section className=&quot;pt-6 px-4 text-center&quot;&gt;
+              &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] leading-5 m-0&quot;&gt;
+                {footerText}
+              &lt;/Text&gt;
+              &lt;Text className=&quot;secondary-text text-xs text-[#9ca3af] leading-5 mt-2&quot;&gt;
+                If you did not make this request, you can safely ignore this email.
+              &lt;/Text&gt;
+            &lt;/Section&gt;
+          &lt;/Container&gt;
+        &lt;/Body&gt;
+      &lt;/Tailwind&gt;
+    &lt;/Html&gt;
+  );
+};
+</code></pre>
+<hr />
+<h2>2. Production React Email Templates</h2>
+<h3>Template 1: Passwordless Magic Link &amp; OTP Verification</h3>
+<p>Features cross-client copy-pasteable auth codes, single-click CTAs, IP/Device location audit blocks, and fallbacks.</p>
+<pre><code class="language-tsx">import * as React from &quot;react&quot;;
+import {
+  Button,
+  Heading,
+  Hr,
+  Link,
+  Section,
+  Text,
+} from &quot;@react-email/components&quot;;
+import { BaseLayout } from &quot;./components/BaseLayout&quot;;
+
+interface MagicLinkEmailProps {
+  magicLinkUrl: string;
+  loginCode: string;
+  ipAddress: string;
+  userAgent: string;
+  location: string;
+  expiresInMinutes: number;
+}
+
+export const MagicLinkEmail = ({
+  magicLinkUrl = &quot;https://app.acme.com/auth/verify?token=tok_live_79a8e1b2c3d4&quot;,
+  loginCode = &quot;842-195&quot;,
+  ipAddress = &quot;198.51.100.42&quot;,
+  userAgent = &quot;Brave Browser / macOS Sonoma 14.4&quot;,
+  location = &quot;Austin, Texas, United States&quot;,
+  expiresInMinutes = 10,
+}: MagicLinkEmailProps) =&gt; {
+  return (
+    &lt;BaseLayout previewText={`Your verification code is ${loginCode}`}&gt;
+      &lt;Heading className=&quot;primary-text text-2xl font-bold text-[#111827] mt-0 mb-4 tracking-tight&quot;&gt;
+        Authenticate your session
+      &lt;/Heading&gt;
+
+      &lt;Text className=&quot;primary-text text-sm leading-6 text-[#374151] mb-6&quot;&gt;
+        We received an authentication request for your Acme Engine account. Click the button below to sign in automatically:
+      &lt;/Text&gt;
+
+      &lt;Section className=&quot;text-center my-6&quot;&gt;
+        &lt;Button
+          className=&quot;bg-[#0284c7] hover:bg-[#0369a1] text-white font-semibold text-sm px-6 py-3 rounded-lg no-underline inline-block shadow-sm&quot;
+          href={magicLinkUrl}
+        &gt;
+          Sign in to Dashboard
+        &lt;/Button&gt;
+      &lt;/Section&gt;
+
+      &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] text-center my-3&quot;&gt;
+        Or enter this single-use code directly in your application window:
+      &lt;/Text&gt;
+
+      &lt;Section className=&quot;code-box bg-[#f8fafc] border border-dashed border-[#cbd5e1] rounded-lg p-3 text-center my-4&quot;&gt;
+        &lt;Text className=&quot;text-2xl font-mono font-bold tracking-[0.25em] text-[#0f172a] m-0&quot;&gt;
+          {loginCode}
+        &lt;/Text&gt;
+      &lt;/Section&gt;
+
+      &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] leading-5 mb-6&quot;&gt;
+        This link and code will expire in {expiresInMinutes} minutes. If the button above does not work, copy and paste this URL into your browser:
+        &lt;br /&gt;
+        &lt;Link href={magicLinkUrl} className=&quot;text-[#0284c7] underline break-all&quot;&gt;
+          {magicLinkUrl}
+        &lt;/Link&gt;
+      &lt;/Text&gt;
+
+      &lt;Hr className=&quot;meta-border border-[#e5e7eb] my-5&quot; /&gt;
+
+      {/* Security Context Grid */}
+      &lt;Section className=&quot;bg-[#f9fafb] code-box rounded-md p-3 border border-solid border-[#f3f4f6]&quot;&gt;
+        &lt;Text className=&quot;primary-text text-[11px] font-semibold uppercase tracking-wider text-[#4b5563] m-0 mb-2&quot;&gt;
+          Security Verification Metadata
+        &lt;/Text&gt;
+        &lt;table className=&quot;w-full text-left text-[11px] text-[#6b7280] secondary-text&quot;&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;
+              &lt;td className=&quot;py-0.5 font-medium w-24&quot;&gt;IP Address:&lt;/td&gt;
+              &lt;td className=&quot;py-0.5 font-mono&quot;&gt;{ipAddress}&lt;/td&gt;
+            &lt;/tr&gt;
+            &lt;tr&gt;
+              &lt;td className=&quot;py-0.5 font-medium&quot;&gt;Device:&lt;/td&gt;
+              &lt;td className=&quot;py-0.5&quot;&gt;{userAgent}&lt;/td&gt;
+            &lt;/tr&gt;
+            &lt;tr&gt;
+              &lt;td className=&quot;py-0.5 font-medium&quot;&gt;Approx. Origin:&lt;/td&gt;
+              &lt;td className=&quot;py-0.5&quot;&gt;{location}&lt;/td&gt;
+            &lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/Section&gt;
+    &lt;/BaseLayout&gt;
+  );
+};
+
+export default MagicLinkEmail;
+</code></pre>
+<hr />
+<h3>Template 2: Multi-Seat Organization Invite</h3>
+<p>Features permission badge levels, inviter attribution, and clear decline/block mechanisms.</p>
+<pre><code class="language-tsx">import * as React from &quot;react&quot;;
+import {
+  Button,
+  Heading,
+  Hr,
+  Link,
+  Section,
+  Text,
+} from &quot;@react-email/components&quot;;
+import { BaseLayout } from &quot;./components/BaseLayout&quot;;
+
+interface TeamInviteEmailProps {
+  inviterName: string;
+  inviterEmail: string;
+  teamName: string;
+  role: &quot;Owner&quot; | &quot;Admin&quot; | &quot;Developer&quot; | &quot;Billing&quot;;
+  acceptInviteUrl: string;
+  declineInviteUrl: string;
+}
+
+export const TeamInviteEmail = ({
+  inviterName = &quot;Sarah Connor&quot;,
+  inviterEmail = &quot;s.connor@cyberdyne.io&quot;,
+  teamName = &quot;Cyberdyne Systems&quot;,
+  role = &quot;Developer&quot;,
+  acceptInviteUrl = &quot;https://app.acme.com/invites/accept?token=inv_99x8a7b6c5&quot;,
+  declineInviteUrl = &quot;https://app.acme.com/invites/decline?token=inv_99x8a7b6c5&quot;,
+}: TeamInviteEmailProps) =&gt; {
+  return (
+    &lt;BaseLayout previewText={`${inviterName} invited you to join ${teamName} on Acme`}&gt;
+      &lt;Heading className=&quot;primary-text text-xl font-bold text-[#111827] mt-0 mb-3 tracking-tight&quot;&gt;
+        Join {teamName} on Acme
+      &lt;/Heading&gt;
+
+      &lt;Text className=&quot;primary-text text-sm leading-6 text-[#374151] mb-5&quot;&gt;
+        &lt;strong&gt;{inviterName}&lt;/strong&gt; ({inviterEmail}) has invited you to collaborate on the &lt;strong&gt;{teamName}&lt;/strong&gt; team account.
+      &lt;/Text&gt;
+
+      {/* Role Assignment Card */}
+      &lt;Section className=&quot;code-box bg-[#f8fafc] border border-solid border-[#e2e8f0] rounded-lg p-4 mb-6&quot;&gt;
+        &lt;table className=&quot;w-full text-sm&quot;&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;
+              &lt;td className=&quot;text-[#64748b] secondary-text py-1&quot;&gt;Assigned Role:&lt;/td&gt;
+              &lt;td className=&quot;text-right py-1&quot;&gt;
+                &lt;span className=&quot;bg-[#e0f2fe] text-[#0369a1] text-xs font-semibold px-2.5 py-1 rounded-full uppercase tracking-wider&quot;&gt;
+                  {role}
+                &lt;/span&gt;
+              &lt;/td&gt;
+            &lt;/tr&gt;
+            &lt;tr&gt;
+              &lt;td className=&quot;text-[#64748b] secondary-text py-1&quot;&gt;Team Workspace:&lt;/td&gt;
+              &lt;td className=&quot;text-right font-medium primary-text text-[#0f172a] py-1&quot;&gt;
+                {teamName}
+              &lt;/td&gt;
+            &lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+      &lt;/Section&gt;
+
+      &lt;Section className=&quot;text-center my-6&quot;&gt;
+        &lt;Button
+          className=&quot;bg-[#0f172a] hover:bg-[#1e293b] text-white font-medium text-sm px-6 py-3 rounded-lg no-underline inline-block w-full text-center box-border&quot;
+          href={acceptInviteUrl}
+        &gt;
+          Accept Invitation
+        &lt;/Button&gt;
+      &lt;/Section&gt;
+
+      &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] text-center mb-0&quot;&gt;
+        Prefer not to join? You can{&quot; &quot;}
+        &lt;Link href={declineInviteUrl} className=&quot;text-[#ef4444] underline&quot;&gt;
+          decline this invitation
+        &lt;/Link&gt;
+        .
+      &lt;/Text&gt;
+
+      &lt;Hr className=&quot;meta-border border-[#e5e7eb] my-5&quot; /&gt;
+
+      &lt;Text className=&quot;secondary-text text-[11px] text-[#9ca3af] leading-4 m-0&quot;&gt;
+        This invitation was intended for your email address. It will automatically expire in 7 calendar days. If you were not expecting this invitation, report it immediately to security@acme.com.
+      &lt;/Text&gt;
+    &lt;/BaseLayout&gt;
+  );
+};
+
+export default TeamInviteEmail;
+</code></pre>
+<hr />
+<h3>Template 3: Stripe Itemized Invoice &amp; Payment Receipt</h3>
+<p>Features a line-item billing table, sales tax breakdown, last 4 digits payment card attribution, and invoice PDF retrieval CTA.</p>
+<pre><code class="language-tsx">import * as React from &quot;react&quot;;
+import {
+  Button,
+  Heading,
+  Hr,
+  Link,
+  Section,
+  Text,
+} from &quot;@react-email/components&quot;;
+import { BaseLayout } from &quot;./components/BaseLayout&quot;;
+
+interface LineItem {
+  id: string;
+  description: string;
+  period: string;
+  amount: number;
+}
+
+interface InvoiceEmailProps {
+  invoiceId: string;
+  billingDate: string;
+  paymentMethod: string;
+  subtotal: number;
+  tax: number;
+  total: number;
+  currency: string;
+  downloadPdfUrl: string;
+  items: LineItem[];
+}
+
+export const StripeInvoiceEmail = ({
+  invoiceId = &quot;INV-2024-00891&quot;,
+  billingDate = &quot;October 31, 2024&quot;,
+  paymentMethod = &quot;Mastercard ending in 4242&quot;,
+  subtotal = 149.0,
+  tax = 12.67,
+  total = 161.67,
+  currency = &quot;USD&quot;,
+  downloadPdfUrl = &quot;https://billing.stripe.com/p/session/live_12345/pdf&quot;,
+  items = [
+    {
+      id: &quot;li_1&quot;,
+      description: &quot;Acme Engine Pro Tier (Monthly Retainer)&quot;,
+      period: &quot;Nov 01, 2024 - Dec 01, 2024&quot;,
+      amount: 149.0,
+    },
+  ],
+}: InvoiceEmailProps) =&gt; {
+  const formatCurrency = (val: number) =&gt;
+    new Intl.NumberFormat(&quot;en-US&quot;, { style: &quot;currency&quot;, currency }).format(val);
+
+  return (
+    &lt;BaseLayout previewText={`Receipt for invoice ${invoiceId} - ${formatCurrency(total)}`}&gt;
+      &lt;table className=&quot;w-full&quot;&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td&gt;
+              &lt;Heading className=&quot;primary-text text-xl font-bold text-[#111827] m-0 tracking-tight&quot;&gt;
+                Receipt #{invoiceId}
+              &lt;/Heading&gt;
+              &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] mt-1 mb-0&quot;&gt;
+                Paid on {billingDate}
+              &lt;/Text&gt;
+            &lt;/td&gt;
+            &lt;td className=&quot;text-right&quot;&gt;
+              &lt;span className=&quot;bg-[#dcfce7] text-[#15803d] text-xs font-bold px-2 py-1 rounded&quot;&gt;
+                PAID
+              &lt;/span&gt;
+            &lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      &lt;Hr className=&quot;meta-border border-[#e5e7eb] my-5&quot; /&gt;
+
+      {/* Invoice Itemization Table */}
+      &lt;table className=&quot;w-full text-left border-collapse mb-4&quot;&gt;
+        &lt;thead&gt;
+          &lt;tr className=&quot;border-b border-solid border-[#e5e7eb]&quot;&gt;
+            &lt;th className=&quot;secondary-text text-xs font-semibold text-[#6b7280] pb-2 uppercase tracking-wider&quot;&gt;
+              Description
+            &lt;/th&gt;
+            &lt;th className=&quot;secondary-text text-xs font-semibold text-[#6b7280] pb-2 text-right uppercase tracking-wider&quot;&gt;
+              Amount
+            &lt;/th&gt;
+          &lt;/tr&gt;
+        &lt;/thead&gt;
+        &lt;tbody&gt;
+          {items.map((item) =&gt; (
+            &lt;tr key={item.id} className=&quot;border-b border-solid border-[#f3f4f6]&quot;&gt;
+              &lt;td className=&quot;py-3&quot;&gt;
+                &lt;Text className=&quot;primary-text text-sm font-medium text-[#111827] m-0&quot;&gt;
+                  {item.description}
+                &lt;/Text&gt;
+                &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] m-0&quot;&gt;
+                  {item.period}
+                &lt;/Text&gt;
+              &lt;/td&gt;
+              &lt;td className=&quot;py-3 text-right primary-text text-sm font-medium text-[#111827] align-top&quot;&gt;
+                {formatCurrency(item.amount)}
+              &lt;/td&gt;
+            &lt;/tr&gt;
+          ))}
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      {/* Totals Calculation */}
+      &lt;table className=&quot;w-full text-sm mb-6&quot;&gt;
+        &lt;tbody&gt;
+          &lt;tr&gt;
+            &lt;td className=&quot;text-[#6b7280] secondary-text py-1&quot;&gt;Subtotal&lt;/td&gt;
+            &lt;td className=&quot;text-right primary-text py-1 text-[#111827]&quot;&gt;
+              {formatCurrency(subtotal)}
+            &lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr&gt;
+            &lt;td className=&quot;text-[#6b7280] secondary-text py-1&quot;&gt;State &amp; Sales Tax (8.5%)&lt;/td&gt;
+            &lt;td className=&quot;text-right primary-text py-1 text-[#111827]&quot;&gt;
+              {formatCurrency(tax)}
+            &lt;/td&gt;
+          &lt;/tr&gt;
+          &lt;tr className=&quot;border-t border-solid border-[#e5e7eb]&quot;&gt;
+            &lt;td className=&quot;font-bold text-base primary-text pt-2 text-[#111827]&quot;&gt;Total Paid&lt;/td&gt;
+            &lt;td className=&quot;font-bold text-base primary-text pt-2 text-right text-[#111827]&quot;&gt;
+              {formatCurrency(total)}
+            &lt;/td&gt;
+          &lt;/tr&gt;
+        &lt;/tbody&gt;
+      &lt;/table&gt;
+
+      {/* Payment details metadata */}
+      &lt;Section className=&quot;code-box bg-[#f8fafc] border border-solid border-[#e2e8f0] rounded-lg p-3 mb-6&quot;&gt;
+        &lt;Text className=&quot;secondary-text text-xs text-[#64748b] m-0&quot;&gt;
+          Charged to &lt;strong&gt;{paymentMethod}&lt;/strong&gt;. Your card issuer has authorized this capture.
+        &lt;/Text&gt;
+      &lt;/Section&gt;
+
+      &lt;Section className=&quot;text-center&quot;&gt;
+        &lt;Button
+          className=&quot;bg-transparent border border-solid border-[#d1d5db] text-[#374151] primary-text font-medium text-xs px-4 py-2.5 rounded-lg no-underline inline-block hover:bg-[#f9fafb]&quot;
+          href={downloadPdfUrl}
+        &gt;
+          Download Official PDF Invoice
+        &lt;/Button&gt;
+      &lt;/Section&gt;
+    &lt;/BaseLayout&gt;
+  );
+};
+
+export default StripeInvoiceEmail;
+</code></pre>
+<hr />
+<h3>Template 4: Usage Limit Spike &amp; Rate Limit Warning</h3>
+<p>Features HTML table progress bars, hard limit countdowns, and instant upgrade path links to prevent API outages.</p>
+<pre><code class="language-tsx">import * as React from &quot;react&quot;;
+import {
+  Button,
+  Heading,
+  Hr,
+  Section,
+  Text,
+} from &quot;@react-email/components&quot;;
+import { BaseLayout } from &quot;./components/BaseLayout&quot;;
+
+interface UsageLimitSpikeProps {
+  metricName: string;
+  currentUsage: number;
+  thresholdLimit: number;
+  percentageUsed: number;
+  resetDate: string;
+  upgradeUrl: string;
+}
+
+export const UsageLimitSpikeEmail = ({
+  metricName = &quot;Monthly Ingestion API Calls&quot;,
+  currentUsage = 924500,
+  thresholdLimit = 1000000,
+  percentageUsed = 92.4,
+  resetDate = &quot;November 1, 2024&quot;,
+  upgradeUrl = &quot;https://app.acme.com/settings/billing/upgrade&quot;,
+}: UsageLimitSpikeProps) =&gt; {
+  const isSevere = percentageUsed &gt;= 90;
+  const barColor = isSevere ? &quot;#ef4444&quot; : &quot;#f59e0b&quot;;
+
+  return (
+    &lt;BaseLayout previewText={`ALERT: ${metricName} is at ${percentageUsed}% capacity`}&gt;
+      &lt;Heading className=&quot;primary-text text-xl font-bold text-[#111827] mt-0 mb-2&quot;&gt;
+        Action Required: {metricName} at {percentageUsed}%
+      &lt;/Heading&gt;
+
+      &lt;Text className=&quot;primary-text text-sm leading-6 text-[#374151] mb-5&quot;&gt;
+        Your production environment has exceeded {percentageUsed}% of its allocated monthly quota. Once your organization hits 100%, API calls will return &lt;code className=&quot;bg-[#f3f4f6] px-1 py-0.5 rounded text-xs&quot;&gt;HTTP 429 Too Many Requests&lt;/code&gt;.
+      &lt;/Text&gt;
+
+      {/* Native HTML Progress Bar for Email Clients */}
+      &lt;Section className=&quot;code-box bg-[#f8fafc] border border-solid border-[#e2e8f0] rounded-lg p-5 mb-6&quot;&gt;
+        &lt;table className=&quot;w-full text-xs font-semibold text-[#4b5563] mb-2&quot;&gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;
+              &lt;td&gt;Current Consumption&lt;/td&gt;
+              &lt;td className=&quot;text-right&quot;&gt;
+                {currentUsage.toLocaleString()} / {thresholdLimit.toLocaleString()} units
+              &lt;/td&gt;
+            &lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+
+        {/* Outer Bar */}
+        &lt;table
+          className=&quot;w-full bg-[#e5e7eb] rounded-full overflow-hidden&quot;
+          style={{ height: &quot;12px&quot;, borderCollapse: &quot;collapse&quot; }}
+        &gt;
+          &lt;tbody&gt;
+            &lt;tr&gt;
+              {/* Active Fill */}
+              &lt;td
+                style={{
+                  width: `${percentageUsed}%`,
+                  backgroundColor: barColor,
+                  height: &quot;12px&quot;,
+                }}
+              /&gt;
+              {/* Remainder */}
+              &lt;td
+                style={{
+                  width: `${100 - percentageUsed}%`,
+                  height: &quot;12px&quot;,
+                }}
+              /&gt;
+            &lt;/tr&gt;
+          &lt;/tbody&gt;
+        &lt;/table&gt;
+
+        &lt;Text className=&quot;secondary-text text-[11px] text-[#6b7280] mt-3 mb-0&quot;&gt;
+          Quota resets on {resetDate}. You have {(thresholdLimit - currentUsage).toLocaleString()} calls remaining.
+        &lt;/Text&gt;
+      &lt;/Section&gt;
+
+      &lt;Section className=&quot;text-center my-6&quot;&gt;
+        &lt;Button
+          className=&quot;bg-[#ef4444] hover:bg-[#dc2626] text-white font-medium text-sm px-6 py-3 rounded-lg no-underline inline-block w-full text-center box-border shadow-sm&quot;
+          href={upgradeUrl}
+        &gt;
+          Upgrade Quota Allocation
+        &lt;/Button&gt;
+      &lt;/Section&gt;
+
+      &lt;Hr className=&quot;meta-border border-[#e5e7eb] my-5&quot; /&gt;
+
+      &lt;Text className=&quot;secondary-text text-xs text-[#6b7280] leading-5 m-0&quot;&gt;
+        Need custom high-throughput scaling? Contact our architecture team by replying directly to this email to request an emergency capacity override.
+      &lt;/Text&gt;
+    &lt;/BaseLayout&gt;
+  );
+};
+
+export default UsageLimitSpikeEmail;
+</code></pre>
+<hr />
+<h2>3. Production LLM Prompt Engine: React Email Spec</h2>
+<p>Use the prompt below with Claude 3.5 Sonnet or GPT-4o to build complete, client-compatible React Email components matching this design system without regression.</p>
+<pre><code class="language-markdown">You are a Staff Email Infrastructure Engineer specializing in building bulletproof React Email components that compile to cross-client HTML compatible with Gmail, Apple Mail, and Outlook 2016-365.
+
+### TARGET ENVIRONMENT
+- Framework: React Email (@react-email/components)
+- Engine: Resend / Node.js
+- Styling: Tailwind CSS classes via &lt;Tailwind&gt; + CSS variable dark-mode fallbacks
+- Compatibility Matrix:
+  * Outlook Desktop: Must utilize &lt;table&gt; based layout structures; avoid flexbox and grid completely.
+  * Apple Mail / iOS: Enforce -webkit-text-size-adjust: none.
+  * Dark Mode: Must declare color-scheme meta tags and use explicit dark-mode class overrides (.primary-text, .content-card, .email-bg).
+
+### STRICT CODE CONSTRAINTS
+1. NEVER output pseudo-code or comments like `// implement remaining fields here`. Provide the 100% complete file.
+2. All components must import primitives from `@react-email/components`:
+   `Html, Head, Preview, Body, Container, Section, Text, Heading, Button, Hr, Link, Tailwind`
+3. Button elements must ALWAYS supply inline padding and display attributes (`display: inline-block`, `no-underline`) to avoid collapsed geometry in Outlook.
+4. All images must specify concrete numerical `width` and `height` properties to prevent canvas blowouts prior to asset caching.
+5. All layout containers must be constructed using `&lt;table&gt;` elements with explicit zeroed borders, padding, and margins if nested inside `&lt;Section&gt;`.
+6. Define a comprehensive TypeScript Interface defining props with production fallback defaults in the function signature.
+7. Wrap your entire component in the standard BaseLayout pattern.
+
+### TEMPLATE REQUEST FORMAT
+To generate a template, provide:
+1. Template Name / Purpose
+2. Props Schema (Data variables required)
+3. Primary Action URL / Target
+4. Key Information Hierarchy (e.g., Status badging, data grids, callouts)
+
+BEGIN GENERATION BASED ON USER PARAMETERS.
+</code></pre>
+<hr />
+<h2>4. Production Resend Dispatch Engine</h2>
+<p>This complete TypeScript pipeline features Zod payload validation, exponential backoff retries, metadata tracking, and idempotency key propagation.</p>
+<h3><code>lib/mailer.ts</code></h3>
+<pre><code class="language-typescript">import { Resend } from &quot;resend&quot;;
+import { z } from &quot;zod&quot;;
+import * as React from &quot;react&quot;;
+
+// Initialize Resend Client
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+if (!process.env.RESEND_API_KEY) {
+  throw new Error(&quot;FATAL: RESEND_API_KEY environment variable is missing.&quot;);
+}
+
+// Validation Schema for Generic Transactional Dispatch
+export const SendTransactionalEmailSchema = z.object({
+  to: z.union([z.string().email(), z.array(z.string().email())]),
+  subject: z.string().min(1).max(256),
+  react: z.custom&lt;React.ReactElement&gt;((data) =&gt; React.isValidElement(data), {
+    message: &quot;Must provide a valid React Element template&quot;,
+  }),
+  replyTo: z.string().email().optional().default(&quot;support@acme.com&quot;),
+  from: z.string().min(1).default(&quot;Acme Engine &lt;notifications@updates.acme.com&gt;&quot;),
+  idempotencyKey: z.string().uuid(),
+  tags: z.array(
+    z.object({
+      name: z.string(),
+      value: z.string(),
+    })
+  ).optional(),
+});
+
+export type SendTransactionalEmailInput = z.infer&lt;typeof SendTransactionalEmailSchema&gt;;
+
+interface SendResult {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+/**
+ * Dispatches an email through Resend with Zod validation and retry mechanics.
+ */
+export async function sendTransactionalEmail(
+  payload: SendTransactionalEmailInput,
+  maxRetries: number = 3
+): Promise&lt;SendResult&gt; {
+  const validation = SendTransactionalEmailSchema.safeParse(payload);
+
+  if (!validation.success) {
+    return {
+      success: false,
+      error: `Validation Error: ${JSON.stringify(validation.error.flatten().fieldErrors)}`,
+    };
+  }
+
+  const { to, subject, react, replyTo, from, idempotencyKey, tags } = validation.data;
+
+  let attempt = 0;
+  while (attempt &lt; maxRetries) {
+    try {
+      attempt++;
+      const { data, error } = await resend.emails.send(
+        {
+          from,
+          to,
+          subject,
+          react,
+          reply_to: replyTo,
+          headers: {
+            &quot;X-Entity-Ref-ID&quot;: idempotencyKey,
+            &quot;Idempotency-Key&quot;: idempotencyKey,
+          },
+          tags: [
+            ...(tags || []),
+            { name: &quot;environment&quot;, value: process.env.NODE_ENV || &quot;development&quot; },
+          ],
+        }
+      );
+
+      if (error) {
+        // Evaluate rate limit or 5xx failures for retry eligibility
+        if (attempt &lt; maxRetries) {
+          const backoffTime = Math.pow(2, attempt) * 250;
+          await new Promise((res) =&gt; setTimeout(res, backoffTime));
+          continue;
+        }
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, messageId: data?.id };
+    } catch (err: unknown) {
+      if (attempt &gt;= maxRetries) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : &quot;Unknown dispatch network failure&quot;,
+        };
+      }
+      const backoffTime = Math.pow(2, attempt) * 250;
+      await new Promise((res) =&gt; setTimeout(res, backoffTime));
+    }
+  }
+
+  return { success: false, error: &quot;Exhausted maximum retry budget&quot; };
+}
+</code></pre>
+<hr />
+<h2>5. Next.js App Router API Route Implementation</h2>
+<p>The edge-ready Next.js route below validates the user session, parses inbound JSON, and dispatches the <code>MagicLinkEmail</code> template with absolute typing.</p>
+<h3><code>app/api/auth/magic-link/route.ts</code></h3>
+<p>```typescript
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import crypto from "crypto";
+import { sendTransactionalEmail } from "@/lib/mailer";
+import MagicLinkEmail from "@/emails/MagicLinkEmail";</p>
+<p>// Inbound Request Schema
+const RequestSchema = z.object({
+  email: z.string().email(),
+  redirectUrl: z.string().url().optional(),
+});</p>
+<p>export async function POST(req: NextRequest) {
+  try {</p>
+</body>
+</html>

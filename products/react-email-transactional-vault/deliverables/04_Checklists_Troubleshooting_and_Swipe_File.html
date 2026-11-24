@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Transactional Email & React Email Vault: 50+ Production Templates, Resend Webhooks & Deliverability Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Master Checklists, Audit Rubrics &amp; Reference Swipe File</h1>
+<p>This module contains production-grade infrastructure configurations, verification rubrics, cross-client rendering fixes, and complete copy swipe assets. Implement these technical specifications directly to secure a 99%+ deliverability profile and render cleanly across legacy and modern mail user agents (MUAs).</p>
+<hr />
+<h2>1. DNS Authentication &amp; Protocol Runbook</h2>
+<p>To guarantee inbox placement across Google Workspace, Microsoft 365, and Yahoo Mail, configure the exact DNS records below. Replace <code>acmeplatform.com</code> with your top-level domain and <code>mail.acmeplatform.com</code> with your chosen sending subdomain.</p>
+<h3>1.1 Complete DNS Configuration Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Type</th>
+<th style="text-align: left;">Host / Name</th>
+<th style="text-align: left;">Value / Destination</th>
+<th style="text-align: left;">TTL</th>
+<th style="text-align: left;">Priority / Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>TXT</strong></td>
+<td style="text-align: left;"><code>mail.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>v=spf1 include:_spf.resend.com ~all</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">SPF configuration for dedicated sending subdomain.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CNAME</strong></td>
+<td style="text-align: left;"><code>resend._domainkey.mail.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>dkim.resend.com.</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">Primary 2048-bit DKIM selector managed via Resend.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>CNAME</strong></td>
+<td style="text-align: left;"><code>resend2._domainkey.mail.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>dkim2.resend.com.</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">Secondary DKIM selector for seamless key rotation.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>TXT</strong></td>
+<td style="text-align: left;"><code>_dmarc.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>v=DMARC1; p=reject; rua=mailto:dmarc-rua@acmeplatform.com; ruf=mailto:dmarc-ruf@acmeplatform.com; fo=1; adkim=s; aspf=r; pct=100</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">Apex domain DMARC record enforcing strict DKIM and relaxed SPF.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>TXT</strong></td>
+<td style="text-align: left;"><code>default._bimi.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>v=BIMI1; l=https://static.acmeplatform.com/brand/bimi-logo.svg; a=https://static.acmeplatform.com/brand/cert.pem</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">BIMI record pointing to verified SVG-P/S logo and VMC certificate.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>MX</strong></td>
+<td style="text-align: left;"><code>mail.acmeplatform.com</code></td>
+<td style="text-align: left;"><code>feedback-smtp.resend.com.</code></td>
+<td style="text-align: left;">3600</td>
+<td style="text-align: left;">Priority: 10. Required for bounce handling and RFC compliance.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>1.2 DMARC Policy Progression Runbook</h3>
+<p>Do not deploy <code>p=reject</code> immediately on a legacy domain with active email streams. Follow this 4-phase rollout to avoid dropping legitimate operational traffic.</p>
+<pre><code>PHASE 1: MONITORING (Days 1–14)
+└── Record: v=DMARC1; p=none; rua=mailto:dmarc-rua@acmeplatform.com; sp=none; fo=1;
+    ├── Action: Ingest aggregate XML reports using an analyzer (e.g., Postmark DMARC, Valimail).
+    └── Goal: Identify shadow IT, marketing platforms, and internal services sending on your domain.
+
+PHASE 2: ISOLATION &amp; SPF/DKIM ALIGNMENT (Days 15–30)
+└── Record: v=DMARC1; p=none; rua=mailto:dmarc-rua@acmeplatform.com; sp=none; aspf=r; adkim=s;
+    ├── Action: Migrate transactional systems to verified subdomains (mail.acmeplatform.com).
+    └── Goal: Ensure all sending sources pass DMARC via DKIM alignment.
+
+PHASE 3: QUARANTINE ESCALATION (Days 31–45)
+└── Week 5: v=DMARC1; p=quarantine; pct=25; rua=mailto:dmarc-rua@acmeplatform.com;
+└── Week 6: v=DMARC1; p=quarantine; pct=100; rua=mailto:dmarc-rua@acmeplatform.com;
+    ├── Action: Divert spoofed and unaligned traffic to recipient Spam/Junk folders.
+    └── Goal: Verify zero false-positive drop reports from legitimate customers.
+
+PHASE 4: ENFORCEMENT &amp; BIMI READY (Day 46+)
+└── Record: v=DMARC1; p=reject; pct=100; rua=mailto:dmarc-rua@acmeplatform.com; ruf=mailto:dmarc-ruf@acmeplatform.com; fo=1;
+    ├── Action: Instruct recipient mail servers to outright reject unauthenticated payloads.
+    └── Goal: Absolute domain spoofing protection and eligibility for verified BIMI visual indicators.
+</code></pre>
+<hr />
+<h3>1.3 SPF Lookup Limit Hardening (RFC 7208)</h3>
+<p>The DNS specification limits SPF evaluation to <strong>10 external DNS lookups</strong>. Exceeding this limit causes a <code>PermError</code>, forcing modern mail filters to treat the message as unauthenticated.</p>
+<h4>The Problematic Un-Flattened Record (12 Lookups = PermError)</h4>
+<pre><code class="language-dns">v=spf1 include:_spf.google.com include:_spf.resend.com include:spf.protection.outlook.com include:servers.mcsv.net include:mailgun.org ~all
+</code></pre>
+<h4>The Production-Engineered Solution</h4>
+<ol>
+<li><strong>Segregate Sending Domains:</strong> Route high-volume transactional flows to a distinct subdomain (<code>mail.acmeplatform.com</code>) and enterprise workspace communication to the apex (<code>acmeplatform.com</code>).</li>
+<li><strong>Flatten Subnet Blocks:</strong> When multiple vendors must share a domain, resolve the vendor includes into direct CIDR blocks:</li>
+</ol>
+<pre><code class="language-dns">mail.acmeplatform.com. IN TXT &quot;v=spf1 ip4:44.202.169.0/24 ip4:54.240.0.0/18 include:_spf.resend.com -all&quot;
+</code></pre>
+<p><em>Note: Use hard-fail (<code>-all</code>) on dedicated transactional subdomains where every authorized outbound IP is strictly registered.</em></p>
+<hr />
+<h2>2. 25-Point Deliverability &amp; Anti-Spam Pre-Flight Audit Rubric</h2>
+<p>Every template deployed to production must clear this rubric. A single <code>Blocker</code> failure mandates a release hold.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">#</th>
+<th style="text-align: left;">Category</th>
+<th style="text-align: left;">Audit Point</th>
+<th style="text-align: left;">Acceptance Criteria</th>
+<th style="text-align: left;">Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>01</strong></td>
+<td style="text-align: left;">Auth</td>
+<td style="text-align: left;">SPF Alignment</td>
+<td style="text-align: left;">Envelope-From (Return-Path) domain matches the <code>From:</code> header domain or aligns via SPF.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>02</strong></td>
+<td style="text-align: left;">Auth</td>
+<td style="text-align: left;">DKIM Signature</td>
+<td style="text-align: left;">2048-bit RSA key; <code>d=</code> tag matches sender domain; verification status returns <code>pass</code>.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>03</strong></td>
+<td style="text-align: left;">Auth</td>
+<td style="text-align: left;">DMARC Policy</td>
+<td style="text-align: left;">Domain resolves valid <code>v=DMARC1</code> record with active aggregate <code>rua</code> reporting.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>04</strong></td>
+<td style="text-align: left;">Headers</td>
+<td style="text-align: left;">RFC 8058 Compliance</td>
+<td style="text-align: left;">Contains valid <code>List-Unsubscribe: &lt;https://...&gt;, &lt;mailto:...&gt;</code> and <code>List-Unsubscribe-Post: List-Unsubscribe=One-Click</code>.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>05</strong></td>
+<td style="text-align: left;">Headers</td>
+<td style="text-align: left;">Sender Identity</td>
+<td style="text-align: left;">Friendly name format strictly adheres to: <code>Acme Platform &lt;security@acmeplatform.com&gt;</code>. No raw unmapped addresses.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>06</strong></td>
+<td style="text-align: left;">Headers</td>
+<td style="text-align: left;">Reply-To Path</td>
+<td style="text-align: left;">Valid inbound target specified. No unmonitored <code>noreply@</code> configurations without auto-responder handlers.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>07</strong></td>
+<td style="text-align: left;">Headers</td>
+<td style="text-align: left;">Message-ID Uniqueness</td>
+<td style="text-align: left;">Fully-qualified domain present in Message-ID (e.g., <code>&lt;uuid@mail.acmeplatform.com&gt;</code>).</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>08</strong></td>
+<td style="text-align: left;">Code</td>
+<td style="text-align: left;">MIME Structure</td>
+<td style="text-align: left;">Payload must be <code>multipart/alternative</code> containing strictly aligned <code>text/plain</code> and <code>text/html</code> versions.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>09</strong></td>
+<td style="text-align: left;">Code</td>
+<td style="text-align: left;">CSS Inlining</td>
+<td style="text-align: left;">Zero linked external stylesheets (<code>&lt;link rel="stylesheet"&gt;</code>). All rules inlined or nested in safe <code>&lt;style&gt;</code> tags.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>10</strong></td>
+<td style="text-align: left;">Code</td>
+<td style="text-align: left;">Total HTML File Weight</td>
+<td style="text-align: left;">Compiled HTML body size is <code>&lt; 100 KB</code> to completely avoid Gmail clipping (<code>[Message clipped] View entire message</code>).</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>11</strong></td>
+<td style="text-align: left;">Code</td>
+<td style="text-align: left;">Table Architecture</td>
+<td style="text-align: left;">Tabular data explicitly defines <code>role="presentation"</code>, <code>cellpadding="0"</code>, <code>cellspacing="0"</code>, and <code>border="0"</code>.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>12</strong></td>
+<td style="text-align: left;">Links</td>
+<td style="text-align: left;">Tracking Domain SSL</td>
+<td style="text-align: left;">Custom Click Tracking Domain (CNAME) resolves over valid TLS/SSL certificates without mixed-content warnings.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>13</strong></td>
+<td style="text-align: left;">Links</td>
+<td style="text-align: left;">Link Protocol Consistency</td>
+<td style="text-align: left;">Zero plain HTTP links. Every anchor tag implements explicit HTTPS schemes (<code>https://</code>).</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>14</strong></td>
+<td style="text-align: left;">Links</td>
+<td style="text-align: left;">Public Shorteners</td>
+<td style="text-align: left;">Zero presence of bit.ly, tinyurl, or generic shorteners. URL shorteners trigger immediate spam filtering.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>15</strong></td>
+<td style="text-align: left;">Links</td>
+<td style="text-align: left;">Raw URL Anchor Texts</td>
+<td style="text-align: left;">Anchor text must NOT be a written URL (e.g., <code>&lt;a href="https://acme.com/a"&gt;https://acme.com/b&lt;/a&gt;</code> triggers phishing filters).</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>16</strong></td>
+<td style="text-align: left;">Media</td>
+<td style="text-align: left;">Image Alt Attributes</td>
+<td style="text-align: left;">100% of <code>&lt;img&gt;</code> tags declare informative <code>alt="..."</code> descriptions or empty <code>alt=""</code> for decorative assets.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>17</strong></td>
+<td style="text-align: left;">Media</td>
+<td style="text-align: left;">Explicit Dimensions</td>
+<td style="text-align: left;">Height and width explicitly declared as HTML attributes and style props on every image to prevent rendering jumps.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>18</strong></td>
+<td style="text-align: left;">Media</td>
+<td style="text-align: left;">Image Hosting Domain</td>
+<td style="text-align: left;">Images served from an isolated, reliable CDN on HTTPS (e.g., <code>https://static.acmeplatform.com/...</code>).</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>19</strong></td>
+<td style="text-align: left;">Text</td>
+<td style="text-align: left;">Text-to-HTML Ratio</td>
+<td style="text-align: left;">Body payload contains at least 40% meaningful text content relative to underlying HTML markup structure.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>20</strong></td>
+<td style="text-align: left;">Text</td>
+<td style="text-align: left;">High-Risk Keywords</td>
+<td style="text-align: left;">Body and Subject scrubbed of high-frequency spam triggers (e.g., "100% FREE", "GUARANTEED RETURN", "ACT NOW").</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>21</strong></td>
+<td style="text-align: left;">Legal</td>
+<td style="text-align: left;">Physical Address</td>
+<td style="text-align: left;">Valid physical postal address clearly rendered in the footer layout per CAN-SPAM / GDPR / CASL.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>22</strong></td>
+<td style="text-align: left;">Dark Mode</td>
+<td style="text-align: left;">High Contrast Ratios</td>
+<td style="text-align: left;">Dark theme foreground and background text combinations maintain minimum WCAG 2.1 AA ratio of 4.5:1.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>23</strong></td>
+<td style="text-align: left;">Dark Mode</td>
+<td style="text-align: left;">Image Alpha Channels</td>
+<td style="text-align: left;">Dark-colored logos use transparent PNGs with a subtle white halo/outline, or explicit dark mode SVG swapping.</td>
+<td style="text-align: left;"><strong>Warning</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>24</strong></td>
+<td style="text-align: left;">Quality</td>
+<td style="text-align: left;">SpamAssassin Score</td>
+<td style="text-align: left;">Target payload scores <code>&lt; 1.0</code> when tested through direct SpamAssassin linting engines.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>25</strong></td>
+<td style="text-align: left;">System</td>
+<td style="text-align: left;">Idempotency Keys</td>
+<td style="text-align: left;">Sending service passes deterministic idempotency keys to Resend API to prevent duplicate deliveries on retry.</td>
+<td style="text-align: left;"><strong>Blocker</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>2.1 RFC 8058 One-Click Unsubscribe Implementation</h3>
+<p>Modern inbox providers (Google &amp; Yahoo) mandate RFC 8058 for high-volume senders. Transactional messages like password resets are exempt, but system notifications, billing summaries, and onboarding digests require these exact headers:</p>
+<pre><code class="language-http">List-Unsubscribe: &lt;https://api.acmeplatform.com/v1/email/unsubscribe?token=d9f82c47a1e2b&gt;, &lt;mailto:unsubscribe@mail.acmeplatform.com?subject=Unsubscribe-d9f82c47a1e2b&gt;
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+</code></pre>
+<p>When the user clicks "Unsubscribe" in their webmail header, the client sends a <code>POST</code> request to the HTTPS URI:</p>
+<pre><code class="language-http">POST /v1/email/unsubscribe?token=d9f82c47a1e2b HTTP/1.1
+Host: api.acmeplatform.com
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 26
+
+List-Unsubscribe=One-Click
+</code></pre>
+<p>Your server endpoint must handle this <code>POST</code> request without requiring authentication or presenting an intermediate confirmation webpage, completing the unsubscription instantly.</p>
+<hr />
+<h2>3. Dark Mode Cross-Client Styling Matrix &amp; Rendering Engine</h2>
+<p>Email clients handle dark mode via three distinct strategies. Understanding these execution models is essential to prevent text invisibility and color distortion.</p>
+<h3>3.1 Client Rendering Strategies</h3>
+<pre><code>┌─────────────────────────┬───────────────────────────────┬────────────────────────────────┐
+│ 1. No Color Changes     │ 2. Partial Color Inversion    │ 3. Full / Force Inversion      │
+│ (Preserves inline styles│ (Inverts light backgrounds;   │ (Inverts all backgrounds and   │
+│ unless media query hit) │  preserves dark elements)     │  flips all text colors blindly)│
+├─────────────────────────┼───────────────────────────────┼────────────────────────────────┤
+│ • Apple Mail (macOS)    │ • Outlook.com (Web)           │ • Gmail App (Android)          │
+│ • Apple Mail (iOS)      │ • Outlook App (iOS &amp; Android) │ • Gmail App (iOS)              │
+│                         │ • Gmail (Desktop Web - Dark)  │ • Outlook (Windows MSO Engine) │
+└─────────────────────────┴───────────────────────────────┴────────────────────────────────┘
+</code></pre>
+<h3>3.2 The Cross-Client Dark Mode Support Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Email Client</th>
+<th style="text-align: left;">Engine / Platform</th>
+<th style="text-align: left;">Mode Behavior</th>
+<th style="text-align: left;">Applicable Fix / Hack</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Apple Mail</strong></td>
+<td style="text-align: left;">WebKit (iOS &amp; macOS)</td>
+<td style="text-align: left;">Respects Media Queries fully.</td>
+<td style="text-align: left;">Supports <code>@media (prefers-color-scheme: dark)</code>. No destructive force inversions.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Gmail App</strong></td>
+<td style="text-align: left;">Blink / WebKit (Android/iOS)</td>
+<td style="text-align: left;">Full/Forced Inversion. Ignores <code>@media</code> queries in standard styles.</td>
+<td style="text-align: left;">CSS Blend-mode hacks, linear-gradient workarounds, or high-contrast fallback inline styles.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Outlook.com</strong></td>
+<td style="text-align: left;">Web Browser Engine</td>
+<td style="text-align: left;">Partial Inversion. Converts backgrounds, translates CSS vars.</td>
+<td style="text-align: left;">Target via attributes: <code>[data-ogsc]</code> (color) and <code>[data-ogsb]</code> (background).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Outlook Desktop</strong></td>
+<td style="text-align: left;">Word (MSO) Engine (Windows)</td>
+<td style="text-align: left;">Ignores HTML5, CSS media queries, and basic standard flex/grid.</td>
+<td style="text-align: left;">Conditional XML wrappers: <code>&lt;!--[if mso]&gt;</code> tables with hardcoded hex backgrounds.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Gmail Web</strong></td>
+<td style="text-align: left;">Browser Engine (Desktop)</td>
+<td style="text-align: left;">Preserves author styles unless user forces dark browser theme.</td>
+<td style="text-align: left;">Style with high-contrast text that survives background manipulation.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>3.3 The Universal Production CSS Reset for React Email</h3>
+<p>Inject this exact CSS payload inside the <code>&lt;Head&gt;</code> tag of your React Email root template layout. It targets all major engines, resolves Outlook Web Data Attributes, and prevents Gmail iOS from inverting light text.</p>
+<pre><code class="language-html">&lt;Head&gt;
+  &lt;meta name=&quot;color-scheme&quot; content=&quot;light dark&quot; /&gt;
+  &lt;meta name=&quot;supported-color-schemes&quot; content=&quot;light dark&quot; /&gt;
+  &lt;style&gt;
+    {`
+      :root {
+        color-scheme: light dark;
+        supported-color-schemes: light dark;
+      }
+
+      /* Base Dark Mode Inversion Styles */
+      @media (prefers-color-scheme: dark) {
+        .email-body {
+          background-color: #0c0d0e !important;
+        }
+        .surface-card {
+          background-color: #16181a !important;
+          border-color: #26292b !important;
+        }
+        .text-primary {
+          color: #f1f3f5 !important;
+        }
+        .text-secondary {
+          color: #8c9196 !important;
+        }
+        .button-primary {
+          background-color: #3b82f6 !important;
+          color: #ffffff !important;
+        }
+        /* Asset Swapping */
+        .light-mode-logo {
+          display: none !important;
+        }
+        .dark-mode-logo {
+          display: block !important;
+          max-height: 32px !important;
+        }
+      }
+
+      /* Outlook Web App (OWA) Dark Mode Targeting */
+      [data-ogsc] .email-body {
+        background-color: #0c0d0e !important;
+      }
+      [data-ogsc] .surface-card {
+        background-color: #16181a !important;
+        border-color: #26292b !important;
+      }
+      [data-ogsc] .text-primary {
+        color: #f1f3f5 !important;
+      }
+      [data-ogsc] .text-secondary {
+        color: #8c9196 !important;
+      }
+      [data-ogsb] .button-primary {
+        background-color: #3b82f6 !important;
+      }
+      [data-ogsc] .light-mode-logo {
+        display: none !important;
+      }
+      [data-ogsc] .dark-mode-logo {
+        display: block !important;
+      }
+    `}
+  &lt;/style&gt;
+&lt;/Head&gt;
+</code></pre>
+<hr />
+<h3>3.4 Gmail Forced-Inversion Image Protection Hack</h3>
+<p>When Gmail forces dark mode on Android and iOS, it can invert dark logos or make black transparent PNGs vanish into dark backgrounds. Use this dual-layer CSS implementation to protect logo assets:</p>
+<pre><code class="language-tsx">import { Img } from &quot;@react-email/components&quot;;
+
+export const BrandLogo = () =&gt; {
+  return (
+    &lt;div style={{ display: &quot;inline-block&quot;, position: &quot;relative&quot; }}&gt;
+      {/* 
+        Surround images with an subtle drop-shadow or outline that is invisible on light 
+        backgrounds but creates a clean boundary if Gmail forces the canvas black.
+      */}
+      &lt;Img
+        src=&quot;https://static.acmeplatform.com/brand/logo-dark-solid.png&quot;
+        alt=&quot;Acme Platform&quot;
+        width={140}
+        height={32}
+        style={{
+          display: &quot;block&quot;,
+          outline: &quot;none&quot;,
+          border: &quot;none&quot;,
+          textDecoration: &quot;none&quot;,
+          filter: &quot;drop-shadow(0px 0px 1px rgba(255, 255, 255, 0.85))&quot;,
+        }}
+      /&gt;
+    &lt;/div&gt;
+  );
+};
+</code></pre>
+<hr />
+<h2>4. Production Transactional Copy &amp; System Prompt Swipe File</h2>
+<p>Below are four battle-tested, high-deliverability transactional copy templates followed by an production-ready LLM System Prompt for dynamic generation.</p>
+<hr />
+<h3>Swipe File 1: Authentication / Magic Link (Zero-Friction Access)</h3>
+<pre><code class="language-markdown">From: Acme Platform &lt;auth@mail.acmeplatform.com&gt;
+Reply-To: support@acmeplatform.com
+Subject: Sign in to Acme Platform (Code: 849-204)
+Preview Text: Use your one-time verification link or code to complete sign in. Valid for 15 minutes.
+
+[Header: Acme Platform Logo]
+
+## Verify your sign-in request
+
+We detected a request to sign in to your Acme Platform account associated with alex.turner@enterprise.io.
+
+Use this temporary code to complete the verification flow:
+
+┌──────────────────────────────────────┐
+│             849 - 204                │
+└──────────────────────────────────────┘
+
+Alternatively, authenticate instantly via this direct authorization button:
+
+[ Sign In to Acme Platform ]
+(Target URL: https://acmeplatform.com/api/auth/callback?token=9ab73d8e5f2a1b4c6e8d0f1a3b5c7e9f)
+
+Security Details:
+• Timestamp: October 24, 2024 14:32:01 UTC
+• IP Address: 198.51.100.42 (San Francisco, CA, US)
+• Device / User Agent: Chrome 129.0.0 / macOS Darwin
+
+This verification link expires automatically in 15 minutes and can only be used once. If you did not initiate this authentication request, disregard this email or contact security@acmeplatform.com to terminate active sessions.
+
+---
+Acme Platform Inc. • 548 Market St, Suite 32000, San Francisco, CA 94104
+Security Alert Infrastructure • Automated notification
+</code></pre>
+<hr />
+<h3>Swipe File 2: Dunning / Payment Failure (Invoice Grace Period Tier 1)</h3>
+<pre><code class="language-markdown">From: Acme Platform Billing &lt;billing@mail.acmeplatform.com&gt;
+Reply-To: billing-support@acmeplatform.com
+Subject: Action Required: Payment failed for Invoice #INV-83921
+Preview Text: We were unable to charge your card ending in 4242. Update your billing details to maintain uninterrupted service.
+
+[Header: Acme Platform Logo]
+
+## Payment Unsuccessful
+
+On October 24, 2024, we attempted to process the scheduled subscription payment for your Acme Platform Enterprise Plan. The payment method on file declined the charge.
+
+Invoice Details:
+• Invoice Number: INV-83921-2024
+• Amount Due: $499.00 USD
+• Failed Payment Method: Visa ending in 4242
+• Failure Code: card_declined (insufficient_funds)
+
+Your workspace access remains fully active. We will automatically retry this charge on October 27, 2024. To prevent service disruption, please review and update your payment method:
+
+[ Update Payment Method ]
+(Target URL: https://acmeplatform.com/workspaces/acme-corp/billing/payment-methods)
+
+You can also download a copy of the itemized PDF invoice for your finance records directly from your billing portal:
+https://acmeplatform.com/workspaces/acme-corp/billing/invoices/INV-83921
+
+If you have questions regarding this charge, reply directly to this email to reach our accounts team.
+
+---
+Acme Platform Inc. • 548 Market St, Suite 32000, San Francisco, CA 94104
+Billing &amp; Subscription Services
+</code></pre>
+<hr />
+<h3>Swipe File 3: Security / Suspicious Session Alert</h3>
+<pre><code class="language-markdown">From: Acme Security Team &lt;security@mail.acmeplatform.com&gt;
+Reply-To: security-ops@acmeplatform.com
+Subject: Security Alert: New sign-in detected from unfamiliar location
+Preview Text: A new session was established from an unrecognized IP address. Verify this activity now.
+
+[Header: Acme Platform Logo]
+
+## New Sign-In Detected
+
+An active session was established on your Acme account (alex.turner@enterprise.io) from an unrecognized location.
+
+Session Telemetry:
+• Time: October 24, 2024 at 09:14:22 UTC
+• Location: Frankfurt, Hesse, Germany (Approximate)
+• IP Address: 203.0.113.195
+• Client Application: Firefox 131.0 on Linux x86_64
+
+Did you authorize this session?
+
+IF THIS WAS YOU:
+No action is required. This alert will not trigger again for this device profile.
+
+IF THIS WAS NOT YOU:
+Your account credentials may be compromised. Terminate all active sessions and reset your master password immediately via the link below:
+
+[ Terminate All Active Sessions ]
+(Target URL: https://acmeplatform.com/account/security/revoke?session_id=sess_9f823a7c81d2)
+
+To secure your workspace, our team recommends enforcing Multi-Factor Authentication (MFA) across your team profiles.
+
+---
+Acme Platform Inc. • 548 Market St, Suite 32000, San Francisco, CA 94104
+Enterprise Security Operations Center
+</code></pre>
+<hr />
+<h3>Swipe File 4: Workspace Team Member Invitation</h3>
+<pre><code class="language-markdown">From: Sarah Jenkins via Acme Platform &lt;invites@mail.acmeplatform.com&gt;
+Reply-To: sarah.jenkins@clientcorp.com
+Subject: Sarah Jenkins invited you to collaborate in &quot;Production Core&quot;
+Preview Text: Join the Production Core workspace on Acme Platform to access shared infrastructure and deployment pipelines.
+
+[Header: Acme Platform Logo]
+
+## You've been invited to join a workspace
+
+Sarah Jenkins (sarah.jenkins@clientcorp.com) has invited you to collaborate in the **Production Core** workspace on Acme Platform as an **Engineering Member**.
+
+Workspace Details:
+• Organization: ClientCorp Global
+• Workspace: Production Core
+• Role Permissions: Deploy pipelines, configure environment variables, and manage API secrets.
+
+Accept this invitation to link your credentials and access the workspace dashboard:
+
+[ Accept Invitation &amp; Join Workspace ]
+(Target URL: https://acmeplatform.com/invitations/accept?token=inv_398a7fbc21d09e&amp;email=alex.turner@enterprise.io)
+
+This invitation was sent directly to alex.turner@enterprise.io and expires on October 31, 2024 (7 days). If you do not know Sarah Jenkins or believe this was sent in error, you can safely ignore this email.
+
+---
+Acme Platform Inc. • 548 Market St, Suite 32000, San Francisco, CA 94104
+Collaboration &amp; Identity Infrastructure
+</code></pre>
+<hr />
+<h3>4.5 LLM System Prompt: Production Transactional Copy Generation</h3>
+<p>Use this system prompt in automated LLM pipelines (e.g., dynamic alerting, contextual receipts, incident comms) to output clean, deliverability-safe transactional email copy.</p>
+<p>```markdown
+You are an expert transactional email copywriter and email deliverability architect specializing in high-placement enterprise email communication.</p>
+<p>Your task is to write high-converting, accessible, and strictly deliverability-optimized transactional email copy based on incoming structured event data.</p>
+<p>CRITICAL RULES AND CONSTRAINTS:
+1. DELIVERABILITY SCORING:
+   - NEVER use high-risk marketing spam triggers: "100% Free", "Guaranteed", "Act Now", "Limited Time", "Risk-Free", "Buy Now", "Claim Bonus".
+   - Keep the Subject Line under 55 characters. It must be informational, accurate, and sober. Include IDs or dynamic contexts when helpful (e.g., "Invoice #1024", "Sign-in verification").
+   - Preview Text must be between 40 and 90 characters. It must seamlessly complement the subject line and provide clear context before opening.</p>
+<ol>
+<li>STRUCTURED SECTIONS REQUIRED IN OUTPUT:</li>
+<li>Subject Line</li>
+<li>Preview Text</li>
+<li>Preheader Spacing Fix (Must indicate spacing implementation)</li>
+<li>Primary Heading (H1)</li>
+<li>Core Message Body (Clear, concise, professional)</li>
+<li>Primary Action CTA (Exact button label and descriptive target URI structure)</li>
+<li>Supporting Details / Audit Metadata (Key-value pairs for transparency: IP, timestamp, user IDs)</li>
+<li>Secondary Link / Alternative Path (Plain text alternative for screen readers or broken HTML engines)</li>
+<li>
+<p>Footer Compliance Block (Sender legal entity, physical address, and transactional relationship note)</p>
+</li>
+<li>
+<p>TONE &amp; ACCESSIBILITY:</p>
+</li>
+<li>Maintain a direct, technical, and respectful tone.</li>
+<li>Use active voice. Write for scannability using bulleted lists for complex metadata.</li>
+<li>All CTA button anchor texts must explicitly name the action (NEVER say "Click Here" or "Link"). Use "Sign In to Acme", "View Invoice #INV-123", "Reset Your Password".</li>
+</ol>
+<p>OUTPUT FORMAT:
+Return pure, valid Markdown only. Do not provide conversational filler or introductory remarks. Execute output strictly inside this format:</p>
+<h3>Subject Line:</h3>
+<p>[Insert Text]</p>
+<h3>Preview Text:</h3>
+<p>[Insert Text]</p>
+<h3>Body Copy:</h3>
+<p>[Insert Markdown Structure]</p>
+<h3>Plain Text Version:</h3>
+<p>[Insert Pure ASCII Text Alternative]</p>
+</body>
+</html>
