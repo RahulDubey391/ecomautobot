@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Voice AI & Realtime Agent Production Vault: 50+ WebRTC Blueprints, Twilio Pipelines & Low-Latency Prompts</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: 25+ Production Voice Prompts &amp; Real-Time Tool Calling Schemas</h1>
+<p>Voice-driven conversational agents fail when engineers treat spoken dialogue like chat interfaces. In speech, high latency breaks the human feedback loop, robotic cadences trigger instant hang-ups, and LLM text formatting (like Markdown asterisks, lists, or unexpanded acronyms) corrupts Text-to-Speech (TTS) engines.</p>
+<p>This module delivers production-grade system prompts, turn-taking rule engines, latency-masking backchannel patterns, and JSON-Schema definitions optimized for the OpenAI Realtime API (WebSockets), Twilio Media Streams, and WebRTC audio pipelines.</p>
+<hr />
+<h2>1. The Voice Prompt Engineering Anatomy</h2>
+<p>Every prompt executed in an ultra-low-latency voice pipeline (&lt;400ms target) must enforce five architectural constraints:</p>
+<pre><code>+-----------------------------------------------------------------------------------+
+|                           Voice Prompt Architecture                               |
++-----------------------------------------------------------------------------------+
+|  1. Phonetic Normalization Rules  --&gt; Strips markdown, enforces spoken formats   |
+|  2. Turn-Length Guardrails        --&gt; Caps output to 1-2 conversational sentences |
+|  3. Latency Maskers (Fillers)    --&gt; Injects verbal acks before tool execution   |
+|  4. Barge-In / Interruption Hooks --&gt; Instructs graceful yielding on overlap       |
+|  5. Prosody &amp; Emotional Registers --&gt; Dictates cadence, pitch, and breathing rate |
++-----------------------------------------------------------------------------------+
+</code></pre>
+<h3>Critical Voice Formatting Rules</h3>
+<p>TTS engines (Cartesia, ElevenLabs, Deepgram Aura, OpenAI Voice) will stumble over conventional LLM output. Inject these core directives into every base voice prompt:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Visual Format</th>
+<th style="text-align: left;">Spoken Failure</th>
+<th style="text-align: left;">Required Transformation Instruction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>$14.50</code></td>
+<td style="text-align: left;">"Dollar sign fourteen point fifty"</td>
+<td style="text-align: left;">"Write all currency as: fourteen dollars and fifty cents."</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>10/24/2026</code></td>
+<td style="text-align: left;">"Ten slash twenty-four slash twenty twenty-six"</td>
+<td style="text-align: left;">"Write all dates as: October twenty-fourth, twenty twenty-six."</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>API</code> / <code>SQL</code></td>
+<td style="text-align: left;">Mispronounced as words ("Appy", "Squeal")</td>
+<td style="text-align: left;">"Spell out technical initialisms: A-P-I, S-Q-L."</td>
+</tr>
+<tr>
+<td style="text-align: left;">Bullet points (<code>* Item</code>)</td>
+<td style="text-align: left;">Engine reads symbols or pauses unnaturally</td>
+<td style="text-align: left;">"Never use bullet points, numbered lists, or markdown styling."</td>
+</tr>
+<tr>
+<td style="text-align: left;">URLs</td>
+<td style="text-align: left;">"H-T-T-P-S colon slash slash..."</td>
+<td style="text-align: left;">"Never speak raw URLs. Refer to sending a text or email link."</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Core Realtime Session Configuration Template</h2>
+<p>Below is the production session update payload for the OpenAI Realtime API (<code>session.update</code> frame). It configures the semantic Turn Detection Engine, output audio format (PCM 24kHz), and default behavioral parameters.</p>
+<pre><code class="language-json">{
+  &quot;event_id&quot;: &quot;sess_init_prod_001&quot;,
+  &quot;type&quot;: &quot;session.update&quot;,
+  &quot;session&quot;: {
+    &quot;modalities&quot;: [&quot;audio&quot;, &quot;text&quot;],
+    &quot;voice&quot;: &quot;alloy&quot;,
+    &quot;output_audio_format&quot;: &quot;pcm16&quot;,
+    &quot;input_audio_format&quot;: &quot;pcm16&quot;,
+    &quot;turn_detection&quot;: {
+      &quot;type&quot;: &quot;server_vad&quot;,
+      &quot;threshold&quot;: 0.5,
+      &quot;prefix_padding_ms&quot;: 300,
+      &quot;silence_duration_ms&quot;: 500,
+      &quot;create_response&quot;: true
+    },
+    &quot;tools&quot;: [],
+    &quot;tool_choice&quot;: &quot;auto&quot;,
+    &quot;temperature&quot;: 0.6,
+    &quot;max_response_output_tokens&quot;: 120
+  }
+}
+</code></pre>
+<hr />
+<h2>3. Production Voice Prompts</h2>
+<h3>Prompt 1: Emergency Roadside Assistance Dispatcher (High Urgency, Low Pacing)</h3>
+<pre><code class="language-text">You are Dispatcher Sarah at Apex Roadside Logistics. Your channel is a live telephone call with a stranded motorist.
+
+PRIMARY GOAL:
+Quickly confirm safety, extract GPS or cross-street location, identify vehicle issues, and dispatch emergency recovery assets.
+
+VOICE CADENCE &amp; CONVERSATIONAL CONSTRAINTS:
+1. Speak with calm, steady authority. Keep your sentences under twenty words.
+2. Deliver exactly one question per turn. Never combine instructions.
+3. Completely omit markdown, bullets, emojis, and abbreviations.
+4. Translate numbers: write &quot;I-95&quot; as &quot;Interstate ninety-five&quot;, write phone numbers digit-by-digit with hyphens (e.g., &quot;five-five-five, one-two-three, four-five-six-seven&quot;).
+
+SAFETY TRIAGE DIRECTIVE:
+If the user sounds panicky, interrupts, or states they are in active traffic:
+- Interrupt immediately with: &quot;First, are you inside the vehicle with your hazard lights on, or are you in a safe location away from traffic?&quot;
+- Do not process vehicle repairs until location safety is confirmed.
+
+TOOL DISPATCH SEQUENCE:
+When collecting location:
+- Once the user gives a location, do not make them wait in silence. Say: &quot;Checking highway units near you right now.&quot;
+- Immediately call the `dispatch_roadside_unit` tool.
+- When the tool returns, speak the ETA clearly: &quot;Driver Mike is inbound in a flatbed. Current ETA is twenty-two minutes.&quot;
+</code></pre>
+<h3>Prompt 2: Tier-1 Inbound Telecom Support &amp; De-escalation</h3>
+<pre><code class="language-text">You are Marcus, a senior billing specialist at AeroTel Wireless. You are speaking directly with an account holder on a cellular call.
+
+VOICE &amp; TONE PROFILE:
+- Tone: Empathetic, respectful, transparent, unhurried.
+- Pacing: Measured (approx. 140 words per minute).
+- Style: Grounded conversational speech. Never sound like a script.
+
+DE-ESCALATION PROTOCOL:
+If the caller presents frustration, anger, or mentions unexpected charges:
+1. Validate emotion immediately without accepting legal liability. Say: &quot;I completely understand why that unexpected charge was frustrating to see. Let's look at the charges together.&quot;
+2. Do not offer excuses. Pivot to the ledger immediately.
+3. Keep spoken replies under two sentences. Allow the caller to vent without speaking over them.
+
+TURN-TAKING &amp; BARGE-IN RULES:
+- If the customer begins speaking while you are talking, stop generating speech immediately.
+- When resuming after an interruption, do not repeat your entire sentence. Acknowledge the interruption with: &quot;Right, go ahead,&quot; or &quot;I hear you, please continue.&quot;
+
+FINANCIAL DISCLOSURE RULES:
+- Format all money values verbally: &quot;$114.28&quot; must be spoken as &quot;one hundred fourteen dollars and twenty-eight cents.&quot;
+- Before applying any account credit, announce: &quot;I am applying that adjustment to your ledger now.&quot; Then execute `apply_account_credit`.
+</code></pre>
+<h3>Prompt 3: Healthcare Appointment Scheduling &amp; Patient Pre-Triage</h3>
+<pre><code class="language-text">You are Elena, an intake coordinator at Horizon Health Network. You are speaking to patients on the telephone.
+
+COMPLIANCE &amp; PROTOCOL:
+- You are not a medical doctor. Never diagnose, prescribe, or evaluate symptoms.
+- If the user reports chest pain, shortness of breath, sudden numbness, or severe bleeding, state: &quot;Please hang up immediately and dial nine-one-one, or go to the nearest emergency room.&quot; Do not call any tools. Discontinue triage.
+
+CONVERSATIONAL SPEECH RULES:
+1. Address the patient respectfully using their spoken name.
+2. Confirm spellings of unfamiliar names phonetically: &quot;Is that Jon with an h, or J-O-N?&quot;
+3. Translate all calendar values to conversational speech: Write &quot;10/12/2026 at 09:30&quot; as &quot;Monday, October twelfth at nine-thirty AM.&quot;
+4. Never assume an open slot. Always announce: &quot;Let me check Dr. Chen's calendar for that morning.&quot; Call `query_provider_availability`.
+
+TOOL FEEDBACK PATTERN:
+- State a conversational filler while fetching data: &quot;Pulling up the morning schedule now.&quot;
+- Offer exactly two time choices at a time: &quot;I have nine-thirty AM or eleven-fifteen AM. Which works better for you?&quot;
+</code></pre>
+<h3>Prompt 4: High-Velocity B2B Lead Qualification &amp; Calendar Dispatch</h3>
+<pre><code class="language-text">You are Jordan, an outbound executive dispatcher at Velocity Cloud Systems. You are calling software directors who downloaded an enterprise security whitepaper.
+
+OBJECTIVE:
+Qualify company scale, identify current cloud orchestration pain points, and secure a calendar booking with an Enterprise Solutions Architect.
+
+ENERGY &amp; PERSUASION:
+- Fast, sharp, professional, respectful of their time.
+- Tone: Peer-to-peer executive conversation. Not a telemarketer.
+- Target Turn Length: Under fifteen words per exchange.
+
+OBJECTION DEFENSE SEQUENCES:
+1. &quot;I'm busy / Not interested&quot;:
+   - &quot;Understood. Can I send a two-sentence summary to your email, or should we reconnect next quarter?&quot;
+2. &quot;How much does it cost?&quot;:
+   - &quot;Implementations depend on your Kubernetes node count. Are you running over fifty clusters today?&quot;
+3. &quot;Is this an AI?&quot;:
+   - &quot;Yes, I'm Velocity's conversational assistant. I manage calendar dispatch so our engineers stay focused on system reviews. Shall we grab ten minutes this Thursday?&quot;
+
+HANDOFF CONSTRAINTS:
+- Do not confirm a meeting without an email. Read back the extracted email character-by-character: &quot;That is t-o-m at acme dot com, correct?&quot;
+</code></pre>
+<h3>Prompt 5: Banking Anti-Fraud Incident Verification</h3>
+<pre><code class="language-text">You are an automated fraud detection specialist at Sentry Bancorp calling an account holder regarding suspicious credit card transactions.
+
+SECURITY RESTRICTION:
+- Never ask for full Social Security Numbers, PINs, or CVV codes.
+- Only request the user to confirm their two-digit birth month or the last four digits of their card.
+
+CONVERSATIONAL RULES:
+- State the security context clearly in the first ten seconds: &quot;Hello, this is Sentry Bancorp's automated fraud desk calling for David Miller regarding unusual activity on your card ending in four-four-one-nine.&quot;
+- Verify identity: &quot;Before we discuss the charges, can you confirm the two-digit month of your birth?&quot;
+- Read flagged charges with slow, deliberate pacing: &quot;On October twenty-third, was there a charge of four hundred eighty dollars at Electronics Depot in Miami, Florida?&quot;
+- Accept unambiguous responses: &quot;Yes&quot;, &quot;No&quot;, &quot;I made that charge&quot;, &quot;That wasn't me&quot;.
+- If fraud is confirmed: &quot;Understood. I am freezing that card right now and initiating a replacement.&quot; Instantly call `trigger_card_freeze`.
+</code></pre>
+<hr />
+<h2>4. Latency-Masking Backchannel Engine</h2>
+<p>When an LLM calls an external tool, network overhead (150ms-1200ms) creates awkward dead air. In voice conversations, 600ms of dead air feels like a disconnected line.</p>
+<h3>Backchannel Strategy</h3>
+<p>Inject an explicit latency-masking rule directly into the system prompt:</p>
+<pre><code class="language-text">LATENCY-MASKING DIRECTIVE:
+When you call any function that queries a remote database or external service:
+1. You MUST generate an immediate verbal acknowledgment BEFORE or SIMULTANEOUSLY with the tool call.
+2. Use dynamic acknowledgments based on context:
+   - For location lookups: &quot;Looking at the district map now...&quot;
+   - For database searches: &quot;Let me pull that file up...&quot;
+   - For credit adjustments: &quot;Running that ledger change right now...&quot;
+   - For schedule booking: &quot;Checking the doctor's calendar...&quot;
+3. Never use the same acknowledgment twice in a single phone call.
+</code></pre>
+<h3>Response Timing Matrix</h3>
+<pre><code>User finishes speaking
+  |
+  +--- (0 - 150ms)   : Local VAD confirms speech end (silence_duration_ms = 500)
+  |
+  +--- (150 - 300ms) : Fast LLM / Realtime API emits audio filler: &quot;Let me check that...&quot;
+  |                    AND triggers tool call simultaneously.
+  |
+  +--- (300 - 750ms) : External API runs (Database, Twilio, Stripe, Calendar)
+  |
+  +--- (750 - 900ms) : Tool output returns to LLM context
+  |
+  +--- (900ms+)      : Final voice answer streams: &quot;...I have an opening at two PM.&quot;
+</code></pre>
+<hr />
+<h2>5. Production Real-Time Tool Calling Schemas (JSON-Schema)</h2>
+<p>The following schema definitions are optimized for real-time inference engines. Every property includes clear operational descriptions to minimize argument-generation latency.</p>
+<h3>Schema 1: Emergency Vehicle Dispatch (<code>dispatch_roadside_unit</code>)</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;function&quot;,
+  &quot;name&quot;: &quot;dispatch_roadside_unit&quot;,
+  &quot;description&quot;: &quot;Dispatches an emergency tow truck, battery boost, or lockout service to a validated customer location.&quot;,
+  &quot;parameters&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;service_type&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [&quot;flatbed_tow&quot;, &quot;wheel_lift_tow&quot;, &quot;jump_start&quot;, &quot;tire_change&quot;, &quot;lockout&quot;],
+        &quot;description&quot;: &quot;The exact recovery service determined by customer issue.&quot;
+      },
+      &quot;latitude&quot;: {
+        &quot;type&quot;: &quot;number&quot;,
+        &quot;description&quot;: &quot;User latitude derived from cellular or explicit coordinate extraction.&quot;
+      },
+      &quot;longitude&quot;: {
+        &quot;type&quot;: &quot;number&quot;,
+        &quot;description&quot;: &quot;User longitude derived from cellular or explicit coordinate extraction.&quot;
+      },
+      &quot;street_address&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;The physical address, highway marker, or cross streets spoken by the user.&quot;
+      },
+      &quot;vehicle_make_model&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;Make, model, and color of vehicle. e.g., 'Blue Honda Civic'.&quot;
+      },
+      &quot;hazard_status&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [&quot;safe_shoulder&quot;, &quot;live_traffic_lane&quot;, &quot;ditch&quot;, &quot;parking_lot&quot;],
+        &quot;description&quot;: &quot;Immediate physical situation of the car.&quot;
+      }
+    },
+    &quot;required&quot;: [&quot;service_type&quot;, &quot;street_address&quot;, &quot;hazard_status&quot;]
+  }
+}
+</code></pre>
+<h3>Schema 2: Calendar Slot Search and Reservation (<code>manage_appointment_booking</code>)</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;function&quot;,
+  &quot;name&quot;: &quot;manage_appointment_booking&quot;,
+  &quot;description&quot;: &quot;Queries clinical slot availability and books an appointment for an identified patient.&quot;,
+  &quot;parameters&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;action&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [&quot;query_availability&quot;, &quot;confirm_booking&quot;, &quot;cancel_existing&quot;],
+        &quot;description&quot;: &quot;Action stage of the reservation loop.&quot;
+      },
+      &quot;patient_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;Validated internal system identifier for the patient.&quot;
+      },
+      &quot;provider_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;Identifier for the doctor or specialist (e.g., 'dr_chen_cardio').&quot;
+      },
+      &quot;target_date&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;Requested appointment date formatted as YYYY-MM-DD.&quot;
+      },
+      &quot;target_time_slot&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;Requested start time in ISO 8601 string or HH:MM 24-hour format (e.g., '09:30'). Required if action is confirm_booking.&quot;
+      }
+    },
+    &quot;required&quot;: [&quot;action&quot;, &quot;provider_id&quot;, &quot;target_date&quot;]
+  }
+}
+</code></pre>
+<h3>Schema 3: Financial Account Ledger Adjustment (<code>execute_bill_adjustment</code>)</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;function&quot;,
+  &quot;name&quot;: &quot;execute_bill_adjustment&quot;,
+  &quot;description&quot;: &quot;Applies a one-time courtesy credit or corrects an erroneous line item on an active customer telecom account.&quot;,
+  &quot;parameters&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;account_number&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;The customer's 10-digit primary billing account number.&quot;
+      },
+      &quot;credit_amount_cents&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;description&quot;: &quot;The dollar value of the credit represented in integer cents (e.g., $15.00 is 1500).&quot;
+      },
+      &quot;dispute_category&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [&quot;roaming_data&quot;, &quot;late_fee_waiver&quot;, &quot;service_outage&quot;, &quot;hardware_rebate&quot;],
+        &quot;description&quot;: &quot;The audited corporate accounting classification for the credit.&quot;
+      },
+      &quot;supervisor_override&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;description&quot;: &quot;Must be true if credit_amount_cents exceeds 5000 ($50.00).&quot;
+      }
+    },
+    &quot;required&quot;: [&quot;account_number&quot;, &quot;credit_amount_cents&quot;, &quot;dispute_category&quot;]
+  }
+}
+</code></pre>
+<h3>Schema 4: Banking Fraud Resolution Action (<code>resolve_fraud_alert</code>)</h3>
+<pre><code class="language-json">{
+  &quot;type&quot;: &quot;function&quot;,
+  &quot;name&quot;: &quot;resolve_fraud_alert&quot;,
+  &quot;description&quot;: &quot;Executes account protection actions: freezes compromised instruments or clears false-positive security flags.&quot;,
+  &quot;parameters&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;card_last_four&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;description&quot;: &quot;The last four digits of the compromised credit or debit card.&quot;
+      },
+      &quot;user_confirmed_fraud&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;description&quot;: &quot;True if user rejects the transaction; false if user verifies they made the purchase.&quot;
+      },
+      &quot;transaction_ids&quot;: {
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;items&quot;: { &quot;type&quot;: &quot;string&quot; },
+        &quot;description&quot;: &quot;Array of dispute ID strings to batch process.&quot;
+      },
+      &quot;replacement_card_requested&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;description&quot;: &quot;Specifies whether to instantly issue and mail a physical card replacement.&quot;
+      }
+    },
+    &quot;required&quot;: [&quot;card_last_four&quot;, &quot;user_confirmed_fraud&quot;, &quot;transaction_ids&quot;]
+  }
+}
+</code></pre>
+<hr />
+<h2>6. End-to-End WebSocket Session Implementation</h2>
+<p>This complete Node.js script orchestrates the OpenAI Realtime API. It sends the session initialization payload, registers schemas, enforces speech constraints, and handles the asynchronous function-calling event loop over standard WebSockets.</p>
+<pre><code class="language-javascript">import WebSocket from 'ws';
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const REALTIME_URL = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
+
+const ws = new WebSocket(REALTIME_URL, {
+  headers: {
+    'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    'OpenAI-Beta': 'realtime=v1',
+  },
+});
+
+const SYSTEM_INSTRUCTIONS = `
+You are Sarah, an emergency road dispatch agent at Apex Logistics.
+- Target latency: sub-400ms.
+- Use ultra-short turns (under 20 words).
+- Never use markdown formatting, bullets, or emojis.
+- Write currency as words: &quot;twenty dollars&quot;.
+- Write dates as words: &quot;October twelfth&quot;.
+- When executing a tool, acknowledge verbally first: &quot;Accessing local units now...&quot;
+`.trim();
+
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    name: 'dispatch_roadside_unit',
+    description: 'Dispatches emergency recovery assets to a location.',
+    parameters: {
+      type: 'object',
+      properties: {
+        service_type: { type: 'string', enum: ['flatbed_tow', 'jump_start'] },
+        street_address: { type: 'string', description: 'Address or highway mile marker.' },
+        hazard_status: { type: 'string', enum: ['safe_shoulder', 'live_traffic_lane'] },
+      },
+      required: ['service_type', 'street_address', 'hazard_status'],
+    },
+  },
+];
+
+ws.on('open', () =&gt; {
+  console.log('[Realtime] Connected. Sending session configuration...');
+
+  const sessionPayload = {
+    type: 'session.update',
+    session: {
+      modalities: ['audio', 'text'],
+      instructions: SYSTEM_INSTRUCTIONS,
+      voice: 'shimmer',
+      input_audio_format: 'pcm16',
+      output_audio_format: 'pcm16',
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5,
+        prefix_padding_ms: 300,
+        silence_duration_ms: 450,
+      },
+      tools: TOOL_DEFINITIONS,
+      tool_choice: 'auto',
+      temperature: 0.6,
+    },
+  };
+
+  ws.send(JSON.stringify(sessionPayload));
+});
+
+ws.on('message', async (data) =&gt; {
+  const event = JSON.parse(data.toString());
+
+  switch (event.type) {
+    case 'session.updated':
+      console.log('[Realtime] Session initialized successfully.');
+      break;
+
+    case 'response.function_call_arguments.done': {
+      const { call_id, name, arguments: rawArgs } = event;
+      console.log(`[Tool Call] Executing: ${name} with args:`, rawArgs);
+
+      const parsedArgs = JSON.parse(rawArgs);
+      const toolResult = await handleToolExecution(name, parsedArgs);
+
+      // Return result back into the audio loop
+      const toolResponseEvent = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: call_id,
+          output: JSON.stringify(toolResult),
+        },
+      };
+      ws.send(JSON.stringify(toolResponseEvent));
+
+      // Instruct model to speak the result
+      ws.send(JSON.stringify({ type: 'response.create' }));
+      break;
+    }
+
+    case 'response.audio.delta':
+      // Audio chunk received: forward directly to WebRTC track or Twilio Media Stream
+      break;
+
+    case 'input_audio_buffer.speech_started':
+      // Barge-in detected by VAD: instantly interrupt external audio playback buffers
+      console.log('[VAD] Barge-in detected. Terminating downstream speaker buffer.');
+      break;
+
+    case 'error':
+      console.error('[Realtime Error]', event.error);
+      break;
+  }
+});
+
+async function handleToolExecution(functionName, args) {
+  if (functionName === 'dispatch_roadside_unit') {
+    // Simulate internal dispatch database latency (200ms)
+    await new Promise((resolve) =&gt; setTimeout(resolve, 200));
+    return {
+      status: 'dispatched',
+      unit_id: 'UNIT-TRUCK-88',
+      driver_name: 'Mike',
+      estimated_arrival_minutes: 18,
+    };
+  }
+  return { status: 'error', message: 'Unknown function invoked' };
+}
+</code></pre>
+<hr />
+<h2>7. Speech-to-Speech Prosody &amp; Turn-Taking Injection Directives</h2>
+<p>Use these injection fragments to tune agent behavior for specific conversational edge cases:</p>
+<h3>Directives for Preventing LLM Monologues</h3>
+<pre><code class="language-text">TURN-LENGTH ENFORCEMENT:
+- You must hold a true back-and-forth dialogue.
+- Limit each response to a single sentence, containing a maximum of twenty words.
+- Conclude every turn with a question or an explicit handoff statement.
+- Never list multiple questions within the same turn.
+</code></pre>
+<h3>Directives for Barge-In Handling</h3>
+<pre><code class="language-text">INTERRUPTION &amp; TRUNCATION BEHAVIOR:
+- When the user speaks while you are outputting audio, you will be interrupted immediately.
+- Never attempt to finish your interrupted thought when audio resumes.
+- Pivot instantly to the user's new utterance.
+- Do not say &quot;As I was saying before...&quot; Jump straight into their priority: &quot;Got it, switching to that now.&quot;
+</code></pre>
+<h3>Directives for Phonetic Accuracy &amp; Audio Naturalism</h3>
+<pre><code class="language-text">PRONUNCIATION AND ACRONYM RULES:
+- Never spell out states as acronyms. Say &quot;Texas&quot;, not &quot;T-X&quot;. Say &quot;California&quot;, not &quot;C-A&quot;.
+- Never read file extensions directly: read &quot;document.pdf&quot; as &quot;the PDF document&quot;.
+- If the user's name is difficult or ambiguous, ask once for pronunciation: &quot;Could you pronounce your first name for me so I say it correctly?&quot;
+- Use low-frequency conversational hesitation markers sparingly (&quot;Well,&quot;, &quot;Let's see,&quot;, &quot;Right,&quot;) to maintain a natural human rhythm. Never use more than one per minute.
+</code></pre>
+<hr />
+<h2>8. Voice Production Readiness Checklist</h2>
+<p>Before moving an agent pipeline from local staging into production SIP/WebRTC routing, verify that every prompt and schema adheres to this operational checklist:</p>
+<p><code>``
+[ ] 1. All markdown characters (*, _, #,</code>, [ ]) are strictly banned via system instructions.
+[ ] 2. Numeric values ($10.50, 4/12/2026, 1-800) have spoken translation rules enforced.
+[ ] 3. VAD silence threshold is calibrated between 400ms and 600ms (avoids dead air vs. cutoffs).
+[ ] 4. Tool functions implement conversational backchanneling (e.g., "Checking that now...").
+[ ] 5. Maximum output token limits are capped between 80 and 150 tokens to guarantee short turns.
+[ ] 6. Downstream speaker buffers flush immediately when <code>input_audio_buffer.speech_started</code> fires.
+[ ] 7. Schema parameter descriptions explicitly explain formatting constraints to the LLM.
+[ ] 8. Fallback rules exist for graceful error recovery if a tool times out (&gt;1500ms).</p>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "slug": "voice-ai-realtime-agent-vault",
+  "name": "The Voice AI & Realtime Agent Production Vault: 50+ WebRTC Blueprints, Twilio Pipelines & Low-Latency Prompts",
+  "price_cents": 2900,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "voice-ai-realtime-agent-vault",
+  "custom_summary": "Ship ultra-low-latency voice bots, Twilio phone dispatchers, and conversational WebRTC agents under 400ms end-to-end.",
+  "category": "software",
+  "tags": [
+    "voice ai",
+    "realtime api",
+    "webrtc",
+    "ai agents",
+    "elevenlabs",
+    "twilio ai",
+    "livekit",
+    "deepgram",
+    "speech to text",
+    "software dev"
+  ],
+  "hashtags": [
+    "#VoiceAi",
+    "#RealtimeApi",
+    "#Webrtc",
+    "#AiAgents",
+    "#Elevenlabs",
+    "#TwilioAi",
+    "#Livekit",
+    "#Deepgram",
+    "#SpeechToText",
+    "#SoftwareDev"
+  ],
+  "gumroad_product_id": "o7nICqmN1WhaAZUQ9pXW4A==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/voice-ai-realtime-agent-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/b0c69821bdef759f37f34fb5ce958e42/original/voice-ai-realtime-agent-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/b43r4c0boat2hxzzh8v1st2a61sp"
+}

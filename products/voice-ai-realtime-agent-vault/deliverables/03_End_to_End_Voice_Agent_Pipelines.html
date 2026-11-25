@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Voice AI & Realtime Agent Production Vault: 50+ WebRTC Blueprints, Twilio Pipelines & Low-Latency Prompts</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Full-Stack Voice Pipelines: Twilio, LiveKit, OpenAI &amp; Deepgram</h1>
+<h2>1. The Sub-400ms Voice Pipeline Architecture</h2>
+<p>Achieving natural, human-like voice conversations requires an end-to-end latency below 400ms. Once round-trip latency exceeds 500ms, participants begin talking over each other, causing conversational breakdown. The pipeline consists of five distinct stages, each bound to a strict latency budget.</p>
+<pre><code>[ User Speaks ] 
+       │ (0-40ms Network Audio Ingress)
+       ▼
+[ Twilio / WebRTC Edge Gateway ] 
+       │ (20ms Frame Processing)
+       ▼
+[ Deepgram Nova-2 Streaming STT ] ──── (120ms to Final Transcript)
+       │
+       ▼
+[ Orchestrator / Prompt Context Engine ] ──── (10ms Serialization)
+       │
+       ▼
+[ OpenAI GPT-4o-mini / Realtime LLM ] ──── (80-120ms Time-to-First-Token)
+       │
+       ▼
+[ Cartesia Sonic / ElevenLabs Turbo TTS ] ──── (60-80ms Time-to-First-Byte)
+       │
+       ▼
+[ Twilio / WebRTC Audio Egress ] ──── (40-60ms Network Egress + Jitter Buffer)
+       │
+[ User Hears Response ] (Total Target: 330ms - 390ms)
+</code></pre>
+<h3>End-to-End Latency Budget Breakdown</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Pipeline Stage</th>
+<th style="text-align: left;">Critical Threshold</th>
+<th style="text-align: left;">Optimization Lever</th>
+<th style="text-align: left;">Failure Mode / Bottleneck</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>1. Audio Ingress</strong></td>
+<td style="text-align: left;">40ms</td>
+<td style="text-align: left;">Opus/PCM codec negotiation, edge termination</td>
+<td style="text-align: left;">Twilio routing across cross-continental regions</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>2. Streaming STT</strong></td>
+<td style="text-align: left;">120ms</td>
+<td style="text-align: left;">Deepgram Nova-2, <code>endpointing=300</code>, <code>interim_results=true</code></td>
+<td style="text-align: left;">Overly aggressive VAD clipping words prematurely</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>3. Inference (LLM)</strong></td>
+<td style="text-align: left;">100ms (TTFT)</td>
+<td style="text-align: left;">Streamed responses, prompt tokens &lt; 1,500, small models</td>
+<td style="text-align: left;">Waiting for completion chunks or bloated system prompts</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>4. Synthesis (TTS)</strong></td>
+<td style="text-align: left;">70ms (TTFB)</td>
+<td style="text-align: left;">Cartesia Sonic, raw PCM stream over WebSockets</td>
+<td style="text-align: left;">Chunking by complete sentences instead of punctuation clauses</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>5. Audio Egress</strong></td>
+<td style="text-align: left;">50ms</td>
+<td style="text-align: left;">20ms ptime frames, local media servers, μ-law/Opus</td>
+<td style="text-align: left;">Jitter buffer expansion on packet loss</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Total Target</strong></td>
+<td style="text-align: left;"><strong>380ms</strong></td>
+<td style="text-align: left;"><strong>Pipeline parallelism &amp; early cancellation</strong></td>
+<td style="text-align: left;"><strong>Synchronous request cascades (Total &gt; 1,200ms)</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Inbound Customer Support Phone Bot</h2>
+<p>This blueprint accepts incoming telephone calls via Twilio Voice, streams raw bidirectional G.711 μ-law audio over WebSockets to an orchestration server, transcribes using Deepgram Nova-2, streams tokens through OpenAI, synthesizes audio via Cartesia Sonic, and handles barge-in interrupts instantly.</p>
+<h3>Architecture Flow</h3>
+<ol>
+<li>Twilio receives call, requests instructions from the webhook endpoint.</li>
+<li>Webhook responds with TwiML <code>&lt;Connect&gt;&lt;Stream&gt;</code> to establish a full-duplex WebSocket.</li>
+<li>FastAPI server reads 8000Hz μ-law audio frames from Twilio, converts them if necessary, and forwards to Deepgram.</li>
+<li>When Deepgram detects speech completion, the text streams to OpenAI.</li>
+<li>OpenAI text tokens stream directly to Cartesia TTS.</li>
+<li>Cartesia produces 8000Hz μ-law chunks, transmitted over WebSocket to Twilio.</li>
+<li>If Deepgram detects speech while the assistant is speaking, an immediate <code>clear</code> event is dispatched to Twilio, clearing its playout buffer.</li>
+</ol>
+<h3>Production Implementation: <code>inbound_bot.py</code></h3>
+<pre><code class="language-python">import os
+import json
+import base64
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
+import websockets
+import httpx
+
+app = FastAPI()
+
+DEEPGRAM_API_KEY = os.environ[&quot;DEEPGRAM_API_KEY&quot;]
+OPENAI_API_KEY = os.environ[&quot;OPENAI_API_KEY&quot;]
+CARTESIA_API_KEY = os.environ[&quot;CARTESIA_API_KEY&quot;]
+
+SYSTEM_PROMPT = &quot;&quot;&quot;You are a high-speed customer support agent for Apex Utility Services.
+Keep answers under 2 sentences. Never use lists, bullet points, or special characters.
+Answer concisely and immediately help the customer resolve their account or billing issue.&quot;&quot;&quot;
+
+@app.post(&quot;/incoming-call&quot;)
+async def incoming_call_webhook():
+    xml_response = &quot;&quot;&quot;&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+    &lt;Response&gt;
+        &lt;Connect&gt;
+            &lt;Stream url=&quot;wss://YOUR_DOMAIN.com/media-stream&quot; /&gt;
+        &lt;/Connect&gt;
+    &lt;/Response&gt;&quot;&quot;&quot;
+    return Response(content=xml_response, media_type=&quot;application/xml&quot;)
+
+@app.websocket(&quot;/media-stream&quot;)
+async def media_stream_endpoint(websocket: WebSocket):
+    await websocket.accept()
+
+    stream_sid = None
+    deepgram_ws = None
+    cartesia_ws = None
+    llm_task = None
+    tts_task = None
+    is_assistant_speaking = False
+
+    # Establish Deepgram connection (8kHz mulaw input from Twilio)
+    dg_url = (
+        &quot;wss://api.deepgram.com/v1/listen?&quot;
+        &quot;encoding=mulaw&amp;sample_rate=8000&amp;channels=1&quot;
+        &quot;&amp;model=nova-2-phonecall&amp;endpointing=300&amp;interim_results=true&amp;smart_format=true&quot;
+    )
+    deepgram_ws = await websockets.connect(
+        dg_url, extra_headers={&quot;Authorization&quot;: f&quot;Token {DEEPGRAM_API_KEY}&quot;}
+    )
+
+    # Establish Cartesia connection
+    cartesia_url = f&quot;wss://api.cartesia.ai/tts/websocket?api_key={CARTESIA_API_KEY}&amp;cartesia_version=2024-06-10&quot;
+    cartesia_ws = await websockets.connect(cartesia_url)
+
+    async def clear_twilio_buffer():
+        nonlocal is_assistant_speaking
+        if stream_sid and is_assistant_speaking:
+            clear_msg = {&quot;event&quot;: &quot;clear&quot;, &quot;streamSid&quot;: stream_sid}
+            await websocket.send_text(json.dumps(clear_msg))
+            is_assistant_speaking = False
+
+    async def send_tts_to_twilio(cartesia_socket):
+        nonlocal is_assistant_speaking
+        try:
+            async for raw_resp in cartesia_socket:
+                resp = json.loads(raw_resp)
+                if resp.get(&quot;data&quot;):
+                    raw_audio_b64 = resp[&quot;data&quot;]
+                    media_payload = {
+                        &quot;event&quot;: &quot;media&quot;,
+                        &quot;streamSid&quot;: stream_sid,
+                        &quot;media&quot;: {&quot;payload&quot;: raw_audio_b64},
+                    }
+                    await websocket.send_text(json.dumps(media_payload))
+                elif resp.get(&quot;done&quot;):
+                    is_assistant_speaking = False
+        except asyncio.CancelledError:
+            pass
+
+    async def run_llm_and_tts(transcript: str):
+        nonlocal is_assistant_speaking, tts_task
+        is_assistant_speaking = True
+
+        # Initialize Cartesia Stream Context
+        context_id = f&quot;ctx_{asyncio.get_event_loop().time()}&quot;
+
+        tts_task = asyncio.create_task(send_tts_to_twilio(cartesia_ws))
+
+        async with httpx.AsyncClient() as client:
+            headers = {
+                &quot;Authorization&quot;: f&quot;Bearer {OPENAI_API_KEY}&quot;,
+                &quot;Content-Type&quot;: &quot;application/json&quot;,
+            }
+            body = {
+                &quot;model&quot;: &quot;gpt-4o-mini&quot;,
+                &quot;stream&quot;: True,
+                &quot;messages&quot;: [
+                    {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: SYSTEM_PROMPT},
+                    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: transcript},
+                ],
+            }
+
+            clause_buffer = &quot;&quot;
+            async with client.stream(
+                &quot;POST&quot;, &quot;https://api.openai.com/v1/chat/completions&quot;, headers=headers, json=body
+            ) as response:
+                async for line in response.aiter_lines():
+                    if not line.startswith(&quot;data: &quot;) or line == &quot;data: [DONE]&quot;:
+                        continue
+
+                    data = json.loads(line[6:])
+                    delta = data[&quot;choices&quot;][0][&quot;delta&quot;].get(&quot;content&quot;, &quot;&quot;)
+                    clause_buffer += delta
+
+                    # Split by speech delimiters to pipeline TTS without waiting for full response
+                    if any(punct in delta for punct in [&quot;.&quot;, &quot;,&quot;, &quot;!&quot;, &quot;?&quot;, &quot;\n&quot;]):
+                        cartesia_req = {
+                            &quot;context_id&quot;: context_id,
+                            &quot;model_id&quot;: &quot;sonic-english&quot;,
+                            &quot;transcript&quot;: clause_buffer,
+                            &quot;voice&quot;: {
+                                &quot;mode&quot;: &quot;id&quot;,
+                                &quot;id&quot;: &quot;a0e99841-438c-4a64-b679-ae501e7d6091&quot;,  # Neutral Customer Support
+                            },
+                            &quot;output_format&quot;: {
+                                &quot;container&quot;: &quot;raw&quot;,
+                                &quot;encoding&quot;: &quot;pcm_mulaw&quot;,
+                                &quot;sample_rate&quot;: 8000,
+                            },
+                            &quot;continue&quot;: True,
+                        }
+                        await cartesia_ws.send(json.dumps(cartesia_req))
+                        clause_buffer = &quot;&quot;
+
+            # Flush remaining tokens
+            if clause_buffer.strip():
+                final_req = {
+                    &quot;context_id&quot;: context_id,
+                    &quot;model_id&quot;: &quot;sonic-english&quot;,
+                    &quot;transcript&quot;: clause_buffer,
+                    &quot;voice&quot;: {
+                        &quot;mode&quot;: &quot;id&quot;,
+                        &quot;id&quot;: &quot;a0e99841-438c-4a64-b679-ae501e7d6091&quot;,
+                    },
+                    &quot;output_format&quot;: {
+                        &quot;container&quot;: &quot;raw&quot;,
+                        &quot;encoding&quot;: &quot;pcm_mulaw&quot;,
+                        &quot;sample_rate&quot;: 8000,
+                    },
+                    &quot;continue&quot;: False,
+                }
+                await cartesia_ws.send(json.dumps(final_req))
+
+    async def handle_deepgram_transcripts():
+        nonlocal llm_task
+        try:
+            async for raw_message in deepgram_ws:
+                message = json.loads(raw_message)
+                if not message.get(&quot;is_final&quot;):
+                    # Check for barge-in: If user speaks interim words while assistant is active
+                    if message.get(&quot;channel&quot;, {}).get(&quot;alternatives&quot;, [{}])[0].get(&quot;transcript&quot;, &quot;&quot;):
+                        if is_assistant_speaking:
+                            await clear_twilio_buffer()
+                            if llm_task and not llm_task.done():
+                                llm_task.cancel()
+                            if tts_task and not tts_task.done():
+                                tts_task.cancel()
+                    continue
+
+                transcript = message[&quot;channel&quot;][&quot;alternatives&quot;][0][&quot;transcript&quot;].strip()
+                if transcript:
+                    if llm_task and not llm_task.done():
+                        llm_task.cancel()
+                    if tts_task and not tts_task.done():
+                        tts_task.cancel()
+                    await clear_twilio_buffer()
+                    llm_task = asyncio.create_task(run_llm_and_tts(transcript))
+        except asyncio.CancelledError:
+            pass
+
+    dg_task = asyncio.create_task(handle_deepgram_transcripts())
+
+    try:
+        while True:
+            raw_msg = await websocket.receive_text()
+            data = json.loads(raw_msg)
+            event_type = data.get(&quot;event&quot;)
+
+            if event_type == &quot;start&quot;:
+                stream_sid = data[&quot;start&quot;][&quot;streamSid&quot;]
+            elif event_type == &quot;media&quot;:
+                payload = data[&quot;media&quot;][&quot;payload&quot;]
+                audio_bytes = base64.b64decode(payload)
+                await deepgram_ws.send(audio_bytes)
+            elif event_type == &quot;stop&quot;:
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for task in [dg_task, llm_task, tts_task]:
+            if task and not task.done():
+                task.cancel()
+        await deepgram_ws.close()
+        await cartesia_ws.close()
+</code></pre>
+<hr />
+<h2>3. Outbound Appointment Scheduler</h2>
+<p>The outbound appointment scheduler utilizes the LiveKit Agents framework combined with Twilio SIP Trunking to initiate calls and interact with a booking calendar API via structured Tool Calling.</p>
+<pre><code>┌────────────────┐      SIP Trunk       ┌──────────────────┐
+│  Twilio Voice  │ ◄──────────────────► │  LiveKit Server  │
+└────────────────┘                      └─────────┬────────┘
+                                                  │ WebRTC Audio
+                                                  ▼
+                                        ┌──────────────────┐
+                                        │  Agent Worker    │
+                                        │ (livekit-agents) │
+                                        └─────────┬────────┘
+                                                  │ Function Calls
+                                                  ▼
+                                        ┌──────────────────┐
+                                        │   Cal.com API    │
+                                        └──────────────────┘
+</code></pre>
+<h3>Production Implementation: <code>outbound_agent.py</code></h3>
+<pre><code class="language-python">import os
+import json
+import httpx
+from datetime import datetime, timezone
+from livekit import agents
+from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents.pipeline import VoicePipelineAgent
+from livekit.plugins import deepgram, openai, cartesia, silero
+
+CALCOM_API_KEY = os.environ[&quot;CALCOM_API_KEY&quot;]
+CALCOM_EVENT_TYPE_ID = int(os.environ[&quot;CALCOM_EVENT_TYPE_ID&quot;])
+
+def fetch_available_slots(start_date: str, end_date: str) -&gt; str:
+    &quot;&quot;&quot;Fetch open calendar booking slots from Cal.com between two ISO 8601 timestamps.&quot;&quot;&quot;
+    url = &quot;https://api.cal.com/v1/slots&quot;
+    params = {
+        &quot;apiKey&quot;: CALCOM_API_KEY,
+        &quot;eventTypeId&quot;: CALCOM_EVENT_TYPE_ID,
+        &quot;startTime&quot;: start_date,
+        &quot;endTime&quot;: end_date,
+    }
+    with httpx.Client() as client:
+        res = client.get(url, params=params)
+        if res.status_code != 200:
+            return json.dumps({&quot;error&quot;: f&quot;Failed fetching slots: {res.text}&quot;})
+        slots = res.json().get(&quot;slots&quot;, {})
+        return json.dumps({&quot;available_slots&quot;: slots})
+
+def book_appointment_slot(name: str, email: str, start_time_iso: str) -&gt; str:
+    &quot;&quot;&quot;Book an appointment on Cal.com given name, email, and confirmed start time.&quot;&quot;&quot;
+    url = f&quot;https://api.cal.com/v1/bookings?apiKey={CALCOM_API_KEY}&quot;
+    payload = {
+        &quot;eventTypeId&quot;: CALCOM_EVENT_TYPE_ID,
+        &quot;start&quot;: start_time_iso,
+        &quot;name&quot;: name,
+        &quot;email&quot;: email,
+        &quot;timeZone&quot;: &quot;America/New_York&quot;,
+        &quot;language&quot;: &quot;en&quot;,
+        &quot;metadata&quot;: {&quot;source&quot;: &quot;ai_voice_scheduler&quot;},
+    }
+    with httpx.Client() as client:
+        res = client.post(url, json=payload)
+        if res.status_code in [200, 201]:
+            booking_data = res.json().get(&quot;booking&quot;, {})
+            return json.dumps({
+                &quot;status&quot;: &quot;confirmed&quot;,
+                &quot;id&quot;: booking_data.get(&quot;id&quot;),
+                &quot;startTime&quot;: booking_data.get(&quot;startTime&quot;),
+            })
+        return json.dumps({&quot;status&quot;: &quot;failed&quot;, &quot;detail&quot;: res.text})
+
+async def entrypoint(ctx: JobContext):
+    await ctx.connect()
+
+    # Define function schemas for LLM tool invocation
+    tools = [
+        {
+            &quot;type&quot;: &quot;function&quot;,
+            &quot;function&quot;: {
+                &quot;name&quot;: &quot;fetch_available_slots&quot;,
+                &quot;description&quot;: &quot;Get available booking slots between two UTC ISO 8601 dates.&quot;,
+                &quot;parameters&quot;: {
+                    &quot;type&quot;: &quot;object&quot;,
+                    &quot;properties&quot;: {
+                        &quot;start_date&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;ISO 8601 start date-time (e.g. 2025-04-01T00:00:00Z)&quot;},
+                        &quot;end_date&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;ISO 8601 end date-time (e.g. 2025-04-02T23:59:59Z)&quot;},
+                    },
+                    &quot;required&quot;: [&quot;start_date&quot;, &quot;end_date&quot;],
+                },
+            },
+        },
+        {
+            &quot;type&quot;: &quot;function&quot;,
+            &quot;function&quot;: {
+                &quot;name&quot;: &quot;book_appointment_slot&quot;,
+                &quot;description&quot;: &quot;Finalize an appointment booking once the client explicitly confirms the slot.&quot;,
+                &quot;parameters&quot;: {
+                    &quot;type&quot;: &quot;object&quot;,
+                    &quot;properties&quot;: {
+                        &quot;name&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Full legal name of the user&quot;},
+                        &quot;email&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;Email address for calendar invitation&quot;},
+                        &quot;start_time_iso&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;ISO 8601 formatted start time for booking&quot;},
+                    },
+                    &quot;required&quot;: [&quot;name&quot;, &quot;email&quot;, &quot;start_time_iso&quot;],
+                },
+            },
+        },
+    ]
+
+    agent = VoicePipelineAgent(
+        vad=silero.VAD.load(min_speech_duration=0.1, min_silence_duration=0.3),
+        stt=deepgram.STT(model=&quot;nova-2-general&quot;, language=&quot;en&quot;),
+        llm=openai.LLM(
+            model=&quot;gpt-4o-mini&quot;,
+            temperature=0.2,
+        ),
+        tts=cartesia.TTS(
+            model=&quot;sonic-english&quot;,
+            voice=&quot;79a125e8-cd45-4c13-8a67-188112f4dd22&quot;, # Professional Sales Persona
+        ),
+        chat_ctx=openai.ChatContext(
+            messages=[
+                {
+                    &quot;role&quot;: &quot;system&quot;,
+                    &quot;content&quot;: (
+                        f&quot;Current Date: {datetime.now(timezone.utc).isoformat()}. &quot;
+                        &quot;You are Sarah, an outbound booking assistant for Precision Dental. &quot;
+                        &quot;Your goal is to reschedule the user's missed dental examination. &quot;
+                        &quot;Be concise, natural, and never invent availability. Always invoke fetch_available_slots. &quot;
+                        &quot;Once a time is selected, repeat it back and verify their email before booking.&quot;
+                    ),
+                }
+            ]
+        ),
+    )
+
+    # Attach tool executors
+    @agent.llm.on(&quot;tool_call&quot;)
+    def on_tool_call(tool_call, callback):
+        name = tool_call.function.name
+        args = json.loads(tool_call.function.arguments)
+
+        if name == &quot;fetch_available_slots&quot;:
+            res = fetch_available_slots(args[&quot;start_date&quot;], args[&quot;end_date&quot;])
+            callback(res)
+        elif name == &quot;book_appointment_slot&quot;:
+            res = book_appointment_slot(args[&quot;name&quot;], args[&quot;email&quot;], args[&quot;start_time_iso&quot;])
+            callback(res)
+
+    agent.start(ctx.room)
+    await agent.say(&quot;Hello, this is Sarah from Precision Dental calling to follow up on your six-month exam. Do you have a quick moment to look at scheduling an appointment?&quot;, allow_interruptions=True)
+
+if __name__ == &quot;__main__&quot;:
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+</code></pre>
+<h3>Dispatching Outbound Calls to Twilio via LiveKit SIP API: <code>dispatch_caller.py</code></h3>
+<pre><code class="language-python">import os
+import asyncio
+from livekit import api
+
+async def make_outbound_call(destination_number: str):
+    livekit_url = os.environ[&quot;LIVEKIT_URL&quot;]
+    api_key = os.environ[&quot;LIVEKIT_API_KEY&quot;]
+    api_secret = os.environ[&quot;LIVEKIT_API_SECRET&quot;]
+    sip_trunk_id = os.environ[&quot;LIVEKIT_SIP_TRUNK_ID&quot;]
+
+    lkapi = api.LiveKitAPI(livekit_url, api_key, api_secret)
+
+    room_name = f&quot;outbound-{int(asyncio.get_event_loop().time())}&quot;
+
+    # 1. Create Room explicitly
+    await lkapi.room.create_room(api.CreateRoomRequest(name=room_name))
+
+    # 2. Trigger SIP Outbound Participant
+    sip_request = api.CreateSIPParticipantRequest(
+        sip_trunk_id=sip_trunk_id,
+        sip_call_to=destination_number,
+        room_name=room_name,
+        participant_identity=f&quot;phone_{destination_number}&quot;,
+        participant_name=&quot;Outbound Lead&quot;,
+    )
+
+    participant = await lkapi.sip.create_sip_participant(sip_request)
+    print(f&quot;SIP Call dispatched: ID {participant.participant_id} to {destination_number}&quot;)
+    await lkapi.aclose()
+
+if __name__ == &quot;__main__&quot;:
+    asyncio.run(make_outbound_call(&quot;+14155552671&quot;))
+</code></pre>
+<hr />
+<h2>4. Multilingual Live Translation Stream</h2>
+<p>The multilingual translation bridge allows two participants speaking different languages (e.g., Spanish and English) to converse in real time. It transcribes the source language, translates the stream, and synthesizes the translation in the target language while maintaining a voice signature.</p>
+<pre><code>[ User A (Spanish) ] 
+       │
+       ▼  Audio Stream 1 (es)
+[ Deepgram Nova-2 (es) ]
+       │
+       ▼  Interim &amp; Final Transcripts
+[ GPT-4o-mini Streaming Translation Matrix ]
+       │
+       ▼  English Stream
+[ Cartesia Sonic (Voice Clone: User A) ] 
+       │
+       ▼  Synthesized Voice (en)
+[ User B (English) ]
+</code></pre>
+<h3>Production Implementation: <code>translation_bridge.py</code></h3>
+<pre><code class="language-python">import os
+import json
+import asyncio
+import websockets
+from livekit import agents
+from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents.pipeline import VoicePipelineAgent
+from livekit.plugins import cartesia, deepgram, openai, silero
+
+OPENAI_API_KEY = os.environ[&quot;OPENAI_API_KEY&quot;]
+CARTESIA_API_KEY = os.environ[&quot;CARTESIA_API_KEY&quot;]
+
+TRANSLATION_SYSTEM_PROMPT = &quot;&quot;&quot;You are an instantaneous voice-to-voice machine translator.
+Translate Spanish speech into conversational, idiomatic English.
+Rules:
+1. Output ONLY the English translation.
+2. Never explain, apologize, or add commentary.
+3. Preserve emotional tone, hesitation markers, and conversational register.
+4. Translate idioms to natural equivalents rather than literal translations.&quot;&quot;&quot;
+
+class DynamicTranslationStream:
+    def __init__(self, target_sink, cartesia_voice_id: str):
+        self.target_sink = target_sink
+        self.voice_id = cartesia_voice_id
+        self.cartesia_ws = None
+        self.context_id = &quot;translation_ctx&quot;
+
+    async def initialize(self):
+        url = f&quot;wss://api.cartesia.ai/tts/websocket?api_key={CARTESIA_API_KEY}&amp;cartesia_version=2024-06-10&quot;
+        self.cartesia_ws = await websockets.connect(url)
+        asyncio.create_task(self._process_tts_returns())
+
+    async def _process_tts_returns(self):
+        try:
+            async for raw in self.cartesia_ws:
+                data = json.loads(raw)
+                if data.get(&quot;data&quot;):
+                    pcm_bytes = data[&quot;data&quot;]
+                    # Forward PCM directly to target room audio track
+                    await self.target_sink.write_frame(pcm_bytes)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+
+    async def translate_and_synthesize(self, spanish_text: str):
+        # OpenAI Streaming Translation
+        headers = {
+            &quot;Authorization&quot;: f&quot;Bearer {OPENAI_API_KEY}&quot;,
+            &quot;Content-Type&quot;: &quot;application/json&quot;,
+        }
+        body = {
+            &quot;model&quot;: &quot;gpt-4o-mini&quot;,
+            &quot;temperature&quot;: 0.0,
+            &quot;stream&quot;: True,
+            &quot;messages&quot;: [
+                {&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: TRANSLATION_SYSTEM_PROMPT},
+                {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: spanish_text},
+            ],
+        }
+
+        async with httpx.AsyncClient() as client:
+            async with client.stream(&quot;POST&quot;, &quot;https://api.openai.com/v1/chat/completions&quot;, headers=headers, json=body) as resp:
+                buffer = &quot;&quot;
+                async for line in resp.aiter_lines():
+                    if not line.startswith(&quot;data: &quot;) or line == &quot;data: [DONE]&quot;:
+                        continue
+                    payload = json.loads(line[6:])
+                    delta = payload[&quot;choices&quot;][0][&quot;delta&quot;].get(&quot;content&quot;, &quot;&quot;)
+                    buffer += delta
+
+                    if any(c in delta for c in [&quot;,&quot;, &quot;.&quot;, &quot;?&quot;, &quot;!&quot;]):
+                        req = {
+                            &quot;context_id&quot;: self.context_id,
+                            &quot;model_id&quot;: &quot;sonic-multilingual&quot;,
+                            &quot;transcript&quot;: buffer,
+                            &quot;voice&quot;: {&quot;mode&quot;: &quot;id&quot;, &quot;id&quot;: self.voice_id},
+                            &quot;output_format&quot;: {&quot;container&quot;: &quot;raw&quot;, &quot;encoding&quot;: &quot;pcm_s16le&quot;, &quot;sample_rate&quot;: 24000},
+                            &quot;continue&quot;: True,
+                        }
+                        await self.cartesia_ws.send(json.dumps(req))
+                        buffer = &quot;&quot;
+
+                if buffer.strip():
+                    req = {
+                        &quot;context_id&quot;: self.context_id,
+                        &quot;model_id&quot;: &quot;sonic-multilingual&quot;,
+                        &quot;transcript&quot;: buffer,
+                        &quot;voice&quot;: {&quot;mode&quot;: &quot;id&quot;, &quot;id&quot;: self.voice_id},
+                        &quot;output_format&quot;: {&quot;container&quot;: &quot;raw&quot;, &quot;encoding&quot;: &quot;pcm_s16le&quot;, &quot;sample_rate&quot;: 24000},
+                        &quot;continue&quot;: False,
+                    }
+                    await self.cartesia_ws.send(json.dumps(req))
+
+async def entrypoint(ctx: JobContext):
+    await ctx.connect()
+
+    # User A: Spanish Inbound Channel
+    # User B: English Inbound Channel
+    stt_spanish = deepgram.STT(model=&quot;nova-2-general&quot;, language=&quot;es&quot;)
+
+    # Dynamic listener to identify remote participants
+    @ctx.room.on(&quot;participant_connected&quot;)
+    def on_participant(participant):
+        print(f&quot;Translator connected to: {participant.identity}&quot;)
+
+    # Set up pipeline agent for the Spanish -&gt; English leg
+    agent = VoicePipelineAgent(
+        vad=silero.VAD.load(),
+        stt=stt_spanish,
+        llm=openai.LLM(model=&quot;gpt-4o-mini&quot;, temperature=0.0),
+        tts=cartesia.TTS(model=&quot;sonic-multilingual&quot;, voice=&quot;248be419-c632-4f23-afd1-0799497a9f35&quot;),
+        chat_ctx=openai.ChatContext(
+            messages=[{&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: TRANSLATION_SYSTEM_PROMPT}]
+        ),
+    )
+    agent.start(ctx.room)
+
+if __name__ == &quot;__main__&quot;:
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+</code></pre>
+<hr />
+<h2>5. Browser-Based WebRTC Voice Copilot</h2>
+<p>WebRTC enables browser clients to bypass standard HTTP streaming overhead, executing full-duplex conversations with client-side UI telemetry and sub-300ms execution.</p>
+<pre><code> Browser Client (Microphone)
+       │
+       ▼ Opus Audio over WebRTC Data/Media Tracks
+ LiveKit Cloud / Edge Mesh
+       │
+       ▼ Local WebRTC Peer Connection
+ Voice Agent (Server Worker)
+       │
+       ▼ Client Tools &amp; Real-time Visualizer Hooks
+ WebRTC Data Channel Event (e.g. Canvas Drawing / Route Change)
+</code></pre>
+<h3>Server Token Generation: <code>server.js</code> (Node/Express)</h3>
+<p>```javascript
+import express from 'express';
+import { AccessToken } from 'livekit-server-sdk';
+import dotenv from 'dotenv';
+dotenv.config();</p>
+<p>const app = express();
+app.use(express.json());</p>
+<p>app.post('/api/get-join-token', async (req, res) =&gt; {
+  const { roomName, identity } = req.body;</p>
+<p>if (!roomName || !identity) {
+    return res.status(400).json({ error: 'roomName and identity required' });
+  }</p>
+<p>const at = new AccessToken(
+    process.env.LIVEKIT_API_</p>
+</body>
+</html>

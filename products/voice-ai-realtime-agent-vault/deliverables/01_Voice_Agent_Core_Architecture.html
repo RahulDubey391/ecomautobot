@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Voice AI & Realtime Agent Production Vault: 50+ WebRTC Blueprints, Twilio Pipelines & Low-Latency Prompts</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Voice AI System Architecture &amp; Latency Engineering</h1>
+<p>To achieve human-parity conversational voice AI, your system must operate with an end-to-end acoustic-to-acoustic latency below <strong>400 milliseconds</strong>. Human conversation exhibits a natural turn-taking gap between 200ms and 300ms. Once latency exceeds 500ms, users begin talking over the agent, causing collision loops, broken turn-taking states, and rapid conversational breakdown.</p>
+<p>This module details the low-latency network layers, packet serialization formats, Voice Activity Detection (VAD) mechanics, and jitter buffering strategies required to sustain conversational real-time voice infrastructure at scale.</p>
+<hr />
+<h2>1. Transport Protocols Compared: WebRTC vs. WebSockets vs. SIP/RTP</h2>
+<p>Every conversational pipeline begins with audio transport across the public internet. Choosing the wrong protocol at the ingress boundary introduces unavoidable latency penalties before your inference models process a single byte.</p>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+|                                  PROTOCOL STACK &amp; TOPOLOGY COMPARISON                             |
++---------------------------------------------------------------------------------------------------+
+| 1. WebRTC Data/Media Path (Browser / Native Mobile)                                              |
+|    Client (Microphone) ---&gt; SRTP (UDP) via ICE/STUN/TURN ---&gt; Media Gateway / SFU ---&gt; Worker     |
+|    * Latency: 15-40ms | Transport: UDP | Framing: 20ms Opus | Handshake: DTLS-SRTP (3-way)        |
++---------------------------------------------------------------------------------------------------+
+| 2. Telephony SIP Trunking (Twilio / Telnyx / Carrier Ingress)                                     |
+|    Telco Carrier ---&gt; SIP INVITE (UDP/TLS) ---&gt; RTP / G.711u (UDP) ---&gt; Media Server / AudioHook    |
+|    * Latency: 20-60ms | Transport: UDP | Framing: 20ms u-law | Handshake: SIP / SDP exchange     |
++---------------------------------------------------------------------------------------------------+
+| 3. Telephony Media Streams (Twilio / Telnyx WebSocket Bridges)                                    |
+|    Telco Carrier ---&gt; Carrier Media Gateway ---&gt; JSON Base64/Binary over TLS (TCP) ---&gt; App Server|
+|    * Latency: 60-150ms | Transport: TCP | Framing: 20ms chunk | Handshake: TCP + TLS + HTTP WS    |
++---------------------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Architectural Trade-Off Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Engineering Metric</th>
+<th style="text-align: left;">WebRTC (Audio Stream)</th>
+<th style="text-align: left;">WebSockets (Binary / Base64)</th>
+<th style="text-align: left;">SIP / Direct RTP Trunking</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Transport Layer</strong></td>
+<td style="text-align: left;">UDP (via ICE / DTLS / SRTP)</td>
+<td style="text-align: left;">TCP (TLS Encrypted)</td>
+<td style="text-align: left;">UDP (Plain RTP or SRTP)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Ingress Latency</strong></td>
+<td style="text-align: left;"><strong>10ms – 40ms</strong></td>
+<td style="text-align: left;"><strong>50ms – 180ms</strong></td>
+<td style="text-align: left;"><strong>15ms – 50ms</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Head-of-Line Blocking</strong></td>
+<td style="text-align: left;"><strong>None</strong> (Dropped packets dropped)</td>
+<td style="text-align: left;"><strong>Guaranteed</strong> (TCP retries stall stream)</td>
+<td style="text-align: left;"><strong>None</strong> (Out-of-order drop policy)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Packet Overhead</strong></td>
+<td style="text-align: left;">Minimal (RTP header: 12 bytes)</td>
+<td style="text-align: left;">High (TCP 20-60B + TLS 29B + WS 2-10B + Base64 33%)</td>
+<td style="text-align: left;">Lowest (IP + UDP + RTP = 40 bytes)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>NAT Traversal</strong></td>
+<td style="text-align: left;">Built-in via ICE / STUN / TURN</td>
+<td style="text-align: left;">Standard outbound 443/TCP egress</td>
+<td style="text-align: left;">Requires SBC (Session Border Controller)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Native Codecs</strong></td>
+<td style="text-align: left;">Opus (48kHz, dynamic bitrate)</td>
+<td style="text-align: left;">Any (commonly 8kHz G.711 or 16k PCM)</td>
+<td style="text-align: left;">G.711u, G.711a, G.729, Opus (rare)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Production Target</strong></td>
+<td style="text-align: left;">Web, iOS, Android, custom hardware</td>
+<td style="text-align: left;">Twilio/Telnyx bridge backends</td>
+<td style="text-align: left;">Direct carrier interconnects (Kamailio, FreeSWITCH)</td>
+</tr>
+</tbody>
+</table>
+<h3>Engineering Verdict &amp; Topology Selection</h3>
+<ol>
+<li><strong>Browser / Mobile Native Agents:</strong> Standardize on <strong>WebRTC</strong>. WebSockets over TCP incur head-of-line blocking under packet loss. If a packet drops on a cellular connection, TCP halts all subsequent packets until retransmission completes, producing an audible audio stutter of 200ms–800ms. WebRTC uses UDP; dropped frames are simply interpolated via Opus Packet Loss Concealment (PLC).</li>
+<li><strong>Telephony via CPaaS (Twilio, Telnyx, Vonage):</strong> Use <strong>Raw Binary WebSockets</strong> or <strong>Direct SIP Ingress</strong>. If using Twilio Media Streams, bypass JSON-Base64 encoding by using custom bidirectional Media Streams with raw binary payloads where supported, or terminate SIP directly into an open-source media gateway (LiveKit SIP, FreeSWITCH, or Asterisk) to strip the carrier RTP and convert it directly to an internal WebRTC/UDP track.</li>
+</ol>
+<hr />
+<h2>2. Audio Packet Streaming, Codecs, and Framing</h2>
+<p>Voice pipelines must process audio as continuous 20ms chunks. Audio hardware operates on sample frames. Sending chunks larger than 20ms introduces pipeline latency; sending chunks smaller than 10ms increases network overhead due to IP/UDP/RTP packet headers.</p>
+<h3>Audio Math Reference Table</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Codec</th>
+<th style="text-align: left;">Sample Rate</th>
+<th style="text-align: left;">Bit Depth</th>
+<th style="text-align: left;">Channels</th>
+<th style="text-align: left;">Frame Duration</th>
+<th style="text-align: left;">Samples per Frame</th>
+<th style="text-align: left;">Raw Payload Size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>PCM16 (Linear)</strong></td>
+<td style="text-align: left;">8,000 Hz</td>
+<td style="text-align: left;">16-bit (2 B)</td>
+<td style="text-align: left;">1 (Mono)</td>
+<td style="text-align: left;">20 ms</td>
+<td style="text-align: left;">160</td>
+<td style="text-align: left;">320 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>PCM16 (Linear)</strong></td>
+<td style="text-align: left;">16,000 Hz</td>
+<td style="text-align: left;">16-bit (2 B)</td>
+<td style="text-align: left;">1 (Mono)</td>
+<td style="text-align: left;">20 ms</td>
+<td style="text-align: left;">320</td>
+<td style="text-align: left;">640 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>PCM16 (Linear)</strong></td>
+<td style="text-align: left;">24,000 Hz</td>
+<td style="text-align: left;">16-bit (2 B)</td>
+<td style="text-align: left;">1 (Mono)</td>
+<td style="text-align: left;">20 ms</td>
+<td style="text-align: left;">480</td>
+<td style="text-align: left;">960 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>G.711 μ-law (PCMU)</strong></td>
+<td style="text-align: left;">8,000 Hz</td>
+<td style="text-align: left;">8-bit (1 B)</td>
+<td style="text-align: left;">1 (Mono)</td>
+<td style="text-align: left;">20 ms</td>
+<td style="text-align: left;">160</td>
+<td style="text-align: left;">160 Bytes</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Opus (Voice Profile)</strong></td>
+<td style="text-align: left;">48,000 Hz</td>
+<td style="text-align: left;">Compressed</td>
+<td style="text-align: left;">1 (Mono)</td>
+<td style="text-align: left;">20 ms</td>
+<td style="text-align: left;">960</td>
+<td style="text-align: left;">Variable (40–80 Bytes)</td>
+</tr>
+</tbody>
+</table>
+<h3>Frame Size Calculation Formula</h3>
+<p>$$\text{Bytes per Frame} = \text{Sample Rate (Hz)} \times \left(\frac{\text{Bit Depth}}{8}\right) \times \text{Channels} \times \left(\frac{\text{Frame Duration (ms)}}{1000}\right)$$</p>
+<p><em>Example for 16kHz, 16-bit Mono Linear PCM at 20ms:</em>
+$$16000 \times 2 \times 1 \times 0.020 = 640 \text{ Bytes}$$</p>
+<h3>Production Opus Configuration Profile</h3>
+<p>When using WebRTC or native Opus encoding, pass the following parameters to the Opus encoder to optimize strictly for voice-over-IP:</p>
+<pre><code class="language-ini">application=voip
+maxaveragebitrate=24000
+cbr=true
+usedtx=false
+useinbandfec=true
+complexity=4
+maxplaybackrate=16000
+frame_size=20
+</code></pre>
+<ul>
+<li><strong><code>application=voip</code></strong>: Bias codec toward the SILK human speech model rather than the CELT musical model.</li>
+<li><strong><code>cbr=true</code> (Constant Bitrate)</strong>: Eliminates bit-budget fluctuation and prevents jitter spikes across constrained network hops.</li>
+<li><strong><code>useinbandfec=true</code> (Forward Error Correction)</strong>: Embeds lower-resolution redundant data from the preceding frame into the current frame. Under up to 20% random packet loss, the decoder reconstructs missing speech without requesting packet retransmission.</li>
+<li><strong><code>usedtx=false</code> (Discontinuous Transmission)</strong>: Disable DTX. While DTX saves bandwidth during silence, it introduces a 20–40ms activation penalty when speech resumes, frequently cutting off the initial consonant of the first word.</li>
+</ul>
+<hr />
+<h2>3. The Sub-400ms End-to-End Latency Budget</h2>
+<p>To orchestrate real-time interactions, you must measure acoustic-to-acoustic latency: the time elapsed from the exact moment the speaker's vocal cords stop moving until the speaker's ear receives the first acoustic wave of the agent's response.</p>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+|                        SUB-400ms LATENCY BUDGET (CASCADED STT-LLM-TTS PIPELINE)                   |
++---------------------------------------------------------------------------------------------------+
+| [0ms]    Speaker Stops Talking                                                                    |
+|  |--- 20ms   : Client Audio Hardware Ingress Framing (20ms buffer)                                |
+|  |--- 25ms   : Network Ingress (WebRTC SRTP Transport to Cloud Edge)                             |
+|  |--- 80ms   : Voice Activity Detection (VAD) Speech End Detection (Minimum Silence Window)       |
+| [125ms]  Turn-End Finalized -&gt; Dispatch Audio Buffer to STT Engine                               |
+|  |--- 75ms   : Streaming STT Final Transcript Emission (Deepgram Nova-2 / FastConformer)          |
+| [200ms]  Text Emitted -&gt; Stream First Token Request to LLM                                        |
+|  |--- 90ms   : LLM Time-To-First-Token (TTFT) (Groq Llama-3-70B / Cerebras / vLLM Stream)        |
+| [290ms]  First 3 Token Sentence Boundary Reached -&gt; Dispatch Text to TTS Engine                   |
+|  |--- 55ms   : TTS Time-to-First-Audio-Chunk (Cartesia Sonic / ElevenLabs Turbo v2.5)             |
+| [345ms]  First Audio Chunk Generated (200ms Audio Slice) -&gt; Network Egress Buffer                 |
+|  |--- 25ms   : Network Egress (SRTP back to Client Device)                                        |
+|  |--- 20ms   : Client Audio Hardware Egress Jitter Buffer Playout                                 |
+| [390ms]  Sound Waves Emit from Speaker's Earpiece                                                 |
++---------------------------------------------------------------------------------------------------+
+| TOTAL ACCUMULATED LATENCY: 390 MILLISECONDS                                                       |
++---------------------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Cascade vs. Direct Speech-to-Speech (S2S) Architecture</h3>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+| CONFIGURATION A: Cascaded Pipeline (STT -&gt; LLM -&gt; TTS)                                           |
+| Audio In -&gt; [STT] -&gt; Text Tokens -&gt; [LLM] -&gt; Text Tokens -&gt; [TTS] -&gt; Audio Out                    |
+| Pros: Deterministic guardrails, tool calls, complete provider modularity, low token pricing.      |
+| Target Budget: 350ms - 420ms                                                                      |
++---------------------------------------------------------------------------------------------------+
+| CONFIGURATION B: Native Multi-Modal / Speech-to-Speech (e.g., OpenAI Realtime / Gemini Live)       |
+| Audio In -------------------------&gt; [Native Multi-Modal S2S] -------------------------&gt; Audio Out |
+| Pros: Retains emotion, paralinguistic tone, lower architectural hops.                             |
+| Cons: High cost, complex prompt injection guardrails, vendor lock-in.                             |
+| Target Budget: 280ms - 380ms                                                                      |
++---------------------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Detailed Component Budget Constraints</h3>
+<pre><code>+-----------------------------------+-------------------+--------------------+
+| Pipeline Stage                    | Target Execution  | Maximum Timeout    |
++-----------------------------------+-------------------+--------------------+
+| 1. Ingress Network + Framing      | 45 ms             | 65 ms              |
+| 2. Silero VAD Turn-End Commit     | 80 ms             | 120 ms             |
+| 3. Streaming STT Finalization     | 75 ms             | 110 ms             |
+| 4. LLM Time to First Token (TTFT) | 90 ms             | 140 ms             |
+| 5. TTS Time to First Chunk (TTFB) | 55 ms             | 90 ms              |
+| 6. Egress Network + Jitter Buffer | 45 ms             | 65 ms              |
++-----------------------------------+-------------------+--------------------+
+| TOTAL SYSTEM LATENCY              | 390 ms            | 590 ms (Degraded)  |
++-----------------------------------+-------------------+--------------------+
+</code></pre>
+<hr />
+<h2>4. Voice Activity Detection (VAD) &amp; Barge-In Mechanics</h2>
+<p>The critical failure point in voice agents is inaccurate Voice Activity Detection (VAD). If the agent takes 400ms of silence to determine that the user has stopped speaking, you have consumed the entire latency budget on silence detection alone.</p>
+<h3>Turning-Point Parameters (Silero VAD)</h3>
+<ul>
+<li><strong>Speech Threshold (<code>0.45 - 0.55</code>)</strong>: Probability threshold above which an audio frame is classified as voice. Setting this too low causes background noise or breathing to register as active speech.</li>
+<li><strong>Minimum Speech Duration (<code>60ms - 100ms</code>)</strong>: Audio spikes below this length (coughs, mic pops, clicks) are discarded.</li>
+<li><strong>Negative Speech Silence Duration (<code>80ms - 120ms</code>)</strong>: The duration of uninterrupted silence required before the VAD officially triggers a <code>TURN_COMPLETE</code> event. Telephony typically requires 150ms–200ms due to line echo; WebRTC environments with acoustic echo cancellation (AEC) can safely operate at 80ms–100ms.</li>
+<li><strong>Pre-Speech Buffer (<code>120ms</code>)</strong>: A circular audio buffer that prepends audio immediately preceding the trigger point to prevent clipping the first syllable.</li>
+</ul>
+<pre><code>       User Speaking               Silence Window           Agent Pipeline Dispatched
+[ Audio Energy Detected ] ---&gt; [ 80ms No Voice Energy ] ---&gt; [ EMIT: TURN_COMPLETE ]
+                                       |
+                   If speech resumes at 60ms:
+                   [ Reset Silence Timer ] ---&gt; Continue Ingress (No Interruption)
+</code></pre>
+<h3>Barge-In &amp; Interruption State Machine</h3>
+<p>When an agent is actively streaming synthesized speech to the user, the ingress stream must monitor for user voice input. The moment user speech is confirmed, the system must trigger an immediate cancellation cascade:</p>
+<pre><code>[Agent Speaking: Audio Streaming Outbound]
+                     │
+                     ▼
+      User Begins Speaking: &quot;Wait, stop...&quot;
+                     │
+                     ▼
+[Ingress VAD: Speech Confirmed (&gt;60ms, P&gt;0.5)]
+                     │
+         ┌───────────┴───────────┐
+         ▼                       ▼
+1. Abort Controller:    2. Drain Network:        3. Clear Buffers:
+   - Cancel LLM Stream     - Send RTP Clear Packet  - Purge Client Playout
+   - Halt TTS Generation   - Flush Socket Queue     - Reset STT Tracking
+</code></pre>
+<hr />
+<h2>5. Production Implementation: Real-Time Audio Chunker, VAD &amp; Jitter Buffer</h2>
+<p>The following production-ready Python service uses <code>asyncio</code>, circular memory buffers, and the Silero VAD ONNX runtime to manage full-duplex, low-latency audio chunking, turn-end detection, and instantaneous interruption (barge-in) dispatch.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+&quot;&quot;&quot;
+High-Performance Real-Time Audio Engine
+Handles: 20ms Frame Ingress, Streaming Silero VAD, Barge-in Interruptions, Jitter Buffering.
+Requirements: numpy, onnxruntime
+&quot;&quot;&quot;
+
+import asyncio
+import collections
+import time
+from typing import AsyncGenerator, Callable, Deque, Optional
+import numpy as np
+import onnxruntime as ort
+
+
+class SileroVADDetector:
+    &quot;&quot;&quot;Ultra-low latency streaming VAD using Silero VAD v4 via ONNX Runtime.&quot;&quot;&quot;
+
+    def __init__(self, model_path: str, sample_rate: int = 16000, threshold: float = 0.5):
+        self.sample_rate = sample_rate
+        self.threshold = threshold
+        self.window_size_samples = 512 if sample_rate == 16000 else 256  # 32ms window
+
+        # Configure ONNX runtime for ultra-low inference latency
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        self.session = ort.InferenceSession(model_path, sess_options=opts, providers=[&quot;CPUExecutionProvider&quot;])
+        self.reset_states()
+
+    def reset_states(self):
+        &quot;&quot;&quot;Reset internal recurrent neural network states.&quot;&quot;&quot;
+        self._h = np.zeros((2, 1, 64), dtype=np.float32)
+        self._c = np.zeros((2, 1, 64), dtype=np.float32)
+
+    def process_frame(self, frame_pcm16: bytes) -&gt; float:
+        &quot;&quot;&quot;
+        Process a single audio frame (512 samples / 32ms for 16kHz).
+        Returns the speech probability [0.0 - 1.0].
+        &quot;&quot;&quot;
+        audio_data = np.frombuffer(frame_pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # Ensure input frame matches expected window size exactly
+        if len(audio_data) != self.window_size_samples:
+            if len(audio_data) &lt; self.window_size_samples:
+                audio_data = np.pad(audio_data, (0, self.window_size_samples - len(audio_data)))
+            else:
+                audio_data = audio_data[:self.window_size_samples]
+
+        audio_tensor = np.expand_dims(audio_data, axis=0)  # Shape: [1, 512]
+        sr_tensor = np.array(self.sample_rate, dtype=np.int64)
+
+        ort_inputs = {
+            &quot;input&quot;: audio_tensor,
+            &quot;h&quot;: self._h,
+            &quot;c&quot;: self._c,
+            &quot;sr&quot;: sr_tensor
+        }
+
+        out, self._h, self._c = self.session.run(None, ort_inputs)
+        return float(out[0][0])
+
+
+class AdaptiveJitterBuffer:
+    &quot;&quot;&quot;
+    Fixed-Allocation Adaptive Playback Jitter Buffer.
+    Compensates for network latency variance without introducing unbounded delay.
+    &quot;&quot;&quot;
+
+    def __init__(self, target_delay_ms: int = 40, frame_duration_ms: int = 20):
+        self.target_frames = target_delay_ms // frame_duration_ms
+        self.frame_duration_ms = frame_duration_ms
+        self.buffer: Deque[bytes] = collections.deque()
+        self.is_buffering = True
+
+    def push(self, packet: bytes):
+        &quot;&quot;&quot;Push an incoming audio frame into the jitter buffer.&quot;&quot;&quot;
+        self.buffer.append(packet)
+        if self.is_buffering and len(self.buffer) &gt;= self.target_frames:
+            self.is_buffering = False
+
+    def pop(self) -&gt; Optional[bytes]:
+        &quot;&quot;&quot;Fetch the next playable audio frame. Returns silence frame if dry.&quot;&quot;&quot;
+        if self.is_buffering:
+            return None
+
+        if len(self.buffer) &gt; 0:
+            return self.buffer.popleft()
+
+        # Buffer under-run: trigger immediate rebuffering
+        self.is_buffering = True
+        return None
+
+    def flush(self):
+        &quot;&quot;&quot;Immediately clear the buffer (used for barge-in interruptions).&quot;&quot;&quot;
+        self.buffer.clear()
+        self.is_buffering = True
+
+
+class RealtimeVoiceDuplexCoordinator:
+    &quot;&quot;&quot;
+    Coordinates duplex audio streaming, VAD turn-taking, and barge-in execution.
+    Targeted for 16kHz Mono 16-bit PCM streams.
+    &quot;&quot;&quot;
+
+    def __init__(
+        self,
+        vad_model_path: str,
+        on_turn_complete: Callable[[bytes], asyncio.Task],
+        on_barge_in: Callable[[], None],
+    ):
+        self.vad = SileroVADDetector(model_path=vad_model_path, sample_rate=16000)
+        self.on_turn_complete = on_turn_complete
+        self.on_barge_in = on_barge_in
+
+        # Audio Constants
+        self.bytes_per_sample = 2
+        self.sample_rate = 16000
+        # 32ms frame = 512 samples = 1024 bytes (Matches Silero optimal input)
+        self.chunk_size_bytes = 1024
+
+        # Pipeline Timing Hyperparameters
+        self.min_speech_duration_ms = 64
+        self.min_silence_duration_ms = 100
+
+        # Internal State Management
+        self.is_agent_speaking = False
+        self.user_is_speaking = False
+        self.speech_start_time = 0.0
+        self.silence_start_time = 0.0
+
+        # Ring buffers for history and turn recording
+        self.pre_roll_buffer = collections.deque(maxlen=4)  # ~128ms pre-roll
+        self.active_turn_buffer = bytearray()
+
+    def set_agent_speaking_state(self, speaking: bool):
+        &quot;&quot;&quot;Track whether downstream agent is actively outputting audio.&quot;&quot;&quot;
+        self.is_agent_speaking = speaking
+
+    async def ingest_audio_stream(self, stream_generator: AsyncGenerator[bytes, None]):
+        &quot;&quot;&quot;
+        Main processing loop. Consumes raw chunked audio, runs VAD, 
+        and controls conversational flow.
+        &quot;&quot;&quot;
+        accumulator = bytearray()
+
+        async for raw_bytes in stream_generator:
+            accumulator.extend(raw_bytes)
+
+            while len(accumulator) &gt;= self.chunk_size_bytes:
+                frame = bytes(accumulator[:self.chunk_size_bytes])
+                del accumulator[:self.chunk_size_bytes]
+
+                now = time.monotonic()
+                speech_prob = self.vad.process_frame(frame)
+                is_voice = speech_prob &gt;= self.vad.threshold
+
+                if is_voice:
+                    # 1. Check for Barge-in Condition
+                    if self.is_agent_speaking and not self.user_is_speaking:
+                        if self.speech_start_time == 0.0:
+                            self.speech_start_time = now
+                        elif (now - self.speech_start_time) * 1000 &gt;= self.min_speech_duration_ms:
+                            # Confirmed user speech during agent output: interrupt immediately
+                            self.on_barge_in()
+                            self.is_agent_speaking = False
+                            self.user_is_speaking = True
+                            self.active_turn_buffer.extend(b&quot;&quot;.join(self.pre_roll_buffer))
+
+                    # 2. Track Standard User Speech Start
+                    elif not self.user_is_speaking:
+                        if self.speech_start_time == 0.0:
+                            self.speech_start_time = now
+                        elif (now - self.speech_start_time) * 1000 &gt;= self.min_speech_duration_ms:
+                            self.user_is_speaking = True
+                            # Prepend pre-roll buffer to prevent clipped consonants
+                            self.active_turn_buffer.extend(b&quot;&quot;.join(self.pre_roll_buffer))
+
+                    if self.user_is_speaking:
+                        self.active_turn_buffer.extend(frame)
+                        self.silence_start_time = 0.0
+
+                    self.pre_roll_buffer.append(frame)
+
+                else:
+                    # Speech energy is absent
+                    self.speech_start_time = 0.0
+
+                    if self.user_is_speaking:
+                        self.active_turn_buffer.extend(frame)
+                        if self.silence_start_time == 0.0:
+                            self.silence_start_time = now
+                        elif (now - self.silence_start_time) * 1000 &gt;= self.min_silence_duration_ms:
+                            # 3. Finalize Turn and Dispatch to Pipeline
+                            self.user_is_speaking = False
+                            turn_audio = bytes(self.active_turn_buffer)
+                            self.active_turn_buffer.clear()
+                            self.silence_start_time = 0.0
+                            self.vad.reset_states()
+
+                            # Fire turn payload asynchronously without stalling ingress loop
+                            asyncio.create_task(self._dispatch_turn(turn_audio))
+                    else:
+                        self.pre_roll_buffer.append(frame)
+
+    async def _dispatch_turn(self, audio_payload: bytes):
+        &quot;&quot;&quot;Dispatches committed user speech turn to STT/LLM pipeline.&quot;&quot;&quot;
+        if len(audio_payload) &gt; 0:
+            await self.on_turn_complete(audio_payload)
+</code></pre>
+<hr />
+<h2>6. Jitter Buffer Strategies for Voice Agents</h2>
+<p>Telephony networks and mobile connections introduce packet arrival variations known as <strong>network jitter</strong>. Without proper buffering, variations in packet arrival times result in audible buffer under-runs (clicks, pops, dropped syllables).</p>
+<pre><code>Network Ingress (Variable Arrival Times)
+[Packet 1] --- 20ms ---&gt; [Packet 2] ------ 80ms (JITTER SPIKE) ------&gt; [Packet 3]
+                              │
+                              ▼
+        Adaptive Jitter Buffer (Target: 40ms Target Window)
+        [ Packet 1 (Hold) ][ Packet 2 (Play) ][ Interpolate/PLC ][ Packet 3 (Play) ]
+                              │
+                              ▼
+           Smooth, Unbroken 20ms Playout Clock
+</code></pre>
+<h3>Jitter Buffer Algorithm Comparison</h3>
+<pre><code>+-------------------+-----------------------------+-------------------------------+
+| Strategy          | Strengths                   | Weaknesses                    |
++-------------------+-----------------------------+-------------------------------+
+| Fixed Buffer      | Dead-simple implementation; | Adds static latency penalty   |
+| (40ms - 60ms)     | zero CPU overhead.          | even on pristine connections. |
++-------------------+-----------------------------+-------------------------------+
+| Adaptive Buffer   | Expands during congestion;  | Complex clock drift           |
+| (RFC 3550 Compl.) | shrinks during stability.   | compensation logic required.  |
++-------------------+-----------------------------+-------------------------------+
+| Aggressive Drop   | Enforces &lt;400ms hard cap;   | Audio artifacts during severe |
+| (Voice AI Bias)   | drops late frames entirely. | packet burst scenarios.       |
++-------------------+-----------------------------+-------------------------------+
+</code></pre>
+<h3>Adaptive Delay Formula</h3>
+<p>Track packet arrival jitter continuously using the standard IETF RFC 3550 algorithm:</p>
+<p>$$D(i, j) = (R_j - S_j) - (R_i - S_i)$$</p>
+<p>$$J(i) = J(i-1) + \frac{|D(i-1, i)| - J(i-1)}{16}$$</p>
+<ul>
+<li>Where $S_i$ is the sender timestamp of packet $i$, and $R_i$ is the local receiver arrival timestamp.</li>
+<li>Compute the dynamic target playout delay $D_{\text{playout}}$ dynamically:</li>
+</ul>
+<p>$$D_{\text{playout}} = \text{Average Network Delay} + (2 \times J)$$</p>
+<p>If $D_{\text{playout}} &gt; 80\text{ms}$, hard-cap the jitter buffer at 80ms and drop straggling frames. In conversational voice AI, an audio frame that arrives too late is useless; dropping it immediately and using Opus Packet Loss Concealment (PLC) preserves conversational turn flow far better than introducing playout lag.</p>
+<hr />
+<h2>7. Production Verification &amp; Latency Checklist</h2>
+<p>Use this checklist to benchmark your infrastructure before deploying agents into production:</p>
+<p>```
+[ ] AUDIO CAPTURE &amp; FRAMING
+    [ ] Audio stream is strictly packaged into 20ms or 32ms non-overlapping frames.
+    [ ] Audio format entering the VAD engine is 16-bit Linear PCM (8kHz or 16kHz mono).
+    [ ] Opus encoder flags configured: application=voip, cbr=true, useinbandfec=true, dtx=false.</p>
+<p>[ ] NETWORK &amp; TRANSPORT
+    [ ] Client-to-server connection established via WebRTC Data/Media tracks or UDP-backed SIP.
+    [ ] Server-side ingress endpoints are co-located within 30ms RTT of inference backends.
+    [ ] TCP fallback disabled or strictly prioritized behind UDP/ICE candidates.</p>
+<p>[ ] VOICE ACTIVITY DETECTION (VAD)
+    [ ] VAD neural inference runs locally in-process via ONNX Runtime (&lt;2ms execution per frame).
+    [ ] Silence-to-turn-commit window tuned between 80ms and 120ms.
+    [ ] Pre-roll circular memory buffer stores 100ms - 150ms of audio preceding trigger.</p>
+<p>[ ] INTERRUPTION &amp; BARGE-IN
+    [ ] User speech detection immediately cancels active LLM generation via an AbortController.
+    [ ] Playout jitter buffer immediately flushes all pending egress audio upon barge-in trigger.
+    [ ] STT state machine drops downstream audio transcripts emitted while agent was speaking.</p>
+<p>[ ] INFERENCE BENCHMARKING
+    [ ] Streaming STT yields partial/final transcript within 100ms of VAD turn-commit.
+    [ ] LLM inference engine delivers Time-To-First-Token (TTFT) in &lt;= 120ms (e.g., Groq / vLL</p>
+</body>
+</html>
