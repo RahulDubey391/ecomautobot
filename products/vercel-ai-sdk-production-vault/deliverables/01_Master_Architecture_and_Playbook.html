@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Vercel AI SDK & Generative UI Vault: 50+ Production Blueprints, Tool Schemas & Streaming Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: AI SDK 4.x Core Runtime &amp; Streaming Architecture</h1>
+<p>This playbook establishes the core architectural standard for deploying production-grade, enterprise-scale streaming Large Language Model (LLM) backends using Vercel AI SDK 4.x and Next.js App Router. It covers the streaming pipeline, the wire-level Data Stream Protocol, connection drop lifecycles, and resilient client-side state hydration.</p>
+<hr />
+<h2>1. Architectural Foundations: The AI SDK 4.x Streaming Pipeline</h2>
+<p>The Vercel AI SDK 4.x streaming pipeline decouples LLM inference from HTTP response generation through a standardized primitives layer (<code>streamText</code>, <code>streamUI</code>, <code>createDataStreamResponse</code>).</p>
+<pre><code>┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 NEXT.JS EDGE / NODE RUNTIME                            │
+│                                                                                        │
+│  ┌───────────────────────────┐         ┌────────────────────────────────────────────┐  │
+│  │   Incoming Request        │         │              LLM Provider                  │  │
+│  │   (POST /api/chat)        │         │   (Anthropic Claude 3.5 / OpenAI GPT-4o)   │  │
+│  └─────────────┬─────────────┘         └─────────────────────┬──────────────────────┘  │
+│                │                                             │                         │
+│                ▼                                             ▼                         │
+│  ┌───────────────────────────┐    Prompt / Messages     ┌────────────────────────────┐ │
+│  │ Request Validation        ├─────────────────────────►│ Raw Provider SSE Stream    │ │
+│  │ (Zod Schema Engine)       │                          │ (Delta Chunks / Tool Calls)│ │
+│  └───────────────────────────┘                          └────────────┬───────────────┘ │
+│                                                                      │                 │
+│                                                                      ▼                 │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ AI SDK Core Transform Layer (`streamText` Engine)                                │  │
+│  │                                                                                  │  │
+│  │  - Merges Raw Text Tokens                                                        │  │
+│  │  - Normalizes Multi-Provider Tool Invocations (`execute` / `onStepFinish`)       │  │
+│  │  - Enforces JSON Schema Constraints for Structured Outputs                       │  │
+│  │  - Injects Custom Metadata Frames via `DataStreamWriter`                         │  │
+│  └──────────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                             │                                          │
+│                                             ▼                                          │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ Wire Protocol Serialization (`toDataStreamResponse`)                             │  │
+│  │ Format: Server-Sent Events (SSE) / Chunked HTTP 1.1 or HTTP/2 Data Stream        │  │
+│  └──────────────────────────────────────────┬───────────────────────────────────────┘  │
+└─────────────────────────────────────────────┼──────────────────────────────────────────┘
+                                              │ 
+                                              │ HTTP 200 Streaming Response (Wire Protocol)
+                                              ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 BROWSER / CLIENT RUNTIME                               │
+│                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ Wire Parser (`ai/react` Engine / `useChat` / `readDataStream`)                   │  │
+│  │                                                                                  │  │
+│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌───────────────────┐  │  │
+│  │  │ '0': Text    │   │ '2': Data    │   │ '3': Error   │   │ '9': Tool Results │  │  │
+│  │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘   └─────────┬─────────┘  │  │
+│  └─────────┼──────────────────┼──────────────────┼─────────────────────┼────────────┘  │
+│            ▼                  ▼                  ▼                     ▼               │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ Hydration-Safe React State Tree (`messages`, `data`, `status`, `error`)          │  │
+│  └──────────────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3>The AI SDK Data Stream Wire Protocol Specification</h3>
+<p>When <code>toDataStreamResponse()</code> or <code>createDataStreamResponse()</code> is invoked, the HTTP layer transmits chunks encoded using the Vercel AI SDK Data Stream Protocol. Each chunk is formatted as:</p>
+<pre><code class="language-text">&lt;STREAM_TYPE_ID&gt;:&lt;SERIALIZED_JSON_OR_STRING&gt;\n
+</code></pre>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Type ID</th>
+<th style="text-align: left;">Designation</th>
+<th style="text-align: left;">Payload Schema / Example</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>0</code></td>
+<td style="text-align: left;">Text Part</td>
+<td style="text-align: left;"><code>0:"Hello, world!"\n</code></td>
+<td style="text-align: left;">Raw token increment for assistant text. Quoted string.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>1</code></td>
+<td style="text-align: left;">Function Call</td>
+<td style="text-align: left;"><code>1:{"name": "fn", "arguments": "{}"}\n</code></td>
+<td style="text-align: left;">Legacy provider-specific function call payload.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>2</code></td>
+<td style="text-align: left;">Custom Data</td>
+<td style="text-align: left;"><code>2:[{"citationId": "c_123", "score": 0.98}]\n</code></td>
+<td style="text-align: left;">Array of arbitrary JSON objects injected via stream data writer.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>3</code></td>
+<td style="text-align: left;">Error</td>
+<td style="text-align: left;"><code>3:"Database connection timed out."\n</code></td>
+<td style="text-align: left;">Unrecoverable error string; terminates or flags stream state.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>8</code></td>
+<td style="text-align: left;">Tool Call Part</td>
+<td style="text-align: left;"><code>8:{"toolCallId":"tc_1","toolName":"search","args":{"q":"ai"}}\n</code></td>
+<td style="text-align: left;">Complete or partial tool call definition dispatched to the client.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>9</code></td>
+<td style="text-align: left;">Tool Result Part</td>
+<td style="text-align: left;"><code>9:{"toolCallId":"tc_1","result":{"status":"ok"}}\n</code></td>
+<td style="text-align: left;">Output from the server-executed tool resolution.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>d</code></td>
+<td style="text-align: left;">Finish Message</td>
+<td style="text-align: left;"><code>d:{"finishReason":"stop","usage":{"promptTokens":12,"completionTokens":45}}\n</code></td>
+<td style="text-align: left;">Stream completion telemetry and provider-reported token usage.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Production Runtime Engine: Next.js Route Handler</h2>
+<p>The following enterprise route handler executes <code>streamText</code> against Claude 3.5 Sonnet, provides dynamic request payload schema validation, integrates client disconnect handlers, tracks token consumption, and appends custom metadata directly onto the stream.</p>
+<p>Create <code>app/api/chat/route.ts</code>:</p>
+<pre><code class="language-typescript">import { anthropic } from '@ai-sdk/anthropic';
+import { streamText, createDataStreamResponse, Message } from 'ai';
+import { z } from 'zod';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60; // 60s max execution duration (Pro tier requirement)
+
+// 1. Strict Request Body Validation Schema
+const chatRequestSchema = z.object({
+  id: z.string().uuid({ message: 'Invalid conversation UUID' }),
+  messages: z.array(
+    z.object({
+      id: z.string(),
+      role: z.enum(['user', 'assistant', 'system']),
+      content: z.string().min(1).max(32000),
+    })
+  ),
+  modelTier: z.enum(['standard', 'reasoning']).default('standard'),
+});
+
+export async function POST(req: Request) {
+  // Enforce abort signal propagation from incoming client connection
+  const abortController = new AbortController();
+  req.signal.addEventListener('abort', () =&gt; {
+    abortController.abort();
+    console.warn('[AI_STREAM] Inbound client connection dropped. Aborting inference.');
+  });
+
+  let parsedBody: z.infer&lt;typeof chatRequestSchema&gt;;
+
+  try {
+    const rawBody = await req.json();
+    parsedBody = chatRequestSchema.parse(rawBody);
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        error: 'Unprocessable Entity',
+        details: error instanceof z.ZodError ? error.errors : 'Malformed JSON payload',
+      }),
+      { status: 422, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const { messages, modelTier } = parsedBody;
+
+  // Use createDataStreamResponse to retain complete control over the SSE stream buffer
+  return createDataStreamResponse({
+    execute: async (dataStream) =&gt; {
+      // Send trace/session metadata to the client via Data stream (Type 2)
+      dataStream.writeData({
+        type: 'session_init',
+        traceId: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+      });
+
+      const selectedModel =
+        modelTier === 'reasoning'
+          ? anthropic('claude-3-5-sonnet-20241022')
+          : anthropic('claude-3-haiku-20240307');
+
+      const result = streamText({
+        model: selectedModel,
+        messages: messages as Message[],
+        abortSignal: abortController.signal,
+        temperature: 0.2,
+        system: `You are an elite enterprise software architect. Provide direct, highly structured technical analysis with zero generic boilerplate.`,
+        onStepFinish: async (step) =&gt; {
+          console.info(`[AI_STEP] Completed step. Tokens used: ${step.usage.totalTokens}`);
+        },
+        onFinish: async (event) =&gt; {
+          // Asynchronously record billing/telemetry in downstream infrastructure
+          console.info('[AI_FINISH] Final Stream Metrics:', {
+            finishReason: event.finishReason,
+            usage: event.usage,
+            rawResponseHeaders: event.response?.headers,
+          });
+
+          // Append telemetry payload to the client before closing
+          dataStream.writeData({
+            type: 'metrics',
+            usage: event.usage,
+          });
+        },
+      });
+
+      // Merge the text and tool stream directly into the HTTP response stream
+      result.mergeIntoDataStream(dataStream);
+    },
+    onError: (error: unknown) =&gt; {
+      // Prevents process crashes on unhandled stream rejections
+      console.error('[AI_STREAM_FATAL]', error);
+      return error instanceof Error ? error.message : 'Unknown internal streaming failure';
+    },
+  });
+}
+</code></pre>
+<hr />
+<h2>3. Structured Outputs: <code>generateObject</code> Engine</h2>
+<p>For workflows requiring strict JSON output conforming to deterministic application schemas (e.g., dynamic database migrations, automated workflows, and parsing tasks), use <code>generateObject</code>.</p>
+<p>This pattern includes an internal validation-retry loop to resolve transient format breaks without crashing caller threads.</p>
+<p>Create <code>lib/ai/structured-generator.ts</code>:</p>
+<pre><code class="language-typescript">import { openai } from '@ai-sdk/openai';
+import { generateObject, NoObjectGeneratedError } from 'ai';
+import { z } from 'zod';
+
+// Define the authoritative target schema
+export const DatabaseMigrationPlanSchema = z.object({
+  planId: z.string().uuid(),
+  databaseEngine: z.enum(['postgresql', 'mysql', 'sqlite']),
+  breakingChanges: z.boolean(),
+  estimatedDowntimeSeconds: z.number().int().nonnegative(),
+  executionSteps: z.array(
+    z.object({
+      stepNumber: z.number().int().positive(),
+      sql: z.string().min(5),
+      rollbackSql: z.string().min(5),
+      safetyRisk: z.enum(['low', 'medium', 'high', 'critical']),
+    })
+  ),
+});
+
+export type DatabaseMigrationPlan = z.infer&lt;typeof DatabaseMigrationPlanSchema&gt;;
+
+interface GenerationOptions {
+  prompt: string;
+  maxRetries?: number;
+}
+
+export async function generateResilientMigrationPlan(
+  options: GenerationOptions
+): Promise&lt;DatabaseMigrationPlan&gt; {
+  const { prompt, maxRetries = 2 } = options;
+  let attempt = 0;
+
+  while (attempt &lt;= maxRetries) {
+    try {
+      const { object, usage } = await generateObject({
+        model: openai('gpt-4o', { structuredOutputs: true }),
+        schema: DatabaseMigrationPlanSchema,
+        schemaName: 'DatabaseMigrationPlan',
+        schemaDescription: 'A structured, executable database migration script sequence with safety telemetry.',
+        mode: 'json', // Forces explicit JSON validation mode
+        temperature: 0, // Deterministic zero-temperature for data structures
+        system: `You are an expert Principal Database Administrator. You output ONLY valid, production-ready DDL and DML operations.`,
+        prompt: attempt === 0 
+          ? prompt 
+          : `${prompt}\n\nCRITICAL: Your previous output failed schema validation. Output ONLY adhering to the strict schema.`,
+      });
+
+      console.info(`[STRUCTURED_GENERATOR] Success on attempt ${attempt + 1}. Usage:`, usage);
+      return object;
+    } catch (error) {
+      attempt++;
+      if (NoObjectGeneratedError.isInstance(error)) {
+        console.error(`[STRUCTURED_GENERATOR] Generation format failure (Attempt ${attempt}/${maxRetries + 1}):`, {
+          cause: error.cause,
+          text: error.text,
+        });
+      } else {
+        console.error(`[STRUCTURED_GENERATOR] Network or Provider Exception:`, error);
+      }
+
+      if (attempt &gt; maxRetries) {
+        throw new Error(
+          `Failed to generate valid structured object after ${maxRetries + 1} attempts. Root error: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+  }
+
+  throw new Error('Unexpected structured generator termination');
+}
+</code></pre>
+<hr />
+<h2>4. Resilient Client Connection &amp; Hydration-Safe State Management</h2>
+<p>Streaming updates cause rapid DOM re-renders. If server-rendered markup drifts from dynamic client streaming updates, Next.js throws hydration errors (<code>Hydration failed because the initial UI does not match the server-rendered HTML</code>).</p>
+<p>The pattern below implements:
+1. Hydration-safe initial rendering barriers.
+2. Connection break identification and user notifications.
+3. Custom fetch overrides that inject dynamic client telemetry headers into the stream.</p>
+<p>Create <code>components/chat/HydrationSafeChatPane.tsx</code>:</p>
+<pre><code class="language-tsx">'use client';
+
+import React, { useEffect, useState, useRef } from 'react';
+import { useChat, Message } from 'ai/react';
+import { AlertCircle, RefreshCw, Send, CheckCircle2 } from 'lucide-react';
+
+interface HydrationSafeChatPaneProps {
+  initialConversationId: string;
+  initialMessages?: Message[];
+}
+
+export function HydrationSafeChatPane({
+  initialConversationId,
+  initialMessages = [],
+}: HydrationSafeChatPaneProps) {
+  // Prevent React hydration mismatch by suppressing stream renders until mounted
+  const [hasMounted, setHasMounted] = useState(false);
+  const messagesEndRef = useRef&lt;HTMLDivElement | null&gt;(null);
+
+  const {
+    messages,
+    input,
+    handleInputChange,
+    handleSubmit,
+    isLoading,
+    error,
+    reload,
+    stop,
+    data,
+  } = useChat({
+    api: '/api/chat',
+    id: initialConversationId,
+    initialMessages,
+    body: {
+      id: initialConversationId,
+      modelTier: 'standard',
+    },
+    headers: {
+      'X-Client-Session-Id': initialConversationId,
+    },
+    onResponse: (response) =&gt; {
+      if (!response.ok) {
+        console.error(`[STREAM_HTTP_ERROR] Status: ${response.status}`);
+      }
+    },
+    onFinish: (message) =&gt; {
+      console.info('[CLIENT_STREAM_COMPLETE] Finalized Assistant Message:', message.id);
+    },
+    onError: (streamError) =&gt; {
+      console.error('[CLIENT_STREAM_FATAL]', streamError);
+    },
+  });
+
+  useEffect(() =&gt; {
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() =&gt; {
+    if (hasMounted) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, hasMounted]);
+
+  // Server-Side Rendering fallback skeleton ensuring zero DOM drift during hydration
+  if (!hasMounted) {
+    return (
+      &lt;div className=&quot;w-full max-w-4xl mx-auto h-[600px] border border-neutral-200 dark:border-neutral-800 rounded-lg bg-neutral-50 dark:bg-neutral-900 animate-pulse p-4&quot;&gt;
+        &lt;div className=&quot;h-4 w-48 bg-neutral-300 dark:bg-neutral-700 rounded mb-4&quot; /&gt;
+        &lt;div className=&quot;h-64 w-full bg-neutral-200 dark:bg-neutral-800 rounded&quot; /&gt;
+      &lt;/div&gt;
+    );
+  }
+
+  return (
+    &lt;div className=&quot;flex flex-col h-[750px] w-full max-w-4xl mx-auto border border-neutral-200 dark:border-neutral-800 rounded-xl bg-white dark:bg-neutral-950 shadow-sm overflow-hidden&quot;&gt;
+      {/* Header bar */}
+      &lt;div className=&quot;px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 flex justify-between items-center bg-neutral-50/50 dark:bg-neutral-900/50&quot;&gt;
+        &lt;div&gt;
+          &lt;h2 className=&quot;text-sm font-semibold text-neutral-800 dark:text-neutral-100&quot;&gt;
+            Streaming Console
+          &lt;/h2&gt;
+          &lt;span className=&quot;text-xs text-neutral-500 font-mono&quot;&gt;
+            ID: {initialConversationId}
+          &lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+          {isLoading ? (
+            &lt;span className=&quot;flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 font-medium bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1 rounded-full border border-amber-200 dark:border-amber-800&quot;&gt;
+              &lt;span className=&quot;h-1.5 w-1.5 rounded-full bg-amber-500 animate-ping&quot; /&gt;
+              Streaming Active
+            &lt;/span&gt;
+          ) : (
+            &lt;span className=&quot;flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-200 dark:border-emerald-800&quot;&gt;
+              &lt;CheckCircle2 className=&quot;w-3.5 h-3.5&quot; /&gt;
+              Ready
+            &lt;/span&gt;
+          )}
+        &lt;/div&gt;
+      &lt;/div&gt;
+
+      {/* Message Viewport */}
+      &lt;div className=&quot;flex-1 overflow-y-auto p-6 space-y-4&quot;&gt;
+        {messages.length === 0 &amp;&amp; (
+          &lt;div className=&quot;text-center py-24 text-neutral-400 dark:text-neutral-600 text-sm&quot;&gt;
+            No message history. Dispatch an input below to initiate stream.
+          &lt;/div&gt;
+        )}
+
+        {messages.map((message) =&gt; (
+          &lt;div
+            key={message.id}
+            className={`flex flex-col ${
+              message.role === 'user' ? 'items-end' : 'items-start'
+            }`}
+          &gt;
+            &lt;div
+              className={`max-w-[85%] rounded-lg px-4 py-3 text-sm leading-relaxed ${
+                message.role === 'user'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 border border-neutral-200/50 dark:border-neutral-700/50'
+              }`}
+            &gt;
+              &lt;div className=&quot;font-mono text-[10px] opacity-70 mb-1 uppercase tracking-wider&quot;&gt;
+                {message.role}
+              &lt;/div&gt;
+              &lt;div className=&quot;whitespace-pre-wrap&quot;&gt;{message.content}&lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        ))}
+
+        {/* Display Injected Custom Stream Data (Type 2 Chunks) */}
+        {data &amp;&amp; data.length &gt; 0 &amp;&amp; (
+          &lt;div className=&quot;border border-neutral-200 dark:border-neutral-800 rounded p-2 text-xs font-mono bg-neutral-50 dark:bg-neutral-900/50&quot;&gt;
+            &lt;span className=&quot;text-neutral-500 font-bold block mb-1&quot;&gt;Attached Stream Metadata Frames:&lt;/span&gt;
+            {JSON.stringify(data, null, 2)}
+          &lt;/div&gt;
+        )}
+
+        {/* Exception / Network Failure UI */}
+        {error &amp;&amp; (
+          &lt;div className=&quot;p-4 rounded-lg bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 flex items-center justify-between text-red-700 dark:text-red-300&quot;&gt;
+            &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+              &lt;AlertCircle className=&quot;w-4 h-4 shrink-0&quot; /&gt;
+              &lt;span className=&quot;text-xs font-mono&quot;&gt;Stream Interrupted: {error.message}&lt;/span&gt;
+            &lt;/div&gt;
+            &lt;button
+              onClick={() =&gt; reload()}
+              className=&quot;inline-flex items-center gap-1 text-xs font-medium px-2 py-1 bg-red-100 dark:bg-red-900/60 rounded hover:bg-red-200 transition-colors&quot;
+            &gt;
+              &lt;RefreshCw className=&quot;w-3 h-3&quot; /&gt; Retry
+            &lt;/button&gt;
+          &lt;/div&gt;
+        )}
+
+        &lt;div ref={messagesEndRef} /&gt;
+      &lt;/div&gt;
+
+      {/* Control / Input Panel */}
+      &lt;div className=&quot;p-4 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50/30 dark:bg-neutral-900/30&quot;&gt;
+        &lt;form onSubmit={handleSubmit} className=&quot;flex gap-2&quot;&gt;
+          &lt;input
+            value={input}
+            onChange={handleInputChange}
+            placeholder=&quot;Type your message...&quot;
+            disabled={isLoading &amp;&amp; !error}
+            className=&quot;flex-1 px-4 py-2 text-sm rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50&quot;
+          /&gt;
+          {isLoading ? (
+            &lt;button
+              type=&quot;button&quot;
+              onClick={stop}
+              className=&quot;px-4 py-2 bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 text-sm font-medium rounded-lg transition-colors&quot;
+            &gt;
+              Cancel
+            &lt;/button&gt;
+          ) : (
+            &lt;button
+              type=&quot;submit&quot;
+              disabled={!input.trim()}
+              className=&quot;px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-medium rounded-lg flex items-center gap-1.5 transition-colors&quot;
+            &gt;
+              &lt;Send className=&quot;w-4 h-4&quot; /&gt;
+              &lt;span&gt;Send&lt;/span&gt;
+            &lt;/button&gt;
+          )}
+        &lt;/form&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>5. Edge vs. Node.js Runtime Trade-Off Matrix</h2>
+<p>Configuring <code>export const runtime = 'edge'</code> vs <code>export const runtime = 'nodejs'</code> profoundly impacts network backpressure, payload buffers, and stream persistence across Vercel infrastructure.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Vector</th>
+<th style="text-align: left;">Edge Runtime (<code>export const runtime = 'edge'</code>)</th>
+<th style="text-align: left;">Node.js Serverless (<code>export const runtime = 'nodejs'</code>)</th>
+<th style="text-align: left;">Architectural Decision Driver</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Cold Start Latency</strong></td>
+<td style="text-align: left;">0ms - 15ms. Near-instant instantiation worldwide.</td>
+<td style="text-align: left;">150ms - 850ms dependent on bundle resolution and dependency size.</td>
+<td style="text-align: left;">Choose <strong>Edge</strong> if first-token latency (TTFT) is the primary user-facing SLA metric.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Execution Duration Limits</strong></td>
+<td style="text-align: left;">Strictly capped by platform tier (typically 25s–30s on standard plans).</td>
+<td style="text-align: left;">Up to 60s (Pro plan), up to 900s (Enterprise with configured maxDuration).</td>
+<td style="text-align: left;">Choose <strong>Node.js</strong> if handling reasoning models (e.g. o1/o3-mini) or deep tool execution loops.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Max Payload Boundaries</strong></td>
+<td style="text-align: left;">~4MB inbound JSON request body limits.</td>
+<td style="text-align: left;">Typically up to 4.5MB request payload, configurable streaming sizes.</td>
+<td style="text-align: left;">Choose <strong>Node.js</strong> when processing multi-page document context or high-resolution multimodal data.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Network Backpressure &amp; Sockets</strong></td>
+<td style="text-align: left;">Direct, raw WHATWG Streams. Buffering is minimal; memory pressure scales with concurrent connections.</td>
+<td style="text-align: left;">Standard Node streams wrapped via Web API abstractions; higher base memory utilization per connection.</td>
+<td style="text-align: left;"><strong>Edge</strong> provides clean, low-overhead SSE distribution at extreme concurrency tiers.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Database &amp; SDK Compatibility</strong></td>
+<td style="text-align: left;">Restricted: No standard TCP sockets without proxy wrappers (e.g. <code>@neondatabase/serverless</code>).</td>
+<td style="text-align: left;">Unrestricted: Native access to Prisma, standard PostgreSQL (<code>pg</code>), Redis (<code>ioredis</code>), and native C++ binaries.</td>
+<td style="text-align: left;">Choose <strong>Node.js</strong> if tools query internal enterprise databases without HTTP-based connection pools.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Memory Ceiling</strong></td>
+<td style="text-align: left;">128MB fixed memory per compute instance.</td>
+<td style="text-align: left;">Up to 1024MB - 3008MB configurable per function invocation.</td>
+<td style="text-align: left;">Large tabular transformations require <strong>Node.js</strong>.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>6. Production Deployment Checklist: Streaming Health &amp; Telemetry</h2>
+<p>Before shipping an AI SDK 4.x streaming route handler to production infrastructure, complete and verify every check in this operational gate.</p>
+<pre><code>AI SDK 4.x Production Pre-Flight Checklist
+│
+├── [ ] 1. Runtime Isolation &amp; Quotas
+│   ├── maxDuration is explicitly declared (matches Vercel plan constraints: 60s Pro / 900s Enterprise).
+│   ├── Inbound Request payload is capped via schema (e.g., Zod content length bounds to prevent DoS via token starvation).
+│   └── dynamic = 'force-dynamic' is configured on the route to prevent static caching of dynamic streams.
+│
+├── [ ] 2. Stream Drop Handling
+│   ├── req.signal is bound to streamText({ abortSignal: req.signal }).
+│   ├── Connection cancellation hooks are validated (verify client navigation aborts the server generation task to avoid billing runaway).
+│   └── createDataStreamResponse includes explicit onError catch handlers returning sanitized strings (never expose raw stack traces).
+│
+├── [ ] 3. Telemetry and Billing Controls
+│   ├── Token usage metrics extracted inside onFinish callback.
+│   ├── Client IDs and Trace IDs injected via custom data frames (writeData) for downstream observability.
+│   └── Database/KV log writes are detached or cleanly executed without blocking the stream closure.
+│
+├── [ ] 4. Client Hydration Security
+│   ├── Client components consuming useChat implement mounted barriers to prevent SSR/DOM mismatches.
+│   ├── Structured outputs use try/catch boundaries with NoObjectGeneratedError handling.
+│   └── Client handles transient drops via reload primitives alongside visible UI notifications.
+</code></pre>
+<hr />
+<h2>7. Complete Verification Test Harness</h2>
+<p>Use this automated script to verify your endpoint's SSE compliance, wire protocol formatting, and abort-signal propagation directly from your terminal.</p>
+<p>Create <code>scripts/verify-stream.ts</code>:</p>
+<pre><code class="language-typescript">/**
+ * Test Harness to validate AI SDK 4.x Data Stream Protocol integrity.
+ * Usage: npx tsx scripts/verify-stream.ts
+ */
+
+const TARGET_URL = process.env.TEST_ENDPOINT_URL || 'http://localhost:3000/api/chat';
+
+async function verifyStreamingProtocol() {
+  console.log(`[HARNESS] Connecting to: ${TARGET_URL}`);
+  const abortController = new AbortController();
+
+  const response = await fetch(TARGET_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      id: crypto.randomUUID(),
+      messages: [
+        {
+          id: 'test-1',
+          role: 'user',
+          content: 'Count to 5 slowly. Output one number per line.',
+        },
+      ],
+      modelTier: 'standard',
+    }),
+    signal: abortController.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Endpoint returned HTTP ${response.status}: ${await response.text()}`);
+  }
+
+  if (!response.body) {
+    throw new Error('Response returned no readable stream body.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let textTokensReceived = 0;
+  let customDataReceived = false;
+
+  console.log('[HARNESS] Stream opened. Validating wire protocol chunks...\n');
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n').filter((line) =&gt; line.trim() !== '');
+
+      for (const line of lines) {
+        const streamType = line.slice(0, 1);
+        const payload = line.slice(2);
+
+        switch (streamType) {
+          case '0':
+            textTokensReceived++;
+            process.stdout.write(JSON.parse(payload));
+            break;
+          case '2':
+            customDataReceived = true;
+            console.log(`\n[WIRE_DATA_FRAME] Custom data detected:`, JSON.parse(payload));
+            break;
+          case '3':
+            console.error(`\n[WIRE_ERROR] Stream returned explicit error:`, payload);
+            break;
+          case 'd':
+            console.log(`\n[WIRE_FINISH] Stream metrics frame received:`, JSON.parse(payload));
+            break;
+          default:
+            console.warn(`\n[WIRE_UNKNOWN] Type ${streamType}: ${payload}`);
+        }
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error &amp;&amp; err.name === 'AbortError') {
+      console.log('\n[HARNESS] Stream aborted intentionally via AbortController.');
+    } else {
+      throw err;
+    }
+  }
+
+  console.log('\n------------------------------------------------------------');
+  console.log('[HARNESS] Validation Complete.');
+  console.log(`- Text Tokens Registered: ${textTokensReceived}`);
+  console.log(`- Custom Data Frames Seen: ${customDataReceived}`);
+
+  if (textTokensReceived === 0) {
+    throw new Error('FAILED: No text tokens were parsed from the wire.');
+  }
+}
+
+verifyStreamingProtocol().catch((err) =&gt; {
+  console.error('\n[HARNESS_FATAL]', err.message);
+  process.exit(1);
+});
+</code></pre>
+<p>Execute this verification script during CI/CD test phases to ensure updates to models, schemas, or proxy layers never break your streaming endpoints.</p>
+</body>
+</html>

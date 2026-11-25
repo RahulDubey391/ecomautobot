@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Vercel AI SDK & Generative UI Vault: 50+ Production Blueprints, Tool Schemas & Streaming Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Generative UI Components, Multi-Modal &amp; Agentic Workflows</h1>
+<hr />
+<h2>1. Streamed Generative UI via Client-Side Tool Invocations</h2>
+<p>In Vercel AI SDK 4.x, client-side tool rendering using <code>useChat</code> and <code>toolInvocations</code> provides an ultra-responsive, stateful architecture for Generative UI. Unlike pure React Server Component (RSC) streams that lock component states on the server, client-side tool execution allows client-side caching, local state persistence, and direct interactions with your client state stores (e.g., Zustand, React Hook Form).</p>
+<pre><code>┌────────────────────────────────────────────────────────┐
+│                   Browser / Client                     │
+│  useChat()                                             │
+│    │                                                   │
+│    ├─ (1) User Input: &quot;Analyze AAPL stock &amp; execute&quot;   │
+│    │                                                   │
+│    │◄─ (4) Stream Text Deltas                          │
+│    │◄─ (5) Stream Tool Calls: &quot;renderStockDashboard&quot;   │
+│    │                                                   │
+│    ├── Render Text Stream                              │
+│    └── Match toolInvocation.toolName                   │
+│          └── Render &lt;StockDashboardCard /&gt;             │
+│                │                                       │
+│                └─ (6) User clicks &quot;Confirm Order&quot;      │
+│                      calls addToolResult()             │
+│                      │                                 │
+│                      └─ (7) Tool Result sent back      │
+│                            to complete pipeline ───────┼┐
+└────────────────────────┼───────────────────────────────┘│
+                         │                                │
+                         ▼                                │
+┌────────────────────────────────────────────────────────┐│
+│              Next.js Edge/Node Route Handler           ││
+│  POST /api/generative-ui-chat                          ││
+│    │                                                   ││
+│    ├─ (2) Load System Prompt + Model: gpt-4o           ││
+│    ├─ (3) streamText({ tools: { ... } })               ││
+│    │                                                   ││
+│    │◄──────────────────────────────────────────────────┘│
+│    │  (8) Model finishes response with confirmed state  │
+│    └─ Stream completion deltas ─────────────────────────┘
+</code></pre>
+<h3>Route Handler: Multi-Tool Streaming with Structured Outputs</h3>
+<p>Create the route handler at <code>app/api/chat/generative-ui/route.ts</code>. This endpoint defines explicit Zod parameters for our UI-rendering tools and streams back both textual context and structured JSON payloads for the client to mount.</p>
+<pre><code class="language-typescript">// app/api/chat/generative-ui/route.ts
+import { streamText, tool } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { z } from 'zod';
+
+export const maxDuration = 60;
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const result = streamText({
+    model: openai('gpt-4o-2024-08-06'),
+    system: `You are an enterprise financial operations assistant.
+When a user asks for stock analytics, options analysis, or order placement:
+1. Always call the 'renderStockDashboard' tool to display real-time pricing and visual charts.
+2. If the user explicitly asks to initiate a trade, call 'renderOrderConfirmation' to present an actionable confirmation UI.
+3. Keep textual messages concise, analytical, and professional. Always defer detailed numbers to the generative UI components.`,
+    messages,
+    tools: {
+      renderStockDashboard: tool({
+        description: 'Renders an interactive real-time stock dashboard widget for a target ticker.',
+        parameters: z.object({
+          symbol: z.string().describe('Stock ticker symbol (e.g., AAPL, TSLA, NVDA)'),
+          companyName: z.string().describe('Full company entity name'),
+          currentPrice: z.number().describe('Current market price in USD'),
+          changePercent: z.number().describe('24-hour percentage change (positive or negative)'),
+          metrics: z.object({
+            peRatio: z.number(),
+            marketCap: z.string(),
+            week52High: z.number(),
+            week52Low: z.number(),
+          }),
+          sparklineData: z.array(z.number()).describe('10-point normalized intraday price points for sparkline rendering'),
+        }),
+        execute: async (args) =&gt; {
+          // Server-side simulated telemetry/fetch or database verification
+          return {
+            status: 'rendered',
+            retrievedAt: new Date().toISOString(),
+            ...args,
+          };
+        },
+      }),
+
+      renderOrderConfirmation: tool({
+        description: 'Renders an interactive trade execution card requiring explicit user button authorization.',
+        parameters: z.object({
+          symbol: z.string(),
+          orderType: z.enum(['BUY', 'SELL']),
+          quantity: z.number().int().positive(),
+          limitPrice: z.number().optional(),
+          estimatedTotal: z.number(),
+        }),
+        // No server execute: left client-side so user action provides the output
+      }),
+    },
+  });
+
+  return result.toDataStreamResponse();
+}
+</code></pre>
+<h3>Client UI: Interactive Generative Component Engine</h3>
+<p>Create the client-side component at <code>app/components/GenerativeUIChat.tsx</code>. It handles message streaming, maps <code>toolInvocations</code> to rich React components, and resolves client-executed tool callbacks using <code>addToolResult</code>.</p>
+<pre><code class="language-tsx">// app/components/GenerativeUIChat.tsx
+'use client';
+
+import React, { useState } from 'react';
+import { useChat } from 'ai/react';
+
+interface SparklineProps {
+  data: number[];
+  isPositive: boolean;
+}
+
+function MiniSparkline({ data, isPositive }: SparklineProps) {
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const width = 160;
+  const height = 40;
+
+  const points = data
+    .map((val, idx) =&gt; {
+      const x = (idx / (data.length - 1)) * width;
+      const y = height - ((val - min) / range) * (height - 8) - 4;
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  return (
+    &lt;svg width={width} height={height} className=&quot;overflow-visible&quot;&gt;
+      &lt;polyline
+        fill=&quot;none&quot;
+        stroke={isPositive ? '#10b981' : '#ef4444'}
+        strokeWidth=&quot;2&quot;
+        strokeLinecap=&quot;round&quot;
+        strokeLinejoin=&quot;round&quot;
+        points={points}
+      /&gt;
+    &lt;/svg&gt;
+  );
+}
+
+export function GenerativeUIChat() {
+  const { messages, input, handleInputChange, handleSubmit, addToolResult, isLoading } = useChat({
+    api: '/api/chat/generative-ui',
+    maxSteps: 5,
+  });
+
+  const [tradeStatus, setTradeStatus] = useState&lt;Record&lt;string, 'pending' | 'submitted' | 'cancelled'&gt;&gt;({});
+
+  return (
+    &lt;div className=&quot;flex flex-col h-screen max-w-4xl mx-auto p-4 bg-slate-950 text-slate-100 font-sans&quot;&gt;
+      &lt;header className=&quot;py-4 border-b border-slate-800 flex justify-between items-center&quot;&gt;
+        &lt;div&gt;
+          &lt;h1 className=&quot;text-xl font-bold tracking-tight text-white&quot;&gt;Institutional Trading Terminal&lt;/h1&gt;
+          &lt;p className=&quot;text-xs text-slate-400&quot;&gt;Vercel AI SDK 4.x Client Generative UI Engine&lt;/p&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+          &lt;span className=&quot;h-2 w-2 rounded-full bg-emerald-500 animate-pulse&quot;&gt;&lt;/span&gt;
+          &lt;span className=&quot;text-xs text-slate-400&quot;&gt;Stream Connected&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/header&gt;
+
+      &lt;main className=&quot;flex-1 overflow-y-auto py-6 space-y-6 pr-2&quot;&gt;
+        {messages.map((message) =&gt; (
+          &lt;div
+            key={message.id}
+            className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'} space-y-2`}
+          &gt;
+            &lt;div className=&quot;text-xs font-semibold uppercase text-slate-500 tracking-wider&quot;&gt;
+              {message.role === 'user' ? 'Operator' : 'AI Analyst'}
+            &lt;/div&gt;
+
+            {/* Standard Text Stream */}
+            {message.content &amp;&amp; (
+              &lt;div
+                className={`p-4 rounded-xl max-w-[85%] text-sm leading-relaxed ${
+                  message.role === 'user'
+                    ? 'bg-blue-600 text-white rounded-br-none'
+                    : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-none shadow-sm'
+                }`}
+              &gt;
+                {message.content}
+              &lt;/div&gt;
+            )}
+
+            {/* Generative Tool Rendering Matrix */}
+            {message.toolInvocations?.map((toolInvocation) =&gt; {
+              const { toolCallId, toolName } = toolInvocation;
+
+              // Render: Stock Dashboard Component
+              if (toolName === 'renderStockDashboard') {
+                if (!('result' in toolInvocation)) {
+                  return (
+                    &lt;div
+                      key={toolCallId}
+                      className=&quot;w-full max-w-md p-4 bg-slate-900 border border-slate-800 rounded-xl animate-pulse flex items-center gap-3 text-sm text-slate-400&quot;
+                    &gt;
+                      &lt;div className=&quot;w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin&quot; /&gt;
+                      Synthesizing market parameters...
+                    &lt;/div&gt;
+                  );
+                }
+
+                const data = toolInvocation.result;
+                const isPositive = data.changePercent &gt;= 0;
+
+                return (
+                  &lt;div
+                    key={toolCallId}
+                    className=&quot;w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl relative overflow-hidden&quot;
+                  &gt;
+                    &lt;div className=&quot;flex justify-between items-start mb-4&quot;&gt;
+                      &lt;div&gt;
+                        &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+                          &lt;h2 className=&quot;text-2xl font-bold text-white&quot;&gt;{data.symbol}&lt;/h2&gt;
+                          &lt;span className=&quot;text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400&quot;&gt;
+                            {data.companyName}
+                          &lt;/span&gt;
+                        &lt;/div&gt;
+                        &lt;div className=&quot;flex items-baseline gap-2 mt-1&quot;&gt;
+                          &lt;span className=&quot;text-3xl font-extrabold text-white&quot;&gt;
+                            ${data.currentPrice.toFixed(2)}
+                          &lt;/span&gt;
+                          &lt;span
+                            className={`text-sm font-semibold ${
+                              isPositive ? 'text-emerald-400' : 'text-rose-400'
+                            }`}
+                          &gt;
+                            {isPositive ? '+' : ''}
+                            {data.changePercent.toFixed(2)}%
+                          &lt;/span&gt;
+                        &lt;/div&gt;
+                      &lt;/div&gt;
+                      &lt;MiniSparkline data={data.sparklineData} isPositive={isPositive} /&gt;
+                    &lt;/div&gt;
+
+                    &lt;div className=&quot;grid grid-cols-2 gap-3 pt-3 border-t border-slate-800 text-xs&quot;&gt;
+                      &lt;div&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;Market Cap: &lt;/span&gt;
+                        &lt;span className=&quot;text-slate-200 font-medium&quot;&gt;{data.metrics.marketCap}&lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;P/E Ratio: &lt;/span&gt;
+                        &lt;span className=&quot;text-slate-200 font-medium&quot;&gt;{data.metrics.peRatio}&lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;52W Range: &lt;/span&gt;
+                        &lt;span className=&quot;text-slate-200 font-medium&quot;&gt;
+                          ${data.metrics.week52Low} - ${data.metrics.week52High}
+                        &lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;Timestamp: &lt;/span&gt;
+                        &lt;span className=&quot;text-slate-400&quot;&gt;
+                          {new Date(data.retrievedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        &lt;/span&gt;
+                      &lt;/div&gt;
+                    &lt;/div&gt;
+                  &lt;/div&gt;
+                );
+              }
+
+              // Render: Interactive Trade Order Confirmation Component
+              if (toolName === 'renderOrderConfirmation') {
+                const args = toolInvocation.args;
+                const state = tradeStatus[toolCallId] || 'pending';
+
+                return (
+                  &lt;div
+                    key={toolCallId}
+                    className=&quot;w-full max-w-md bg-gradient-to-b from-slate-900 to-slate-950 border border-amber-500/30 rounded-xl p-5 shadow-2xl space-y-4&quot;
+                  &gt;
+                    &lt;div className=&quot;flex items-center justify-between border-b border-slate-800 pb-3&quot;&gt;
+                      &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+                        &lt;span className=&quot;w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping&quot; /&gt;
+                        &lt;span className=&quot;text-sm font-semibold tracking-wide text-amber-200 uppercase&quot;&gt;
+                          Execution Authorization Required
+                        &lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;span
+                        className={`text-xs px-2 py-0.5 rounded font-bold ${
+                          args.orderType === 'BUY'
+                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            : 'bg-rose-950 text-rose-400 border border-rose-800'
+                        }`}
+                      &gt;
+                        {args.orderType}
+                      &lt;/span&gt;
+                    &lt;/div&gt;
+
+                    &lt;div className=&quot;space-y-2 text-sm text-slate-300&quot;&gt;
+                      &lt;div className=&quot;flex justify-between&quot;&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;Asset:&lt;/span&gt;
+                        &lt;span className=&quot;font-semibold text-white&quot;&gt;{args.symbol}&lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div className=&quot;flex justify-between&quot;&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;Quantity:&lt;/span&gt;
+                        &lt;span className=&quot;font-semibold text-white&quot;&gt;{args.quantity} Units&lt;/span&gt;
+                      &lt;/div&gt;
+                      &lt;div className=&quot;flex justify-between&quot;&gt;
+                        &lt;span className=&quot;text-slate-500&quot;&gt;Estimated Total:&lt;/span&gt;
+                        &lt;span className=&quot;font-semibold text-emerald-400 font-mono&quot;&gt;
+                          ${args.estimatedTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        &lt;/span&gt;
+                      &lt;/div&gt;
+                    &lt;/div&gt;
+
+                    {state === 'pending' &amp;&amp; !('result' in toolInvocation) ? (
+                      &lt;div className=&quot;flex gap-2 pt-2&quot;&gt;
+                        &lt;button
+                          onClick={() =&gt; {
+                            setTradeStatus((prev) =&gt; ({ ...prev, [toolCallId]: 'submitted' }));
+                            addToolResult({
+                              toolCallId,
+                              result: {
+                                authorized: true,
+                                executionId: `ord_${Math.random().toString(36).substring(2, 9)}`,
+                                executedAt: new Date().toISOString(),
+                              },
+                            });
+                          }}
+                          className=&quot;flex-1 py-2 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-all shadow-lg active:scale-95&quot;
+                        &gt;
+                          Confirm &amp; Authorize
+                        &lt;/button&gt;
+                        &lt;button
+                          onClick={() =&gt; {
+                            setTradeStatus((prev) =&gt; ({ ...prev, [toolCallId]: 'cancelled' }));
+                            addToolResult({
+                              toolCallId,
+                              result: { authorized: false, reason: 'Aborted by trader.' },
+                            });
+                          }}
+                          className=&quot;py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-all active:scale-95&quot;
+                        &gt;
+                          Abort
+                        &lt;/button&gt;
+                      &lt;/div&gt;
+                    ) : (
+                      &lt;div className=&quot;pt-2 text-xs&quot;&gt;
+                        {state === 'submitted' || ('result' in toolInvocation &amp;&amp; toolInvocation.result.authorized) ? (
+                          &lt;div className=&quot;p-3 bg-emerald-950/40 border border-emerald-800/60 rounded text-emerald-400 flex items-center justify-between&quot;&gt;
+                            &lt;span&gt;Order Confirmed &amp; Route Active&lt;/span&gt;
+                            &lt;span className=&quot;font-mono text-[10px]&quot;&gt;{toolInvocation.result?.executionId || 'ACK'}&lt;/span&gt;
+                          &lt;/div&gt;
+                        ) : (
+                          &lt;div className=&quot;p-3 bg-rose-950/40 border border-rose-800/60 rounded text-rose-400&quot;&gt;
+                            Order Aborted by User
+                          &lt;/div&gt;
+                        )}
+                      &lt;/div&gt;
+                    )}
+                  &lt;/div&gt;
+                );
+              }
+
+              return null;
+            })}
+          &lt;/div&gt;
+        ))}
+      &lt;/main&gt;
+
+      &lt;form onSubmit={handleSubmit} className=&quot;pt-4 border-t border-slate-800 flex gap-2&quot;&gt;
+        &lt;input
+          value={input}
+          onChange={handleInputChange}
+          placeholder=&quot;e.g. 'Show me Apple analytics and set up an order to buy 100 shares'&quot;
+          className=&quot;flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 transition-colors placeholder:text-slate-600&quot;
+          disabled={isLoading}
+        /&gt;
+        &lt;button
+          type=&quot;submit&quot;
+          disabled={isLoading}
+          className=&quot;bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium px-5 py-3 rounded-xl text-sm transition-all&quot;
+        &gt;
+          {isLoading ? 'Processing...' : 'Send'}
+        &lt;/button&gt;
+      &lt;/form&gt;
+    &lt;/div&gt;
+  );
+}
+</code></pre>
+<hr />
+<h2>2. Dynamic Canvas/Artifact Engine (Claude-Style Architecture)</h2>
+<p>This pattern separates conversation state from actionable artifacts (code files, Mermaid architectural diagrams, and interactive React/HTML sandboxes). </p>
+<pre><code>                                Client Layout Window
+ ┌───────────────────────────────────────┬───────────────────────────────────────┐
+ │            Chat Transcript            │            Artifact Canvas            │
+ │                                       │                                       │
+ │ User: Build me an analytics dashboard │ Current: &quot;TelemetryDashboard.tsx&quot;     │
+ │                                       │                                       │
+ │ Assistant: Creating application...    │ ┌───────────────────────────────────┐ │
+ │ ┌───────────────────────────────────┐ │ │ Preview │ Raw Code │ Console Logs │ │
+ │ │ [Artifact Generated]              │ │ ├─────────┴──────────┴──────────────┤ │
+ │ │ Type: React Component             │ │ │ &lt;div&gt;                             │ │
+ │ │ Title: TelemetryDashboard.tsx     │ │ │   &lt;h2&gt;Active Nodes: 42&lt;/h2&gt;       │ │
+ │ │ Status: Live Synced               │ │ │ &lt;/div&gt;                            │ │
+ │ └───────────────────────────────────┘ │ └───────────────────────────────────┘ │
+ │                                       │                                       │
+ │ [Type your response...]               │ Live Sandboxed Dynamic Execution      │
+ └───────────────────────────────────────┴───────────────────────────────────────┘
+</code></pre>
+<h3>Artifact Parsing Engine</h3>
+<p>Create <code>lib/artifact-parser.ts</code> to parse raw streaming text tokens and extract partial <code>&lt;artifact&gt;</code> XML blocks in real-time.</p>
+<pre><code class="language-typescript">// lib/artifact-parser.ts
+export interface ArtifactBlock {
+  identifier: string;
+  type: 'application/react' | 'application/html' | 'image/svg+xml' | 'text/markdown';
+  title: string;
+  content: string;
+  isComplete: boolean;
+}
+
+export function parseStreamForArtifacts(text: string): {
+  cleanText: string;
+  artifact: ArtifactBlock | null;
+} {
+  const artifactOpenRegex = /&lt;artifact\s+identifier=&quot;([^&quot;]+)&quot;\s+type=&quot;([^&quot;]+)&quot;\s+title=&quot;([^&quot;]+)&quot;&gt;/;
+  const openMatch = text.match(artifactOpenRegex);
+
+  if (!openMatch) {
+    return { cleanText: text, artifact: null };
+  }
+
+  const [fullOpenTag, identifier, type, title] = openMatch;
+  const startIndex = text.indexOf(fullOpenTag);
+  const cleanBefore = text.slice(0, startIndex);
+  const remainder = text.slice(startIndex + fullOpenTag.length);
+
+  const closeTag = '&lt;/artifact&gt;';
+  const endIndex = remainder.indexOf(closeTag);
+
+  if (endIndex === -1) {
+    // Artifact is currently streaming / incomplete
+    return {
+      cleanText: cleanBefore.trim(),
+      artifact: {
+        identifier,
+        type: type as ArtifactBlock['type'],
+        title,
+        content: remainder,
+        isComplete: false,
+      },
+    };
+  }
+
+  const artifactContent = remainder.slice(0, endIndex);
+  const cleanAfter = remainder.slice(endIndex + closeTag.length);
+
+  return {
+    cleanText: (cleanBefore + cleanAfter).trim(),
+    artifact: {
+      identifier,
+      type: type as ArtifactBlock['type'],
+      title,
+      content: artifactContent,
+      isComplete: true,
+    },
+  };
+}
+</code></pre>
+<h3>Artifact Canvas &amp; Isolated Sandboxed Iframe</h3>
+<p>Create <code>app/components/ArtifactWorkspace.tsx</code>. It provides split-view canvas rendering, code syntax tabs, and a real-time sandboxed iframe execution engine with postMessage communication.</p>
+<p>```tsx
+// app/components/ArtifactWorkspace.tsx
+'use client';</p>
+<p>import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { useChat } from 'ai/react';
+import { parseStreamForArtifacts, ArtifactBlock } from '@/lib/artifact-parser';</p>
+<p>export function ArtifactWorkspace() {
+  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+    api: '/api/chat/artifacts',
+  });</p>
+<p>const [selectedArtifact, setSelectedArtifact] = useState<ArtifactBlock | null>(null);
+  const [activeTab, setActiveTab] = useState&lt;'preview' | 'code'&gt;('preview');</p>
+<p>// Extract the latest artifact from the assistant's message stream
+  const latestAssistantMessage = useMemo(
+    () =&gt; [...messages].reverse().find((m) =&gt; m.role === 'assistant'),
+    [messages]
+  );</p>
+<p>const parsedStream = useMemo(() =&gt; {
+    if (!latestAssistantMessage) return { cleanText: '', artifact: null };
+    return parseStreamForArtifacts(latestAssistantMessage.content);
+  }, [latestAssistantMessage]);</p>
+<p>// Keep artifact panel synchronized as deltas arrive
+  useEffect(() =&gt; {
+    if (parsedStream.artifact) {
+      setSelectedArtifact(parsedStream.artifact);
+    }
+  }, [parsedStream.artifact]);</p>
+<p>return (
+    <div className="flex h-screen w-full bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      {/* LEFT: Conversation Feed */}
+      <div className="w-1/2 flex flex-col border-r border-slate-800 h-full">
+        <header className="p-4 border-b border-slate-800 bg-slate-900/50">
+          <h2 className="text-sm font-semibold text-slate-200">Conversation Stream</h2>
+        </header></p>
+<pre><code>    &lt;div className="flex-1 overflow-y-auto p-4 space-y-4"&gt;
+      {messages.map((m) =&gt; {
+        const isUser = m.role === 'user';
+        const { cleanText, artifact } = isUser
+          ? { cleanText: m.content, artifact: null }
+          : parseStreamForArtifacts(m.content);
+
+        return (
+          &lt;div key={m.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} space-y-1`}&gt;
+            &lt;span className="text-[10px] font-mono uppercase text-slate-500"&gt;
+              {isUser ? 'Operator' : 'Architect'}
+            &lt;/span&gt;
+            {cleanText &amp;&amp; (
+              &lt;div
+                className={`p-3 rounded-lg text-sm max-w-[90%] whitespace-pre-wrap ${
+                  isUser ? 'bg-blue-600 text-white' : 'bg-slate-900 border border-slate-800 text-slate-200'
+                }`}
+              &gt;
+                {cleanText}
+              &lt;/div&gt;
+            )}
+            {artifact &amp;&amp; (
+              &lt;button
+                onClick={() =&gt; setSelectedArtifact(artifact)}
+                className="p-3 bg-slate-900 hover:bg-slate-850 border border-indigo-500/40 rounded-lg max-w-[90%] text-left flex items-center justify-between group transition-all"
+              &gt;
+                &lt;div&gt;
+                  &lt;div className="text-xs font-bold text-indigo-400 flex items-center gap-2"&gt;
+                    &lt;span className="h-1.5 w-1.5 rounded-full bg-indigo-400" /&gt;
+                    Artifact: {artifact.title}
+                  &lt;/div&gt;
+                  &lt;div className="text-[11px] text-slate-500 font-mono mt-0.5"&gt;{artifact.type}&lt;/div&gt;
+                &lt;/div&gt;
+                &lt;span className="text-xs text-indigo-400 group-hover:translate-x-0.5 transition-transform"&gt;
+                  Inspect &amp;rarr;
+                &lt;/span&gt;
+              &lt;/button&gt;
+            )}
+          &lt;/div&gt;
+        );
+      })}
+    &lt;/div&gt;
+
+    &lt;form onSubmit={handleSubmit} className="p-4 border-t border-slate-800 bg-slate-900/30"&gt;
+      &lt;div className="flex gap-2"&gt;
+        &lt;input
+          value={input}
+          onChange={handleInputChange}
+          placeholder="e.g. Generate a responsive SVG network architecture diagram"
+          className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+        /&gt;
+        &lt;button
+          type="submit"
+          disabled={isLoading}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium"
+        &gt;
+          Dispatch
+        &lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/form&gt;
+  &lt;/div&gt;
+
+  {/* RIGHT: Live Artifact Canvas */}
+  &lt;div className="w-1/2 flex flex-col h-full bg-slate-900/20"&gt;
+    &lt;header className="p-3 border-b border-slate-800 bg-slate-900 flex justify-between items-center"&gt;
+      &lt;div className="flex items-center gap-2"&gt;
+        &lt;span className="font-semibold text-sm text-white"&gt;
+          {selectedArtifact ? selectedArtifact.title : 'Canvas Inactive'}
+        &lt;/span&gt;
+        {selectedArtifact &amp;&amp; !selectedArtifact.isComplete &amp;&amp; (
+          &lt;span className="text-[10px] text-amber-400 bg-amber-950 border border-amber-800 px-1.5 py-0.5 rounded"&gt;
+            Streaming Tokens...
+          &lt;/span&gt;
+        )}
+      &lt;/div&gt;
+      &lt;div className="flex bg-slate-800 p-0.5 rounded-lg border border-slate-700"&gt;
+        &lt;button
+          onClick={() =&gt; setActiveTab('preview')}
+          className={`px-3 py-1 rounded text-xs font-semibold ${
+            activeTab === 'preview' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+          }`}
+        &gt;
+          Sandbox View
+        &lt;/button&gt;
+        &lt;button
+          onClick={() =&gt; setActiveTab('code')}
+          className={`px-3 py-1 rounded text-xs font-semibold ${
+            activeTab === 'code' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+          }`}
+        &gt;
+          Raw Schema
+        &lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/header&gt;
+
+    &lt;div className="flex-1 relative overflow-hidden bg-slate-950"&gt;
+      {selectedArtifact ? (
+        activeTab === 'preview' ? (
+          &lt;SandboxedPreview artifact={selectedArtifact} /&gt;
+        ) : (
+          &lt;pre className="p-4 text-xs font-mono text-emerald-400 overflow-auto h-full bg-slate-950"&gt;
+            &lt;code&gt;{selectedArtifact.content}&lt;/code&gt;
+          &lt;/pre&gt;
+        )
+      ) : (
+        &lt;div className="flex items-center justify-center h-full text-slate-600 text-sm"&gt;
+          Artifact engine idling. Request interactive widgets or SVG diagrams.
+        &lt;/div&gt;
+      )}
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;
+</code></pre>
+<p>);
+}</p>
+<p>function SandboxedPreview({ artifact }: { artifact: ArtifactBlock }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);</p>
+<p>// Generate an isolated sandboxed iframe document
+  const srcDoc = useMemo(() =&gt; {
+    if (artifact.type === 'image/svg+xml') {
+      return <code>&lt;!DOCTYPE html&gt;
+        &lt;html&gt;
+          &lt;head&gt;
+            &lt;style&gt;
+              body { margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; background: #020617; }
+              svg { max-width: 90%; max-height: 90%; }
+            &lt;/style&gt;
+          &lt;/head&gt;
+          &lt;body&gt;${artifact.content}&lt;/body&gt;
+        &lt;/html&gt;</code>;
+    }</p>
+<pre><code>if (artifact.type === 'application/html') {
+  return `
+    &lt;!DOCTYPE html&gt;
+    &lt;html&gt;
+      &lt;head&gt;
+        &lt;script src="https://cdn.tailwindcss.com"&gt;&lt;/script&gt;
+        &lt;style&gt;body { margin: 0; padding: 1.5rem; background: #020617; color: #f8fafc; font-family: sans-serif; }&lt;/style&gt;
+      &lt;/head&gt;
+      &lt;body&gt;
+        ${artifact.content}
+      &lt;/body&gt;
+    &lt;/html&gt;
+  `;
+}
+
+// Default fallback (e.g. text/markdown)
+return `
+  &lt;!DOCTYPE html&gt;
+  &lt;html&gt;
+    &lt;head&gt;
+      &lt;style&gt;body { font-family: monospace; padding: 1rem; color: #94a3b8; background: #
+</code></pre>
+</body>
+</html>

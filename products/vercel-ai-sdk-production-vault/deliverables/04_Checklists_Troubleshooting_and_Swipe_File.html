@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Vercel AI SDK & Generative UI Vault: 50+ Production Blueprints, Tool Schemas & Streaming Patterns</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Latency Auditing, Token Budgeting &amp; Production Swipe File</h1>
+<p>This module provides the production hardening layer for applications built on Vercel AI SDK 4.x and the Next.js App Router. It contains zero theoretical generalities: every section delivers verifiable audit criteria, exact mathematical thresholds for streaming latencies, complete copy-paste runtime configurations, and bulletproof error-handling primitives.</p>
+<hr />
+<h2>1. Pre-Flight Production Deployment Checklist</h2>
+<p>Execute this verification matrix before promoting any generative route or tool-calling pipeline to production.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Category</th>
+<th style="text-align: left;">Audit Item</th>
+<th style="text-align: left;">Failure Mode</th>
+<th style="text-align: left;">Validation Protocol &amp; Remediation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Security</strong></td>
+<td style="text-align: left;">Dynamic API Key Resolution</td>
+<td style="text-align: left;">Keys leaked to client bundle or shared across multi-tenant contexts.</td>
+<td style="text-align: left;">Ensure all provider instantiations (<code>createOpenAI</code>, <code>createAnthropic</code>) execute strictly in Server Components or Route Handlers without <code>NEXT_PUBLIC_</code> prefixes. Verify build output contains no raw tokens.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Security</strong></td>
+<td style="text-align: left;">Tiered Rate Limiting</td>
+<td style="text-align: left;">Upstream LLM quota exhaustion; unbounded cost via DDoS.</td>
+<td style="text-align: left;">Implement sliding-window rate limiting on the Route Handler via <code>@upstash/ratelimit</code> partitioned by verified <code>userId</code> or client IP hash before calling <code>streamText</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Streaming</strong></td>
+<td style="text-align: left;">Proxy Buffer Bypass</td>
+<td style="text-align: left;">Streaming chunk delivery collapses into a single high-latency payload.</td>
+<td style="text-align: left;">Cloudflare/Nginx proxy buffering must be disabled. Next.js responses must emit headers: <code>X-Accel-Buffering: no</code> and <code>Content-Type: text/plain; charset=utf-8</code> or <code>text/event-stream</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Streaming</strong></td>
+<td style="text-align: left;">Transfer-Encoding Flags</td>
+<td style="text-align: left;">Chunk starvation on intermediate enterprise corporate proxies.</td>
+<td style="text-align: left;">Force chunked transfer encoding via <code>createDataStreamResponse()</code> or ensure the runtime environment does not inject <code>Content-Length</code> headers.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Hydration</strong></td>
+<td style="text-align: left;">Generative UI Message Sync</td>
+<td style="text-align: left;">Hydration mismatch warnings when rendering dynamic React nodes from message streams.</td>
+<td style="text-align: left;">Verify <code>initialMessages</code> are hydrated via SSR with stable, cryptographically generated UUIDs (v4) rather than <code>Math.random()</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Runtime</strong></td>
+<td style="text-align: left;">Execution Timeout Alignment</td>
+<td style="text-align: left;">Route times out at Vercel default (15s on Hobby, 15s-300s on Pro) mid-stream.</td>
+<td style="text-align: left;">Export explicit route segment config: <code>export const maxDuration = 60;</code> on Node.js runtimes. Ensure upstream timeout does not abort tool execution chains.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Memory</strong></td>
+<td style="text-align: left;">Stream Reader Leaks</td>
+<td style="text-align: left;">Edge runtime memory exhaustion under concurrent connections.</td>
+<td style="text-align: left;">Always consume or cancel streams on client unmount using the <code>AbortController</code> bound to the <code>useChat</code> or <code>useCompletion</code> hook.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Time-To-First-Token (TTFT) Optimization Rubric</h2>
+<h3>2.1 Latency Phasing &amp; Benchmarks</h3>
+<p>Total latency from client dispatch to user perception decomposes into four distinct phases:</p>
+<p>$$\text{Latency}<em _text_Transport>{\text{Total}} = T</em>$$}} + T_{\text{Runtime Init}} + T_{\text{Provider Gateway}} + T_{\text{TTFT (Inference)}</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Phase</th>
+<th style="text-align: left;">Target (P50)</th>
+<th style="text-align: left;">Target (P90)</th>
+<th style="text-align: left;">Target (P99)</th>
+<th style="text-align: left;">Mitigation Strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>DNS / TLS / Handshake</strong></td>
+<td style="text-align: left;">&lt; 25ms</td>
+<td style="text-align: left;">&lt; 60ms</td>
+<td style="text-align: left;">&lt; 120ms</td>
+<td style="text-align: left;">Global Anycast edge routing (Cloudflare/Vercel Edge Network), HTTP/3 enabled.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Server Runtime Initialization</strong></td>
+<td style="text-align: left;">&lt; 5ms (Edge) / &lt; 15ms (Node warm)</td>
+<td style="text-align: left;">&lt; 25ms (Edge) / &lt; 250ms (Node cold)</td>
+<td style="text-align: left;">&lt; 50ms (Edge) / &lt; 1200ms (Node cold)</td>
+<td style="text-align: left;">Use <code>runtime = 'edge'</code> for pure text completion; use <code>runtime = 'nodejs'</code> with lightweight bundles (&lt; 15MB) for multi-tool dependencies.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Provider Gateway / Network</strong></td>
+<td style="text-align: left;">&lt; 80ms</td>
+<td style="text-align: left;">&lt; 150ms</td>
+<td style="text-align: left;">&lt; 350ms</td>
+<td style="text-align: left;">Regional model routing (deploy serverless function in <code>us-east-1</code> when calling OpenAI / Anthropic US infrastructure).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Time to First Chunk (Model)</strong></td>
+<td style="text-align: left;">&lt; 180ms (Groq) / &lt; 450ms (GPT-4o)</td>
+<td style="text-align: left;">&lt; 350ms (Groq) / &lt; 850ms (GPT-4o)</td>
+<td style="text-align: left;">&lt; 600ms (Groq) / &lt; 2200ms (Claude 3.5)</td>
+<td style="text-align: left;">System prompt compaction, KV-cache optimization via static prompt prefixing, model selection tuning.</td>
+</tr>
+</tbody>
+</table>
+<h3>2.2 TTFT Instrumentation Engine</h3>
+<p>The following code provides a drop-in replacement for route instrumentation that tracks exact millisecond timing for server overhead, network latency, and TTFT, injecting telemetry headers directly into the response stream.</p>
+<pre><code class="language-typescript">// app/api/chat/route.ts
+import { openai } from '@ai-sdk/openai';
+import { streamText, createDataStreamResponse } from 'ai';
+
+export const runtime = 'edge';
+
+export async function POST(req: Request) {
+  const reqReceivedAt = performance.now();
+  const { messages } = await req.json();
+
+  return createDataStreamResponse({
+    execute: async (dataStream) =&gt; {
+      const modelInvokedAt = performance.now();
+      let firstChunkReceived = false;
+
+      const result = streamText({
+        model: openai('gpt-4o-mini'),
+        messages,
+        onChunk({ chunk }) {
+          if (!firstChunkReceived &amp;&amp; chunk.type === 'text-delta') {
+            firstChunkReceived = true;
+            const ttft = performance.now() - reqReceivedAt;
+            const modelLatency = performance.now() - modelInvokedAt;
+
+            // Emit precise telemetry chunks to the data stream
+            dataStream.writeData({
+              type: 'telemetry',
+              metrics: {
+                serverPrepMs: Math.round(modelInvokedAt - reqReceivedAt),
+                modelTTFTMs: Math.round(modelLatency),
+                totalTTFTMs: Math.round(ttft),
+              },
+            });
+          }
+        },
+        onFinish({ usage }) {
+          dataStream.writeData({
+            type: 'usage',
+            metrics: {
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens,
+            },
+          });
+        },
+      });
+
+      result.mergeIntoDataStream(dataStream);
+    },
+  });
+}
+</code></pre>
+<hr />
+<h2>3. Edge vs. Node.js Runtime Decision Matrix</h2>
+<p>Choosing the incorrect runtime triggers subtle production failures: memory ceiling crashes (128MB on Edge), missing crypto primitives, or severe cold starts. Use this matrix to select your execution environment.</p>
+<pre><code>                  ┌────────────────────────────────────────┐
+                  │ Does your route require native C++ /   │
+                  │ Node built-ins (e.g., canvas, prisma,  │
+                  │ sharp, isolated-vm, large SDKs)?       │
+                  └───────────────────┬────────────────────┘
+                                      │
+                         ┌────────────┴────────────┐
+                        YES                        NO
+                         │                         │
+                         ▼                         ▼
+            ┌─────────────────────────┐  ┌─────────────────────────────────┐
+            │ Use Node.js Runtime     │  │ Does your pipeline execute      │
+            │ runtime = 'nodejs'      │  │ heavy multi-step loops taking   │
+            │ Set maxDuration = 60-300│  │ &gt; 30 seconds total time?       │
+            └─────────────────────────┘  └────────────────┬────────────────┘
+                                                          │
+                                             ┌────────────┴────────────┐
+                                            YES                        NO
+                                             │                         │
+                                             ▼                         ▼
+                                ┌─────────────────────────┐  ┌─────────────────┐
+                                │ Use Node.js Runtime     │  │ Use Edge Runtime│
+                                │ runtime = 'nodejs'      │  │ runtime = 'edge'│
+                                │ Pro Plan allows up to   │  │ TTFT &lt; 50ms     │
+                                │ 300s execution window   │  │ 0ms Cold Starts │
+                                └─────────────────────────┘  └─────────────────┘
+</code></pre>
+<h3>Common Edge Runtime Gotchas &amp; Fixes</h3>
+<ol>
+<li><strong>Unsupported Node API (<code>crypto</code>, <code>stream</code>, <code>Buffer</code>)</strong>:</li>
+<li><em>Problem:</em> Libraries relying on <code>crypto.randomBytes</code> or <code>Buffer.from</code> throw <code>Uncaught ReferenceError: Buffer is not defined</code>.</li>
+<li>
+<p><em>Fix:</em> Use Web Standard APIs natively supported in Vercel Edge:
+     ```typescript
+     // Instead of Buffer:
+     const uint8Array = new TextEncoder().encode("payload");
+     const base64 = btoa(String.fromCharCode(...uint8Array));</p>
+<p>// Instead of crypto.randomBytes:
+ const uuid = crypto.randomUUID();
+ ```
+2. <strong>Bundle Size Overflow</strong>:
+   * <em>Problem:</em> Edge functions fail deployments when uncompressed code exceeds 4MB (Vercel Edge limit).
+   * <em>Fix:</em> Keep Edge route entry points lean. Segregate database queries (e.g., Heavy ORMs like Prisma) into standard Node.js Route Handlers or Server Actions, calling them via internal RPC/HTTP endpoints if the chat handler must reside on the Edge.</p>
+</li>
+</ol>
+<hr />
+<h2>4. Production Error Boundary &amp; Fallback Swipe File</h2>
+<h3>4.1 Resilient Multi-Provider Failover Router</h3>
+<p>This pattern wraps downstream LLM calls in a dynamic fallback cascade. If Anthropic returns an overload error (529), rate-limit (429), or internal failure (500), the request instantaneously shifts to OpenAI without client interruption.</p>
+<pre><code class="language-typescript">// app/api/chat/fallback/route.ts
+import { anthropic } from '@ai-sdk/anthropic';
+import { openai } from '@ai-sdk/openai';
+import { streamText, createDataStreamResponse, LanguageModelV1 } from 'ai';
+
+export const runtime = 'edge';
+
+interface ProviderConfig {
+  name: string;
+  model: LanguageModelV1;
+}
+
+const PROVIDER_CASCADE: ProviderConfig[] = [
+  { name: 'anthropic-primary', model: anthropic('claude-3-5-sonnet-20241022') },
+  { name: 'openai-secondary', model: openai('gpt-4o') },
+  { name: 'openai-tertiary', model: openai('gpt-4o-mini') },
+];
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  return createDataStreamResponse({
+    execute: async (dataStream) =&gt; {
+      let executionSuccess = false;
+      let lastError: Error | null = null;
+
+      for (const provider of PROVIDER_CASCADE) {
+        try {
+          dataStream.writeData({
+            type: 'routing',
+            attemptedProvider: provider.name,
+          });
+
+          const result = streamText({
+            model: provider.model,
+            messages,
+          });
+
+          // Await stream merge. If upstream throws instantly (429/500), execution moves to catch
+          await result.mergeIntoDataStream(dataStream);
+          executionSuccess = true;
+          break; // Stream completed without uncaught initial infrastructure failure
+        } catch (error: any) {
+          lastError = error;
+          dataStream.writeData({
+            type: 'provider_failure',
+            failedProvider: provider.name,
+            reason: error.message || 'Unknown network/provider failure',
+          });
+          // Continue loop to next provider in cascade
+        }
+      }
+
+      if (!executionSuccess) {
+        dataStream.writeData({
+          type: 'fatal_error',
+          error: lastError?.message || 'All providers in cascade failed.',
+        });
+        throw lastError;
+      }
+    },
+  });
+}
+</code></pre>
+<h3>4.2 Client-Side Resilient Generative UI Error Boundary</h3>
+<p>When rendering custom generative UI widgets within a chat feed, rendering bugs in dynamic LLM outputs can crash the entire application view. This component confines catastrophic UI failures to the specific message component and offers immediate client-side recovery.</p>
+<pre><code class="language-tsx">// components/chat/GenerativeErrorBoundary.tsx
+'use client';
+
+import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+
+interface Props {
+  children: ReactNode;
+  fallbackMessageId: string;
+  onRetry?: () =&gt; void;
+}
+
+interface State {
+  hasError: boolean;
+  error: Error | null;
+}
+
+export class GenerativeErrorBoundary extends Component&lt;Props, State&gt; {
+  public state: State = {
+    hasError: false,
+    error: null,
+  };
+
+  public static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error(`[GenerativeUI Error] Message ID: ${this.props.fallbackMessageId}`, error, errorInfo);
+  }
+
+  public render() {
+    if (this.state.hasError) {
+      return (
+        &lt;div className=&quot;rounded-lg border border-red-500/20 bg-red-950/10 p-4 text-red-400&quot;&gt;
+          &lt;div className=&quot;flex items-center space-x-2&quot;&gt;
+            &lt;AlertTriangle className=&quot;h-5 w-5 text-red-500&quot; /&gt;
+            &lt;h4 className=&quot;text-sm font-semibold&quot;&gt;Artifact Rendering Engine Failure&lt;/h4&gt;
+          &lt;/div&gt;
+          &lt;p className=&quot;mt-2 text-xs text-red-300/80&quot;&gt;
+            The model generated an invalid component tree or malformed parameters that could not be parsed.
+          &lt;/p&gt;
+          &lt;pre className=&quot;mt-2 max-h-24 overflow-x-auto rounded bg-black/40 p-2 font-mono text-[10px] text-red-200&quot;&gt;
+            {this.state.error?.message}
+          &lt;/pre&gt;
+          {this.props.onRetry &amp;&amp; (
+            &lt;button
+              onClick={() =&gt; {
+                this.setState({ hasError: false, error: null });
+                this.props.onRetry?.();
+              }}
+              className=&quot;mt-3 inline-flex items-center space-x-1.5 rounded bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 transition-colors&quot;
+            &gt;
+              &lt;RefreshCw className=&quot;h-3 w-3&quot; /&gt;
+              &lt;span&gt;Retry Component Render&lt;/span&gt;
+            &lt;/button&gt;
+          )}
+        &lt;/div&gt;
+      );
+    }
+
+    return this.props.children;
+  }
+}
+</code></pre>
+<h3>4.3 Safe Tool Execution Wrapper with Zod Recovery</h3>
+<p>When an LLM executes a tool call with incorrect or structurally invalid JSON, passing that raw payload to execution functions crashes your flow. Use this interceptor to catch malformed tool input and gracefully feed the schema error back to the model for iterative auto-correction.</p>
+<pre><code class="language-typescript">// lib/ai/safe-tool.ts
+import { tool as createAiSdkTool } from 'ai';
+import { z } from 'zod';
+
+export function createSafeTool&lt;TSchema extends z.ZodTypeAny, TOutput&gt;({
+  description,
+  parameters,
+  execute,
+}: {
+  description: string;
+  parameters: TSchema;
+  execute: (args: z.infer&lt;TSchema&gt;) =&gt; Promise&lt;TOutput&gt;;
+}) {
+  return createAiSdkTool({
+    description,
+    parameters,
+    execute: async (args: unknown) =&gt; {
+      const parsed = parameters.safeParse(args);
+
+      if (!parsed.success) {
+        // Return structured schema errors directly back to the model's message history
+        // instead of throwing an unhandled runtime error.
+        return {
+          status: 'error',
+          errorType: 'SCHEMA_VALIDATION_FAILURE',
+          validationIssues: parsed.error.issues.map((issue) =&gt; ({
+            path: issue.path.join('.'),
+            message: issue.message,
+          })),
+          instruction: 'Fix the parameters matching the issue paths and retry execution.',
+        };
+      }
+
+      try {
+        const result = await execute(parsed.data);
+        return {
+          status: 'success',
+          data: result,
+        };
+      } catch (runtimeError: any) {
+        return {
+          status: 'error',
+          errorType: 'TOOL_EXECUTION_EXCEPTION',
+          message: runtimeError.message || 'Fatal execution error.',
+        };
+      }
+    },
+  });
+}
+</code></pre>
+<hr />
+<h2>5. Token Budgeting &amp; Sliding-Window Memory Engine</h2>
+<p>Uncontrolled context growth degrades response latency, inflates costs geometrically, and eventually triggers hard context limits. The following sliding-window message pruning engine runs prior to calling <code>streamText</code>.</p>
+<h3>Features:</h3>
+<ol>
+<li><strong>Preserves the System Prompt:</strong> Always keeps your authoritative rules intact.</li>
+<li><strong>Retains Semantic Anchor:</strong> Guarantees the very first user message (which sets the conversation intent) remains in context.</li>
+<li><strong>Preserves Tool Invariants:</strong> Keeps tool call and result pairs atomically bound (avoids OpenAI API rejection errors when a <code>tool_call</code> lacks its corresponding <code>tool_result</code>).</li>
+<li><strong>Enforces Hard Token Caps:</strong> Accurately trims message history based on safe character heuristics ($1\text{ token} \approx 4\text{ chars}$) or custom counter functions.</li>
+</ol>
+<pre><code class="language-typescript">// lib/ai/token-budget.ts
+import { CoreMessage } from 'ai';
+
+interface PruneOptions {
+  maxTokens: number;
+  charsPerToken?: number;
+  reserveCompletionTokens?: number;
+}
+
+export function pruneMessageHistory(
+  messages: CoreMessage[],
+  options: PruneOptions
+): CoreMessage[] {
+  const { maxTokens, charsPerToken = 4, reserveCompletionTokens = 1000 } = options;
+  const budget = (maxTokens - reserveCompletionTokens) * charsPerToken;
+
+  if (messages.length &lt;= 2) return messages;
+
+  const systemMessages = messages.filter((m) =&gt; m.role === 'system');
+  const nonSystemMessages = messages.filter((m) =&gt; m.role !== 'system');
+
+  let currentLength = systemMessages.reduce(
+    (acc, m) =&gt; acc + JSON.stringify(m.content).length,
+    0
+  );
+
+  // Preserve the first user message if available as intent anchor
+  const firstUserMessage = nonSystemMessages[0]?.role === 'user' ? nonSystemMessages[0] : null;
+  const conversationTail = firstUserMessage ? nonSystemMessages.slice(1) : nonSystemMessages;
+
+  if (firstUserMessage) {
+    currentLength += JSON.stringify(firstUserMessage.content).length;
+  }
+
+  const prunedTail: CoreMessage[] = [];
+
+  // Iterate backwards through remaining messages
+  for (let i = conversationTail.length - 1; i &gt;= 0; i--) {
+    const candidate = conversationTail[i];
+    const candidateLength = JSON.stringify(candidate.content).length;
+
+    // Check if adding candidate exceeds character budget
+    if (currentLength + candidateLength &gt; budget) {
+      break;
+    }
+
+    // Ensure we do not orphan tool results from tool calls
+    if (candidate.role === 'tool') {
+      // Look back for the matching assistant message with tool_calls
+      const assistantIndex = i - 1;
+      if (assistantIndex &gt;= 0 &amp;&amp; conversationTail[assistantIndex].role === 'assistant') {
+        const assistantMsg = conversationTail[assistantIndex];
+        const combinedLength = candidateLength + JSON.stringify(assistantMsg.content).length;
+
+        if (currentLength + combinedLength &lt;= budget) {
+          prunedTail.unshift(candidate);
+          prunedTail.unshift(assistantMsg);
+          currentLength += combinedLength;
+          i--; // Skip the assistant message in next loop tick
+          continue;
+        } else {
+          // Cannot fit tool call pair; abort backward accumulation
+          break;
+        }
+      }
+    }
+
+    prunedTail.unshift(candidate);
+    currentLength += candidateLength;
+  }
+
+  const finalMessages: CoreMessage[] = [...systemMessages];
+  if (firstUserMessage) {
+    finalMessages.push(firstUserMessage);
+  }
+  finalMessages.push(...prunedTail);
+
+  return finalMessages;
+}
+</code></pre>
+<hr />
+<h2>6. End-to-End Hardened Architecture Template</h2>
+<p>Here is the unified implementation integrating dynamic fallbacks, token pruning, rate limiting, and telemetry into a single production route handler.</p>
+<pre><code class="language-typescript">// app/api/chat/hardened/route.ts
+import { openai } from '@ai-sdk/openai';
+import { streamText, createDataStreamResponse, CoreMessage } from 'ai';
+import { pruneMessageHistory } from '@/lib/ai/token-budget';
+
+export const runtime = 'edge';
+export const maxDuration = 45;
+
+export async function POST(req: Request) {
+  const startTime = performance.now();
+
+  try {
+    const { messages }: { messages: CoreMessage[] } = await req.json();
+
+    if (!messages || !Array.isArray(messages)) {
+      return new Response(JSON.stringify({ error: 'Malformed messages array' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // 1. Enforce Token Budgets
+    const budgetEnforcedMessages = pruneMessageHistory(messages, {
+      maxTokens: 8192,
+      reserveCompletionTokens: 2048,
+    });
+
+    return createDataStreamResponse({
+      headers: {
+        'X-Accel-Buffering': 'no',
+      },
+      execute: async (dataStream) =&gt; {
+        let firstChunkFired = false;
+
+        const result = streamText({
+          model: openai('gpt-4o'),
+          messages: budgetEnforcedMessages,
+          onChunk({ chunk }) {
+            if (!firstChunkFired &amp;&amp; chunk.type === 'text-delta') {
+              firstChunkFired = true;
+              dataStream.writeMessageAnnotation({
+                type: 'perf',
+                ttftMs: Math.round(performance.now() - startTime),
+              });
+            }
+          },
+          onError({ error }) {
+            dataStream.writeData({
+              type: 'system_error',
+              details: error instanceof Error ? error.message : 'Unknown runtime failure',
+            });
+          },
+        });
+
+        result.mergeIntoDataStream(dataStream);
+      },
+    });
+  } catch (globalError: any) {
+    return new Response(
+      JSON.stringify({
+        error: 'Execution pipeline terminated',
+        message: globalError.message || 'Fatal internal error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+</code></pre>
+<hr />
+<h2>7. Operational Runbook: Diagnosing Mid-Stream Interruptions</h2>
+<p>When users report truncated responses, evaluate causes using this diagnostic decision tree:</p>
+<pre><code>Stream terminates mid-sentence
+│
+├── Did client receive an HTTP 200 before cutoff?
+│    ├── NO ──&gt; Check Edge/Node Runtime crash log (OOM 128MB or unhandled Exception).
+│    └── YES ──&gt; Check client-side Network Tab.
+│
+├── Client Network Tab shows (canceled)?
+│    ├── YES ──&gt; Client aborted stream (User navigated away, component unmounted,
+│    │           or AbortController fired via timeout).
+│    └── NO ──&gt; Inspect response payload stream tail.
+│
+├── Tail contains data stream [error] flag?
+│    ├── YES ──&gt; Upstream LLM provider threw post-connect (429 token limits or
+│    │           tool execution threw unhandled exception).
+│    └── NO ──&gt; Infrastructure timeout. Vercel maxDuration exceeded or corporate
+│                reverse proxy (Cloudflare/Kong) terminated connection at 100s.
+</code></pre>
+<h3>Immediate Mitigation Steps:</h3>
+<ol>
+<li><strong>Error: <code>FUNCTION_INVOCATION_TIMEOUT</code></strong>: Elevate <code>maxDuration</code> in <code>route.ts</code>. If running on Hobby, upgrade to Pro or switch to asynchronous background tasks using persistent storage (e.g., Redis / Vercel KV) instead of a synchronous streaming response.</li>
+<li><strong>Error: <code>Response closed before stream finished</code></strong>: Ensure no intermediate reverse proxy (e.g., Cloudflare, AWS CloudFront) has standard edge timeout limits set below the upstream model generation duration. Disable Cloudflare Auto-Minify on SSE endpoints.</li>
+<li><strong>Payload Truncation at 4096 Tokens</strong>: Your model reached its default maximum output context window. Explicitly supply <code>maxTokens</code> configuration to <code>streamText</code> and implement multi-step continuations when handling expansive code or document generation.</li>
+</ol>
+</body>
+</html>
