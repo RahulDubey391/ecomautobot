@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Playwright & E2E Testing Production Vault: 50+ Enterprise Test Suites, Visual Regression & CI/CD Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Production Playwright Architecture &amp; Mental Models</h1>
+<p>Welcome to the foundational architecture module of <strong>The Playwright &amp; E2E Testing Production Vault</strong>. </p>
+<p>Most enterprise end-to-end test suites fail not because of browser-level bugs, but because of architectural decay. Common symptoms include:
+* Tests coupling directly to unstable CSS selectors.
+* Tests relying on arbitrary sleep timers (<code>page.waitForTimeout(5000)</code>).
+* Test runs polluting staging databases with orphaned records.
+* Teams building monolithic "God" Page Objects that become unmaintainable as products evolve.</p>
+<p>This module provides the battle-tested architectural blueprint required to scale Playwright to thousands of daily runs across distributed CI/CD workers with zero non-deterministic failures (flakiness).</p>
+<hr />
+<h2>1. Enterprise Directory Layout</h2>
+<p>A scalable Playwright suite decouples <strong>test logic</strong>, <strong>UI interaction models (Page Objects)</strong>, <strong>state provisioning (Fixtures &amp; Seeding)</strong>, and <strong>environment orchestration</strong>.</p>
+<p>Below is the production-ready directory structure for polyrepo applications or dedicated test packages inside modern monorepos (Turborepo, Nx, or pnpm workspaces):</p>
+<pre><code class="language-text">e2e/
+├── .env.example
+├── .env.test
+├── playwright.config.ts
+├── tsconfig.json
+├── src/
+│   ├── components/                     # Reusable, domain-agnostic UI sub-components
+│   │   ├── common/
+│   │   │   ├── ModalComponent.ts
+│   │   │   ├── NotificationToast.ts
+│   │   │   └── TableComponent.ts
+│   │   └── navigation/
+│   │       ├── GlobalNavbar.ts
+│   │       └── SidebarNav.ts
+│   ├── pages/                          # Compositional Page Object Models (POMs)
+│   │   ├── BasePage.ts
+│   │   ├── auth/
+│   │   │   ├── LoginPage.ts
+│   │   │   └── ResetPasswordPage.ts
+│   │   └── dashboard/
+│   │       ├── BillingPage.ts
+│   │       ├── OverviewPage.ts
+│   │       └── SettingsPage.ts
+│   ├── fixtures/                       # Custom Playwright fixtures (test.extend)
+│   │   ├── auth.fixture.ts             # Auth state injection via storageState
+│   │   ├── base.fixture.ts             # Aggregated test fixture (combines all fixtures)
+│   │   ├── database.fixture.ts         # Direct-to-database or API state cleanup
+│   │   └── network.fixture.ts          # Mocking layers and route definitions
+│   ├── factories/                      # Dynamic deterministic data generators (Faker.js)
+│   │   ├── org.factory.ts
+│   │   ├── payment.factory.ts
+│   │   └── user.factory.ts
+│   ├── network/                        # Static HARs, route handlers, schema validation
+│   │   ├── handlers/
+│   │   │   ├── analytics.mock.ts
+│   │   │   └── stripe.mock.ts
+│   │   └── mocks/
+│   │       └── subscriptions.json
+│   ├── support/                        # Global helpers, auth tokens, database drivers
+│   │   ├── api-client.ts
+│   │   ├── db-client.ts
+│   │   └── global-setup.ts
+│   │   └── global-teardown.ts
+│   └── utils/                          # Pure logic utilities
+│       ├── crypto.ts
+│       ├── date-helpers.ts
+│       └── env.ts
+└── tests/                              # Functional test suites grouped by domain
+    ├── auth/
+    │   ├── login.spec.ts
+    │   └── mfa.spec.ts
+    ├── billing/
+    │   ├── stripe-checkout.spec.ts
+    │   └── subscription-swap.spec.ts
+    └── settings/
+        └── team-permissions.spec.ts
+</code></pre>
+<h3>File Naming Conventions</h3>
+<ul>
+<li><strong>Spec Files:</strong> <code>&lt;domain-or-feature&gt;.&lt;action&gt;.spec.ts</code> (e.g., <code>subscription-swap.spec.ts</code>).</li>
+<li><strong>Page Objects:</strong> <code>&lt;DomainName&gt;Page.ts</code> (e.g., <code>BillingPage.ts</code>).</li>
+<li><strong>Components:</strong> <code>&lt;ComponentName&gt;Component.ts</code> (e.g., <code>TableComponent.ts</code>).</li>
+<li><strong>Fixtures:</strong> <code>&lt;domain&gt;.fixture.ts</code> (e.g., <code>auth.fixture.ts</code>).</li>
+<li><strong>Factories:</strong> <code>&lt;model&gt;.factory.ts</code> (e.g., <code>user.factory.ts</code>).</li>
+</ul>
+<hr />
+<h2>2. Production Playwright Configuration Template</h2>
+<p>The default <code>playwright.config.ts</code> generated by npm is insufficient for enterprise CI/CD. The configuration below implements:
+1. Resilient tracing (captures only on first retry to minimize CI storage bloat).
+2. Proper sharding support.
+3. Isolated local webserver spinning vs. remote staging runs.
+4. Clean separation of auth state artifacts (<code>.auth/</code>).</p>
+<pre><code class="language-typescript">// playwright.config.ts
+import { defineConfig, devices } from '@playwright/test';
+import dotenv from 'dotenv';
+import path from 'path';
+
+dotenv.config({ path: path.resolve(__dirname, '.env.test') });
+
+const IS_CI = !!process.env.CI;
+const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
+
+export default defineConfig({
+  testDir: './tests',
+  fullyParallel: true,
+  forbidOnly: IS_CI,
+  retries: IS_CI ? 2 : 0,
+  workers: IS_CI ? '100%' : '50%',
+  timeout: 45_000,
+  expect: {
+    timeout: 7_000,
+  },
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['json', { outputFile: 'test-results/test-results.json' }],
+    ...(IS_CI ? [['github'] as const] : []),
+  ],
+  use: {
+    baseURL: BASE_URL,
+    actionTimeout: 10_000,
+    navigationTimeout: 15_000,
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'on-first-retry',
+    testIdAttribute: 'data-test-id',
+    ignoreHTTPSErrors: true,
+  },
+  projects: [
+    // Global Authentication Setup Phase
+    {
+      name: 'setup',
+      testMatch: /global\.setup\.ts/,
+      teardown: 'teardown',
+    },
+    {
+      name: 'teardown',
+      testMatch: /global\.teardown\.ts/,
+    },
+    // Desktop Chrome
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1440, height: 900 },
+      },
+      dependencies: ['setup'],
+    },
+    // Desktop Firefox
+    {
+      name: 'firefox',
+      use: {
+        ...devices['Desktop Firefox'],
+        viewport: { width: 1440, height: 900 },
+      },
+      dependencies: ['setup'],
+    },
+    // Desktop WebKit (Safari Engine)
+    {
+      name: 'webkit',
+      use: {
+        ...devices['Desktop Safari'],
+        viewport: { width: 1440, height: 900 },
+      },
+      dependencies: ['setup'],
+    },
+    // Mobile Viewport Regression
+    {
+      name: 'mobile-safari',
+      use: {
+        ...devices['iPhone 14'],
+      },
+      dependencies: ['setup'],
+    },
+  ],
+  outputDir: 'test-results/',
+});
+</code></pre>
+<hr />
+<h2>3. Scalable Page Object &amp; Component Composition Architecture</h2>
+<p>Monolithic Page Objects where every single button, dropdown, and link on a dashboard lives within a single <code>DashboardPage.ts</code> class become unmaintainable. </p>
+<p>Follow these two architectural rules:
+1. <strong>Inherit from a strict <code>BasePage</code></strong> that standardizes navigation, dynamic element polling, and assertion handling.
+2. <strong>Decompose complex screens into Component Objects</strong> that are passed the root locator scope.</p>
+<h3>BasePage Architecture</h3>
+<pre><code class="language-typescript">// src/pages/BasePage.ts
+import { Page, Locator, Response, expect } from '@playwright/test';
+
+export abstract class BasePage {
+  readonly page: Page;
+  abstract readonly pagePath: string;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
+
+  /**
+   * Navigates directly to the page's declared relative path.
+   */
+  async navigate(queryParams?: Record&lt;string, string&gt;): Promise&lt;Response | null&gt; {
+    const url = queryParams
+      ? `${this.pagePath}?${new URLSearchParams(queryParams).toString()}`
+      : this.pagePath;
+    return this.page.goto(url, { waitUntil: 'domcontentloaded' });
+  }
+
+  /**
+   * Asserts the current URL matches the expected pagePath pattern.
+   */
+  async verifyPath(): Promise&lt;void&gt; {
+    await expect(this.page).toHaveURL(new RegExp(`${this.pagePath}`));
+  }
+
+  /**
+   * Scopes locators strictly by data-test-id or accessible semantic ARIA roles.
+   */
+  getByTestId(id: string): Locator {
+    return this.page.getByTestId(id);
+  }
+
+  /**
+   * Resilient click handler that asserts stability before interaction.
+   */
+  async safeClick(locator: Locator): Promise&lt;void&gt; {
+    await expect(locator).toBeVisible();
+    await expect(locator).toBeEnabled();
+    await locator.click();
+  }
+}
+</code></pre>
+<h3>Component Object Model (Decoupled Sub-Views)</h3>
+<p>Components must never reference the global <code>page</code> directly when searching for internal child nodes. Always pass a parent <code>Locator</code> (root) into the component constructor to limit search scope.</p>
+<pre><code class="language-typescript">// src/components/common/TableComponent.ts
+import { Locator, expect } from '@playwright/test';
+
+export class TableComponent {
+  readonly rootLocator: Locator;
+  readonly rows: Locator;
+  readonly headers: Locator;
+
+  constructor(rootLocator: Locator) {
+    this.rootLocator = rootLocator;
+    this.rows = this.rootLocator.locator('tbody tr');
+    this.headers = this.rootLocator.locator('thead th');
+  }
+
+  async getRowCount(): Promise&lt;number&gt; {
+    return this.rows.count();
+  }
+
+  getRowByColumnValue(columnIndex: number, value: string): Locator {
+    return this.rows.filter({
+      has: this.rootLocator.locator(`td:nth-child(${columnIndex})`, { hasText: value }),
+    });
+  }
+
+  async clickRowAction(identifierValue: string, actionButtonTestId: string): Promise&lt;void&gt; {
+    const targetRow = this.rows.filter({ hasText: identifierValue }).first();
+    await expect(targetRow).toBeVisible();
+    await targetRow.getByTestId(actionButtonTestId).click();
+  }
+}
+</code></pre>
+<h3>Implementing the Page Object via Composition</h3>
+<pre><code class="language-typescript">// src/pages/dashboard/BillingPage.ts
+import { Page, Locator, expect } from '@playwright/test';
+import { BasePage } from '../BasePage';
+import { TableComponent } from '../../components/common/TableComponent';
+
+export class BillingPage extends BasePage {
+  readonly pagePath = '/dashboard/billing';
+
+  // Scoped Components
+  readonly invoiceTable: TableComponent;
+
+  // Page Specific Locators
+  readonly currentPlanCard: Locator;
+  readonly upgradePlanButton: Locator;
+  readonly cancelSubscriptionButton: Locator;
+  readonly billingStatusBadge: Locator;
+
+  constructor(page: Page) {
+    super(page);
+    this.invoiceTable = new TableComponent(this.page.getByTestId('invoices-table-container'));
+    this.currentPlanCard = this.page.getByTestId('current-plan-card');
+    this.upgradePlanButton = this.page.getByRole('button', { name: /upgrade to pro/i });
+    this.cancelSubscriptionButton = this.page.getByRole('button', { name: /cancel subscription/i });
+    this.billingStatusBadge = this.page.getByTestId('subscription-status-badge');
+  }
+
+  async executePlanUpgrade(targetTier: 'pro' | 'enterprise'): Promise&lt;void&gt; {
+    await this.safeClick(this.upgradePlanButton);
+    const tierModalButton = this.page.getByRole('button', { name: new RegExp(`Confirm ${targetTier}`, 'i') });
+    await this.safeClick(tierModalButton);
+  }
+
+  async assertPlanActive(expectedPlanName: string): Promise&lt;void&gt; {
+    await expect(this.currentPlanCard).toContainText(expectedPlanName);
+    await expect(this.billingStatusBadge).toHaveText(/active/i);
+  }
+}
+</code></pre>
+<hr />
+<h2>4. Deterministic Test Data Seeding Strategy</h2>
+<p>The number-one cause of flaky, brittle CI runs is <strong>shared mutable state</strong> (e.g., three worker threads simultaneously modifying the same test account's settings).</p>
+<h3>Seeding Strategies Compared</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Strategy</th>
+<th style="text-align: left;">Speed</th>
+<th style="text-align: left;">Isolation Level</th>
+<th style="text-align: left;">Implementation Cost</th>
+<th style="text-align: left;">Best Used For</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Direct DB Seeding</strong> (Prisma / SQL)</td>
+<td style="text-align: left;">Ultra-Fast (~10ms)</td>
+<td style="text-align: left;">Maximum (Row-level)</td>
+<td style="text-align: left;">Medium (Schema coupling)</td>
+<td style="text-align: left;">Complex business state, bulk records</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>API Mutation Factory</strong> (<code>request</code>)</td>
+<td style="text-align: left;">Fast (~100ms)</td>
+<td style="text-align: left;">High (New entity per test)</td>
+<td style="text-align: left;">Low (Uses existing APIs)</td>
+<td style="text-align: left;">Standard user signup, org bootstrapping</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>UI-Driven Setup</strong></td>
+<td style="text-align: left;">Slow (~3,000ms+)</td>
+<td style="text-align: left;">Low (High failure vectors)</td>
+<td style="text-align: left;">Lowest (No API/DB needed)</td>
+<td style="text-align: left;">Only for end-to-end registration validation</td>
+</tr>
+</tbody>
+</table>
+<h3>The Production Fixture Pattern</h3>
+<p>Do not write raw setup/cleanup logic inside <code>beforeEach</code> or <code>afterEach</code> blocks within test files. Encapsulate setup, teardown, and lifecycle execution entirely inside <strong>Playwright Custom Fixtures</strong>.</p>
+<p>This guarantees that if a test fails midway through execution, Playwright's fixture teardown executes automatically, preventing database pollution.</p>
+<pre><code class="language-typescript">// src/factories/user.factory.ts
+import { cryptoRandomString } from '../utils/crypto';
+
+export interface UserPayload {
+  email: string;
+  name: string;
+  tenantSlug: string;
+}
+
+export function generateUserPayload(): UserPayload {
+  const uniqueId = cryptoRandomString(8);
+  return {
+    email: `ci-worker-${process.env.TEST_WORKER_INDEX || '0'}-${uniqueId}@example-vault.internal`,
+    name: `Test Engineer ${uniqueId}`,
+    tenantSlug: `tenant-${uniqueId}`,
+  };
+}
+</code></pre>
+<pre><code class="language-typescript">// src/fixtures/base.fixture.ts
+import { test as base, APIRequestContext, request } from '@playwright/test';
+import { BillingPage } from '../pages/dashboard/BillingPage';
+import { generateUserPayload, UserPayload } from '../factories/user.factory';
+
+type WorkerTestContext = {
+  // Test User context containing provisioned API tokens and metadata
+  authedUser: {
+    user: UserPayload;
+    token: string;
+    organizationId: string;
+  };
+  // Pre-instantiated Page Objects
+  billingPage: BillingPage;
+};
+
+export const test = base.extend&lt;WorkerTestContext&gt;({
+  // Automatic Isolated User Setup and Teardown
+  authedUser: async ({}, use) =&gt; {
+    // 1. Setup Phase: Spin up an out-of-band API context to rapidly provision an isolated tenant
+    const apiContext: APIRequestContext = await request.newContext({
+      baseURL: process.env.API_BASE_URL || 'http://localhost:3000/api',
+    });
+
+    const userPayload = generateUserPayload();
+
+    // Create new organization + user account directly via internal API
+    const response = await apiContext.post('/v1/testing/provision-tenant', {
+      data: userPayload,
+      headers: {
+        'x-e2e-provision-secret': process.env.E2E_SEED_SECRET || 'secret-vault-key',
+      },
+    });
+
+    if (!response.ok()) {
+      throw new Error(`Failed to seed isolated tenant: ${await response.text()}`);
+    }
+
+    const { token, organizationId } = await response.json();
+
+    // 2. Yield context to the test spec
+    await use({
+      user: userPayload,
+      token,
+      organizationId,
+    });
+
+    // 3. Teardown Phase: Runs automatically after test finishes (even if failed/timed out)
+    const teardownResponse = await apiContext.delete(`/v1/testing/teardown-tenant/${organizationId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!teardownResponse.ok()) {
+      console.warn(`[Cleanup Warning]: Failed to delete tenant ${organizationId}`);
+    }
+
+    await apiContext.dispose();
+  },
+
+  // Fixture: Pre-conditioned page object with injected local auth state
+  billingPage: async ({ page, authedUser }, use) =&gt; {
+    // Inject auth token directly into browser storage to bypass manual UI login
+    await page.addInitScript((jwt) =&gt; {
+      window.localStorage.setItem('auth_token', jwt);
+    }, authedUser.token);
+
+    const billingPage = new BillingPage(page);
+    await use(billingPage);
+  },
+});
+
+export { expect } from '@playwright/test';
+</code></pre>
+<hr />
+<h2>5. Zero-Flakiness Network Interception &amp; Mocking Rules</h2>
+<p>Mocks are a double-edged sword. Over-mocking leads to tests passing while production breaks. Under-mocking introduces failures from external third parties (e.g., Stripe, SendGrid, Segment).</p>
+<h3>The Enterprise Mocking Matrix</h3>
+<pre><code class="language-text">[ Incoming Request ]
+        │
+        ├── Is it an External 3rd Party? (Stripe, Twilio, Datadog)
+        │       └── YES ──&gt; ALWAYS INTERCEPT &amp; MOCK (Rule 1)
+        │
+        ├── Is it a Slow Non-Critical Telemetry Endpoint? (Analytics)
+        │       └── YES ──&gt; ABORT / FULFILL INSTANTLY (Rule 2)
+        │
+        └── Is it Core Application Architecture? (Your Primary API)
+                ├── Happy Path ──&gt; HIT REAL API / SEEDED DB
+                └── Edge Failure (500 Error, 429 Rate Limit) ──&gt; INTERCEPT &amp; ROUTE-MOCK
+</code></pre>
+<h3>Network Mocking Implementation (Stripe &amp; Analytics)</h3>
+<p>Never leak analytics data to production warehouses during CI, and never hit live credit card processors inside parallel execution loops.</p>
+<pre><code class="language-typescript">// src/network/handlers/network.fixture.ts
+import { test as baseTest } from '../fixtures/base.fixture';
+
+export const test = baseTest.extend({
+  page: async ({ page }, use) =&gt; {
+    // Rule 1: Silence third-party analytics telemetry (reduces CPU/network load)
+    await page.route(/.*(segment\.io|google-analytics\.com|posthog\.com).*/, (route) =&gt; {
+      route.abort();
+    });
+
+    // Rule 2: Intercept Payment Gateway (Stripe Tokenization)
+    await page.route('https://api.stripe.com/v1/tokens', async (route) =&gt; {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: 'tok_1N4TestMockedToken890',
+            object: 'token',
+            card: {
+              id: 'card_1N4TestCardMocked',
+              brand: 'Visa',
+              last4: '4242',
+              exp_month: 12,
+              exp_year: 2030,
+            },
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    // Provide the clean, intercepted page to the tests
+    await use(page);
+  },
+});
+</code></pre>
+<h3>Deterministic HAR Recording for Volatile Services</h3>
+<p>For services you cannot easily mock manually, use Playwright's HAR routing to capture real responses once and replay them deterministically in CI:</p>
+<pre><code class="language-typescript">// In spec file: Replay cached network responses locally or in CI
+await page.routeFromHAR('./src/network/mocks/exchange-rates.har', {
+  url: '**/api/v1/forex/rates',
+  update: false, // Set to TRUE to record and refresh the HAR file
+  notFound: 'fallback',
+});
+</code></pre>
+<hr />
+<h2>6. Cross-Browser &amp; Device Matrix Execution Strategy</h2>
+<p>Testing everything across every browser on every pull request is an anti-pattern that slows CI times to a crawl. You need an intentional, phased matrix.</p>
+<h3>The CI Pipeline Matrix Split</h3>
+<pre><code class="language-text">                  [ Pull Request Triggered ]
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+       [ Chromium ]                  [ Fast Smoke Suite ]
+   - 100% of E2E Suites           - WebKit (Safari engine)
+   - Desktop Resolution (1440x900)- Mobile Safari (iPhone 14)
+   - Target: &lt; 6 minutes          - Target: &lt; 2 minutes
+              │
+              └───────────────┬───────────────┘
+                              ▼
+                      [ Merge to Main ]
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+     [ Full Cross-Browser ]          [ Visual Regression ]
+   - Chromium, Firefox, WebKit    - Baseline comparisons
+   - Desktop + Mobile Forms       - Desktop + Mobile Viewports
+   - Sharded across 8 CI nodes    - Strict pixel threshold (0.2%)
+</code></pre>
+<h3>Cross-Browser Target Matrix Table</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Target Profile</th>
+<th style="text-align: left;">Browser Engine</th>
+<th style="text-align: left;">Viewport Size</th>
+<th style="text-align: left;">Pixel Ratio</th>
+<th style="text-align: left;">Test Coverage Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Desktop High-Res</strong></td>
+<td style="text-align: left;">Chromium (Blink)</td>
+<td style="text-align: left;">1440 x 900</td>
+<td style="text-align: left;">1</td>
+<td style="text-align: left;">Complete functional suite, Core UX, Payments</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Desktop Cross-Engine</strong></td>
+<td style="text-align: left;">WebKit (Safari)</td>
+<td style="text-align: left;">1440 x 900</td>
+<td style="text-align: left;">1</td>
+<td style="text-align: left;">Rendering anomalies, Safari flexbox/grid bugs, Apple Pay</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Desktop Legacy / Alt</strong></td>
+<td style="text-align: left;">Firefox (Gecko)</td>
+<td style="text-align: left;">1440 x 900</td>
+<td style="text-align: left;">1</td>
+<td style="text-align: left;">Complex forms, standard compliance, file uploads</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Mobile Standard</strong></td>
+<td style="text-align: left;">WebKit (iOS Emulation)</td>
+<td style="text-align: left;">390 x 844</td>
+<td style="text-align: left;">3</td>
+<td style="text-align: left;">Responsive menus, navigation drawers, viewport overflows</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>7. Execution: Writing the Production Spec</h2>
+<p>Here is how all these architectural components compose into a clean, deterministic, self-contained end-to-end test spec.</p>
+<pre><code class="language-typescript">// tests/billing/subscription-swap.spec.ts
+import { test, expect } from '../../src/network/handlers/network.fixture';
+
+test.describe('Billing &amp; Subscription Upgrades', () =&gt; {
+  test('User can upgrade subscription from Starter to Pro via Stripe checkout', async ({
+    billingPage,
+    authedUser,
+  }) =&gt; {
+    // 1. Direct page navigation using the composed Page Object
+    await billingPage.navigate();
+    await billingPage.verifyPath();
+
+    // 2. Validate current state matches the seeded tenant state
+    await billingPage.assertPlanActive('Starter');
+
+    // 3. Execute upgrade transaction (uses intercepted Stripe tokens)
+    await billingPage.executePlanUpgrade('pro');
+
+    // 4. Assert UI state has transitioned to upgraded tier
+    await billingPage.assertPlanActive('Pro');
+
+    // 5. Assert Table Component dynamically reflects newly generated invoice
+    const targetInvoiceRow = billingPage.invoiceTable.getRowByColumnValue(2, 'Pro Plan Upgrade');
+    await expect(targetInvoiceRow).toBeVisible();
+    await expect(targetInvoiceRow).toContainText('$49.00');
+  });
+
+  test('Billing history renders empty state gracefully for fresh tenant', async ({
+    billingPage,
+  }) =&gt; {
+    await billingPage.navigate();
+    const rowCount = await billingPage.invoiceTable.getRowCount();
+
+    // Fresh tenant fixture has no historical transactions
+    expect(rowCount).toBe(0);
+    await expect(billingPage.page.getByTestId('empty-invoices-notice')).toBeVisible();
+  });
+});
+</code></pre>
+<hr />
+<h2>8. Enterprise Production Checklist</h2>
+<p>Before running tests across a multi-worker environment, ensure every item on this checklist is satisfied.</p>
+<ul>
+<li>[ ] <strong>No Hardcoded Sleep Timers:</strong> All calls to <code>page.waitForTimeout()</code> are eliminated. Only use locator assertions with auto-waiting (<code>expect(locator).toBeVisible()</code>).</li>
+<li>[ ] <strong>Dynamic Selectors Removed:</strong> No selectors depend on unstable Tailwind classes (e.g., <code>css=div.flex.items-center.py-2</code>). All locators use <code>getByTestId()</code>, <code>getByRole()</code>, <code>getByLabel()</code>, or <code>getByText()</code>.</li>
+<li>[ ] <strong>Data Mutation Isolation:</strong> Every test suite provisions its own tenant context or uses deterministic factories. No tests mutate records utilized by parallel suites.</li>
+<li>[ ] <strong>Clean Tear-Down:</strong> All created testing records register a corresponding deletion hook inside the fixture lifecycle.</li>
+<li>[ ] <strong>Mock Non-Deterministic Third Parties:</strong> All third-party trackers, SMS providers, external payment bridges, and auth verification endpoints are strictly intercepted via <code>page.route()</code>.</li>
+<li>[ ] <strong>Tracing Strategy Configured:</strong> Tracing is set to <code>'on-first-retry'</code> to prevent massive CI artifact bloat while preserving debugging data for genuine failures.</li>
+<li>[ ] <strong>No Shared Browser Contexts:</strong> Every test gets an isolated context (<code>context</code> fixture). Storage state is injected via <code>page.addInitScript()</code> or dedicated <code>.auth</code> JSON profiles, never through manual UI logins in <code>beforeEach</code>.</li>
+</ul>
+</body>
+</html>

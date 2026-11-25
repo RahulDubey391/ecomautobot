@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Playwright & E2E Testing Production Vault: 50+ Enterprise Test Suites, Visual Regression & CI/CD Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Flaky Test Elimination Checklist &amp; AI Test Prompts</h1>
+<p>Eliminating flakiness requires systematic debugging, strict selector governance, and deterministic execution environments. This module provides a 35-point enterprise audit checklist, a selector priority rubric with concrete code remedies, and 15 precision AI prompts designed to turn unstructured user stories into production-ready Playwright test suites.</p>
+<hr />
+<h2>1. The 35-Point Flaky Test Elimination Audit Checklist</h2>
+<p>Run your failing or intermittent specs against this 35-point checklist before merging into your mainline branch.</p>
+<h3>Category A: Timing, Asynchrony &amp; Auto-Waiting (Points 1–10)</h3>
+<ul>
+<li>[ ] <strong>1. Zero Arbitrary Timeouts</strong></li>
+<li><em>Symptom:</em> <code>await page.waitForTimeout(3000)</code> appears in tests.</li>
+<li><em>Root Cause:</em> Blind sleeps create race conditions on slow CI workers and waste execution time on fast ones.</li>
+<li>
+<p><em>Remedy:</em> Replace with locator assertions: <code>await expect(locator).toBeVisible()</code>, or wait for specific network state: <code>await page.waitForResponse(resp =&gt; resp.url().includes('/api/v1/users') &amp;&amp; resp.status() === 200)</code>.</p>
+</li>
+<li>
+<p>[ ] <strong>2. Web-First Assertions Exclusively</strong></p>
+</li>
+<li><em>Symptom:</em> Using non-retrying Jest/Vitest assertions: <code>expect(await locator.isVisible()).toBe(true)</code>.</li>
+<li><em>Root Cause:</em> Evaluates the DOM once synchronously. If an element is mid-transition, the test fails immediately.</li>
+<li>
+<p><em>Remedy:</em> Use Playwright's retrying assertions: <code>await expect(locator).toBeVisible({ timeout: 7500 })</code>.</p>
+</li>
+<li>
+<p>[ ] <strong>3. Actionability Gate Validation</strong></p>
+</li>
+<li><em>Symptom:</em> <code>.click()</code> fails with "element intercepts pointer events" or "element is not stable".</li>
+<li><em>Root Cause:</em> Target element is animating, obscured by a sticky banner, or re-rendering.</li>
+<li>
+<p><em>Remedy:</em> Await element stability explicitly or scroll into view:
+    <code>typescript
+    await locator.scrollIntoViewIfNeeded();
+    await expect(locator).toBeEnabled();
+    await locator.click();</code></p>
+</li>
+<li>
+<p>[ ] <strong>4. Hydration Desynchronization</strong></p>
+</li>
+<li><em>Symptom:</em> Clicks succeed without throwing an error, but no state change occurs in React/Next.js/Vue apps.</li>
+<li><em>Root Cause:</em> The element is painted in the DOM (SSR) but client-side JavaScript has not attached event listeners.</li>
+<li>
+<p><em>Remedy:</em> Assert client hydration via a known hydrated attribute, network idle, or state indicator before interacting:
+    <code>typescript
+    await page.waitForFunction(() =&gt; window.__NEXT_DATA__?.page !== undefined);</code></p>
+</li>
+<li>
+<p>[ ] <strong>5. Route Interception Registration Order</strong></p>
+</li>
+<li><em>Symptom:</em> Intercepted routes (<code>page.route()</code>) fire inconsistently.</li>
+<li><em>Root Cause:</em> Route handlers are defined <em>after</em> the navigation or action that triggers the network request.</li>
+<li>
+<p><em>Remedy:</em> Always register <code>page.route()</code> before triggering the action:
+    <code>typescript
+    await page.route('**/api/v1/checkout', route =&gt; route.fulfill({ status: 200, body: '{}' }));
+    await page.getByRole('button', { name: 'Submit Order' }).click();</code></p>
+</li>
+<li>
+<p>[ ] <strong>6. Race Conditions Between Navigation and Click</strong></p>
+</li>
+<li><em>Symptom:</em> Execution stalls after clicking a link, resulting in <code>TimeoutError: page.waitForURL</code>.</li>
+<li><em>Root Cause:</em> The page completes navigation before <code>page.waitForURL()</code> begins listening.</li>
+<li>
+<p><em>Remedy:</em> Use <code>Promise.all</code> or direct locator actions that handle navigation automatically:
+    <code>typescript
+    await Promise.all([
+      page.waitForURL('**/dashboard'),
+      page.getByRole('button', { name: 'Log In' }).click()
+    ]);</code></p>
+</li>
+<li>
+<p>[ ] <strong>7. Debounced Input Truncation</strong></p>
+</li>
+<li><em>Symptom:</em> Forms submit partial input strings (e.g., "usr" instead of "user@example.com").</li>
+<li><em>Root Cause:</em> Instantaneous <code>locator.fill()</code> triggers form submission before debounced listeners process the full value.</li>
+<li>
+<p><em>Remedy:</em> Explicitly assert input value before triggering submission:
+    <code>typescript
+    const emailInput = page.getByLabel('Work Email');
+    await emailInput.fill('user@example.com');
+    await expect(emailInput).toHaveValue('user@example.com');</code></p>
+</li>
+<li>
+<p>[ ] <strong>8. Toast and Transient Alert Dismissal Races</strong></p>
+</li>
+<li><em>Symptom:</em> Test expects a toast message to appear, but it has already auto-dismissed.</li>
+<li><em>Root Cause:</em> Assertions occur too late in execution, after short auto-dismiss timers (e.g., 2000ms).</li>
+<li>
+<p><em>Remedy:</em> Place the toast assertion immediately after the triggering action, or use locator listeners:
+    <code>typescript
+    const toast = page.getByRole('alert');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(toast).toContainText('Changes saved successfully');</code></p>
+</li>
+<li>
+<p>[ ] <strong>9. Dynamic Lists Re-indexing During Iteration</strong></p>
+</li>
+<li><em>Symptom:</em> <code>IndexOutOfBounds</code> or "Element detached from DOM" when iterating with <code>locator.all()</code>.</li>
+<li><em>Root Cause:</em> The array of elements changes while the loop executes due to background polling or sorting.</li>
+<li>
+<p><em>Remedy:</em> Filter lists dynamically or target by unique business key rather than indices:
+    <code>typescript
+    await expect(page.getByTestId('order-row')).toHaveCount(5);
+    const targetRow = page.getByTestId('order-row').filter({ hasText: 'ORD-9842' });
+    await targetRow.getByRole('button', { name: 'View' }).click();</code></p>
+</li>
+<li>
+<p>[ ] <strong>10. File Download Completion Gaps</strong></p>
+</li>
+<li><em>Symptom:</em> Export tests intermittently fail with corrupted or partial files.</li>
+<li><em>Root Cause:</em> The file read executes before the browser finishes writing to disk.</li>
+<li><em>Remedy:</em> Wait for the <code>download</code> event and explicitly resolve the path:
+    <code>typescript
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export CSV' }).click();
+    const download = await downloadPromise;
+    const path = await download.path();
+    expect(path).not.toBeNull();</code></li>
+</ul>
+<hr />
+<h3>Category B: Network, State &amp; Fixture Isolation (Points 11–18)</h3>
+<ul>
+<li>[ ] <strong>11. Shared Mutation State Across Parallel Workers</strong></li>
+<li><em>Symptom:</em> Tests pass when run sequentially (<code>--workers=1</code>) but fail with 409 Conflict when run concurrently.</li>
+<li><em>Root Cause:</em> Two tests mutate the same database record or use the same enterprise tenant.</li>
+<li>
+<p><em>Remedy:</em> Enforce worker-level data partitioning using unique execution IDs:
+    <code>typescript
+    const uniqueEmail = `test-user-${Date.now()}-${test.info().workerIndex}@example.com`;</code></p>
+</li>
+<li>
+<p>[ ] <strong>12. Leaked Browser Context Storage</strong></p>
+</li>
+<li><em>Symptom:</em> Test B fails because it inherits active session tokens or localStorage keys from Test A.</li>
+<li><em>Root Cause:</em> Tests reuse <code>browserContext</code> without clearing cookies/storage in teardown.</li>
+<li>
+<p><em>Remedy:</em> Use built-in isolated fixtures (<code>page</code>, <code>context</code>) per test. If caching state with <code>storageState</code>, treat cached tokens as strictly read-only.</p>
+</li>
+<li>
+<p>[ ] <strong>13. API Route Interception Collisions</strong></p>
+</li>
+<li><em>Symptom:</em> Global mocks bleed across spec files, returning mocked payloads in unintended suites.</li>
+<li><em>Root Cause:</em> Mocking at the context level without unrouting in test hooks.</li>
+<li>
+<p><em>Remedy:</em> Scope routes directly to the individual test <code>page</code>, or tear down routes on complete:
+    <code>typescript
+    test.afterEach(async ({ page }) =&gt; {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+    });</code></p>
+</li>
+<li>
+<p>[ ] <strong>14. Unhandled 3rd-Party Telemetry &amp; Analytics Traffic</strong></p>
+</li>
+<li><em>Symptom:</em> Random timeouts caused by long-running HTTP calls to Datadog, Segment, or Google Analytics.</li>
+<li><em>Root Cause:</em> The network layer waits for 3rd-party trackers that stall on staging/sandbox environments.</li>
+<li>
+<p><em>Remedy:</em> Block tracking domains entirely inside <code>playwright.config.ts</code>:
+    <code>typescript
+    use: {
+      launchOptions: {
+        args: ['--host-rules=MAP *segment.io 127.0.0.1, MAP *google-analytics.com 127.0.0.1']
+      }
+    }</code></p>
+</li>
+<li>
+<p>[ ] <strong>15. Clock Drift on Time-Sensitive Business Logic</strong></p>
+</li>
+<li><em>Symptom:</em> Tests fail around midnight, during month-end transitions, or across daylight saving boundary dates.</li>
+<li><em>Root Cause:</em> Client and backend times are unsynchronized, breaking calendar selectors.</li>
+<li>
+<p><em>Remedy:</em> Freeze system time deterministically in the context:
+    <code>typescript
+    await page.clock.setFixedTime(new Date('2025-06-15T12:00:00Z'));</code></p>
+</li>
+<li>
+<p>[ ] <strong>16. WebSockets and Server-Sent Events (SSE) Unhandled Drops</strong></p>
+</li>
+<li><em>Symptom:</em> Real-time notifications or chat apps miss messages due to slow CI socket handshakes.</li>
+<li><em>Root Cause:</em> UI actions trigger before the WebSocket handshakes complete.</li>
+<li>
+<p><em>Remedy:</em> Monitor the WebSocket frame explicitly before performing actions:
+    <code>typescript
+    const wsPromise = page.waitForEvent('websocket', ws =&gt; ws.url().includes('/realtime'));
+    await page.goto('/dashboard');
+    const ws = await wsPromise;
+    await ws.waitForEvent('framesent');</code></p>
+</li>
+<li>
+<p>[ ] <strong>17. Non-Idempotent Database Seeds</strong></p>
+</li>
+<li><em>Symptom:</em> "Duplicate key violation" or unexpected record counts when running retries.</li>
+<li><em>Root Cause:</em> Seed scripts run <code>INSERT</code> statements without upsert logic or clearing preceding records.</li>
+<li>
+<p><em>Remedy:</em> Write seed factories using transactional rollbacks or <code>ON CONFLICT DO UPDATE</code> patterns.</p>
+</li>
+<li>
+<p>[ ] <strong>18. Cold-Start API Delays</strong></p>
+</li>
+<li><em>Symptom:</em> The very first test in a run times out; all subsequent tests pass cleanly.</li>
+<li><em>Root Cause:</em> Serverless backend infrastructure (AWS Lambda, Cloudflare Workers) cold-starting on staging.</li>
+<li><em>Remedy:</em> Add a global setup health check that pings the critical backend APIs before worker processes spawn.</li>
+</ul>
+<hr />
+<h3>Category C: Selector Strategy &amp; DOM Mutability (Points 19–25)</h3>
+<ul>
+<li>[ ] <strong>19. Over-Reliance on CSS Class Names Generated by Compilers</strong></li>
+<li><em>Symptom:</em> Selectors break on every production build (e.g., <code>.css-1x84a9</code>, <code>.sc-bdVaJa</code>).</li>
+<li><em>Root Cause:</em> Styled-components, Tailwind hashing, or CSS modules change class names when code is compiled.</li>
+<li>
+<p><em>Remedy:</em> Switch to accessible roles: <code>page.getByRole('button', { name: 'Submit' })</code> or static test IDs.</p>
+</li>
+<li>
+<p>[ ] <strong>20. Brittle Hierarchical Structural Selectors</strong></p>
+</li>
+<li><em>Symptom:</em> <code>div &gt; div:nth-child(3) &gt; span</code> fails when an engineer wraps a component in a layout <code>&lt;div&gt;</code>.</li>
+<li><em>Root Cause:</em> Coupling locators directly to arbitrary DOM structure.</li>
+<li>
+<p><em>Remedy:</em> Target elements using role semantics, labels, or locator chaining:
+    <code>typescript
+    page.getByRole('dialog', { name: 'Edit Profile' }).getByRole('textbox', { name: 'Name' });</code></p>
+</li>
+<li>
+<p>[ ] <strong>21. Exact String Matches on Case-Insensitive or Dynamic Labels</strong></p>
+</li>
+<li><em>Symptom:</em> <code>page.getByText('Submit')</code> fails when CSS applies <code>text-transform: uppercase</code>.</li>
+<li><em>Root Cause:</em> Case mismatches or whitespace differences breaking string equality.</li>
+<li>
+<p><em>Remedy:</em> Use regular expressions: <code>page.getByRole('button', { name: /submit/i })</code>.</p>
+</li>
+<li>
+<p>[ ] <strong>22. Shadow DOM Component Boundary Failures</strong></p>
+</li>
+<li><em>Symptom:</em> Locators fail to resolve inputs inside web components (e.g., Salesforce, Lit, Shoelace).</li>
+<li><em>Root Cause:</em> Incorrect selector engines unable to traverse through closed/open shadow roots.</li>
+<li>
+<p><em>Remedy:</em> Rely on Playwright's native shadow DOM-piercing engine; avoid raw <code>document.querySelector</code> executions.</p>
+</li>
+<li>
+<p>[ ] <strong>23. Hidden/Duplicate Modals in DOM</strong></p>
+</li>
+<li><em>Symptom:</em> <code>locator.click()</code> throws "strict mode violation: resolved to 2 elements".</li>
+<li><em>Root Cause:</em> Previously closed modals are hidden with <code>display: none</code> or <code>visibility: hidden</code> but remain in the DOM.</li>
+<li>
+<p><em>Remedy:</em> Scope queries to visible elements:
+    <code>typescript
+    await page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Confirm' }) }).locator(':visible').getByRole('button', { name: 'OK' }).click();</code></p>
+</li>
+<li>
+<p>[ ] <strong>24. Missing Strict Mode Enforcement Handling</strong></p>
+</li>
+<li><em>Symptom:</em> Tests fail unpredictably when a database returns multiple items with identical text.</li>
+<li><em>Root Cause:</em> A locator matches multiple elements when Playwright expects a unique target.</li>
+<li>
+<p><em>Remedy:</em> Refine using <code>.first()</code>, <code>.filter()</code>, or precise accessible names.</p>
+</li>
+<li>
+<p>[ ] <strong>25. SVG Icon Click Inaccuracies</strong></p>
+</li>
+<li><em>Symptom:</em> Playwright fails to click an SVG icon or target drops to <code>0,0</code> coordinates.</li>
+<li><em>Root Cause:</em> SVGs often lack standard layout geometry for bounding box calculations.</li>
+<li><em>Remedy:</em> Target the enclosing accessible button:
+    <code>typescript
+    // BAD: page.locator('svg.delete-icon').click();
+    // GOOD:
+    page.getByRole('button', { name: 'Delete Item' }).click();</code></li>
+</ul>
+<hr />
+<h3>Category D: CI/CD Environment &amp; Worker Hardware (Points 26–30)</h3>
+<ul>
+<li>[ ] <strong>26. CPU Throttling and Worker Over-Allocation</strong></li>
+<li><em>Symptom:</em> Tests run reliably locally on an M-series Mac (8–16 cores) but fail intermittently on GitHub Actions / GitLab runners.</li>
+<li><em>Root Cause:</em> Running default auto-worker configurations on standard 2-vCPU CI machines over-subscribes the CPU, leading to slow rendering.</li>
+<li>
+<p><em>Remedy:</em> Restrict CI workers inside <code>playwright.config.ts</code>:
+    <code>typescript
+    workers: process.env.CI ? 2 : undefined,</code></p>
+</li>
+<li>
+<p>[ ] <strong>27. Out-of-Memory (OOM) Browser Crashes</strong></p>
+</li>
+<li><em>Symptom:</em> CI jobs fail with <code>Target closed</code> or <code>Crash error code: 137</code>.</li>
+<li><em>Root Cause:</em> Memory leaks across large test suites running in a single browser process instance.</li>
+<li>
+<p><em>Remedy:</em> Set reasonable suite chunking in CI matrices, or force context recycling after a set number of runs.</p>
+</li>
+<li>
+<p>[ ] <strong>28. Missing System Dependencies in Custom Docker Containers</strong></p>
+</li>
+<li><em>Symptom:</em> Headless browsers fail to render fonts, producing garbled text or missing glyphs.</li>
+<li><em>Root Cause:</em> Container environments lack essential system font libraries (e.g., <code>fonts-liberation</code>, <code>libasound2</code>).</li>
+<li>
+<p><em>Remedy:</em> Standardize CI execution on official Playwright containers: <code>mcr.microsoft.com/playwright:v1.49.0-jammy</code>.</p>
+</li>
+<li>
+<p>[ ] <strong>29. Video and Trace Artifact Disk Saturation</strong></p>
+</li>
+<li><em>Symptom:</em> CI runs fail at the end of execution during artifact upload or crash mid-suite due to zero remaining disk space.</li>
+<li><em>Root Cause:</em> Unconditional recording of videos and full traces across thousands of passed tests.</li>
+<li>
+<p><em>Remedy:</em> Configure traces and videos to record only on the first retry:
+    <code>typescript
+    trace: 'on-first-retry',
+    video: 'on-first-retry',</code></p>
+</li>
+<li>
+<p>[ ] <strong>30. Stale CI Caches Polluting Build Steps</strong></p>
+</li>
+<li><em>Symptom:</em> Test code reflects new changes, but node dependencies or browser binaries run old versions.</li>
+<li><em>Root Cause:</em> Bad cache keys matching across invalid <code>package-lock.json</code> hashes.</li>
+<li><em>Remedy:</em> Bind Playwright cache keys directly to the current Playwright package version:
+    <code>yaml
+    key: ${{ runner.os }}-playwright-${{ hashFiles('**/package-lock.json') }}</code></li>
+</ul>
+<hr />
+<h3>Category E: Animation, Layout Shifts &amp; Visual Rendering (Points 31–35)</h3>
+<ul>
+<li>[ ] <strong>31. Layout Shifts (CLS) Interrupting Clicks</strong></li>
+<li><em>Symptom:</em> "Element clicked at (x, y) intercepted by other element."</li>
+<li><em>Root Cause:</em> Hero images, ads, or web fonts loading dynamically move elements right as the click event registers.</li>
+<li>
+<p><em>Remedy:</em> Explicitly wait for dimensions to stabilize or set explicit <code>width</code> and <code>height</code> CSS attributes:
+    <code>typescript
+    const button = page.getByRole('button', { name: 'Checkout' });
+    await expect(button).toBeVisible();
+    await button.click();</code></p>
+</li>
+<li>
+<p>[ ] <strong>32. Continuous CSS Transitions Blocking Screenshot Tests</strong></p>
+</li>
+<li><em>Symptom:</em> Visual regression tests throw 0.5% - 2% pixel differences on buttons or progress bars.</li>
+<li><em>Root Cause:</em> CSS animations, spinning loaders, or breathing pulses continue running during capture.</li>
+<li>
+<p><em>Remedy:</em> Disable CSS animations inside visual regression configuration:
+    <code>typescript
+    await expect(page).toHaveScreenshot({ animations: 'disabled' });</code></p>
+</li>
+<li>
+<p>[ ] <strong>33. Non-Standard Font Rendering Across Operating Systems</strong></p>
+</li>
+<li><em>Symptom:</em> Visual tests recorded on macOS fail on Linux CI runners due to anti-aliasing variations.</li>
+<li><em>Root Cause:</em> OS-level differences in font engines (CoreText vs. FreeType).</li>
+<li>
+<p><em>Remedy:</em> Run visual tests inside Docker containers locally, or configure a slight pixel threshold:
+    <code>typescript
+    expect(await page.screenshot()).toMatchSnapshot('landing.png', {
+      maxDiffPixelRatio: 0.02
+    });</code></p>
+</li>
+<li>
+<p>[ ] <strong>34. Unpinned Device Emulation Scale Factors</strong></p>
+</li>
+<li><em>Symptom:</em> Tests fail on mobile viewports due to differences between physical resolution and CSS pixels.</li>
+<li><em>Root Cause:</em> Omitting explicit <code>deviceScaleFactor</code> when configuring custom viewports.</li>
+<li>
+<p><em>Remedy:</em> Use built-in device presets from Playwright's device registry:
+    <code>typescript
+    import { devices } from '@playwright/test';
+    const config = {
+      use: { ...devices['iPhone 14 Pro'] }
+    };</code></p>
+</li>
+<li>
+<p>[ ] <strong>35. Intermittent Sticky Headers Obstructing Viewport Focus</strong></p>
+</li>
+<li><em>Symptom:</em> Playwright scrolls an element into view, but a <code>position: fixed</code> header blocks the upper 80px of the screen.</li>
+<li><em>Root Cause:</em> Auto-scroll places the element at the top edge of the window, beneath the persistent header.</li>
+<li><em>Remedy:</em> Dispatch clicks through programmatic offsets or scroll with margins:
+    <code>typescript
+    await locator.evaluate((el) =&gt; {
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    });
+    await locator.click();</code></li>
+</ul>
+<hr />
+<h2>2. Enterprise Selector Priority Rubric &amp; Locator Cheat Sheet</h2>
+<p>To keep test suites maintainable across large teams, enforce this selector hierarchy. Every step away from user-facing attributes increases future maintenance costs.</p>
+<h3>Selector Priority Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Priority</th>
+<th style="text-align: left;">Locator Type</th>
+<th style="text-align: left;">Playwright Method</th>
+<th style="text-align: left;">Resilience Score (1–10)</th>
+<th style="text-align: left;">Primary Use Case</th>
+<th style="text-align: left;">Critical Anti-Patterns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>P1</strong></td>
+<td style="text-align: left;">Accessible Role</td>
+<td style="text-align: left;"><code>page.getByRole()</code></td>
+<td style="text-align: left;"><strong>10</strong></td>
+<td style="text-align: left;">Buttons, links, dialogs, checkboxes, headings. Reflects real user assistive access.</td>
+<td style="text-align: left;"><code>getByRole('button')</code> without <code>{ name: 'Save' }</code> (strict mode error).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P2</strong></td>
+<td style="text-align: left;">Label Associated</td>
+<td style="text-align: left;"><code>page.getByLabel()</code></td>
+<td style="text-align: left;"><strong>9</strong></td>
+<td style="text-align: left;">Form inputs, text areas, dropdown fields with standard accessible labels.</td>
+<td style="text-align: left;">Matching dynamic values: <code>getByLabel('Welcome back, John')</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P3</strong></td>
+<td style="text-align: left;">User-Facing Text</td>
+<td style="text-align: left;"><code>page.getByText()</code></td>
+<td style="text-align: left;"><strong>8</strong></td>
+<td style="text-align: left;">Static content verification, paragraphs, non-interactive badges, status labels.</td>
+<td style="text-align: left;">Matching fluctuating values without regular expressions.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P4</strong></td>
+<td style="text-align: left;">Form Placeholder</td>
+<td style="text-align: left;"><code>page.getByPlaceholder()</code></td>
+<td style="text-align: left;"><strong>7</strong></td>
+<td style="text-align: left;">Inputs lacking explicit HTML <code>&lt;label&gt;</code> tags (use temporarily while patching accessible code).</td>
+<td style="text-align: left;">Using placeholder as a long-term substitute for proper labels.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P5</strong></td>
+<td style="text-align: left;">Accessible Alt/Title</td>
+<td style="text-align: left;"><code>page.getByAltText()</code>, <code>page.getByTitle()</code></td>
+<td style="text-align: left;"><strong>7</strong></td>
+<td style="text-align: left;">Images, diagrams, interactive icons with explicit tooltips.</td>
+<td style="text-align: left;">Relying on image filenames (<code>avatar_v2_final.png</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P6</strong></td>
+<td style="text-align: left;">Dedicated Test ID</td>
+<td style="text-align: left;"><code>page.getByTestId()</code></td>
+<td style="text-align: left;"><strong>6</strong></td>
+<td style="text-align: left;">Dynamic canvas elements, highly custom SVG charts, complex virtualized data grids.</td>
+<td style="text-align: left;">Attaching test IDs to every element; this bypasses accessibility checks.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P7</strong></td>
+<td style="text-align: left;">Scoped CSS / Chaining</td>
+<td style="text-align: left;"><code>locator.filter({ hasText })</code></td>
+<td style="text-align: left;"><strong>5</strong></td>
+<td style="text-align: left;">Isolating a single row in a table or item in a list based on an internal value.</td>
+<td style="text-align: left;">Deep nesting: <code>div.panel &gt; div &gt; ul &gt; li</code>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>P8 (BANNED)</strong></td>
+<td style="text-align: left;">Raw Structural XPath / Dynamic CSS</td>
+<td style="text-align: left;"><code>page.locator('//div[3]/span')</code></td>
+<td style="text-align: left;"><strong>1</strong></td>
+<td style="text-align: left;">None. Immediate rejection in code review.</td>
+<td style="text-align: left;">Relying on generated CSS classes or arbitrary layout positions.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>Production Refactoring Examples: Anti-Patterns vs. Modern Solutions</h3>
+<h4>1. Targeting Table Rows Based on Internal Content</h4>
+<pre><code class="language-typescript">// ❌ ANTI-PATTERN: Brittle structural locator (breaks if column order changes)
+await page.locator('table &gt; tbody &gt; tr:nth-child(4) &gt; td:nth-child(2) &gt; button').click();
+
+//  PRODUCTION FIX: Functional locator chaining with accessible roles
+await page.getByRole('row')
+  .filter({ has: page.getByRole('cell', { name: 'INV-2026-001' }) })
+  .getByRole('button', { name: 'Download Invoice' })
+  .click();
+</code></pre>
+<h4>2. Interacting with Form Controls</h4>
+<pre><code class="language-typescript">// ❌ ANTI-PATTERN: Leaking internal CSS implementation details
+await page.locator('input.form-control-lg[name=&quot;user_email&quot;]').fill('director@enterprise.com');
+
+//  PRODUCTION FIX: Accessible label matching
+await page.getByLabel('Work Email Address').fill('director@enterprise.com');
+</code></pre>
+<h4>3. Modal Confirmations</h4>
+<pre><code class="language-typescript">// ❌ ANTI-PATTERN: Blind test-id usage bypassing modal structure
+await page.locator('[data-testid=&quot;confirm-btn&quot;]').click();
+
+//  PRODUCTION FIX: Scope to accessible dialog role to guarantee context
+const dialog = page.getByRole('dialog', { name: 'Delete Customer Account' });
+await expect(dialog).toBeVisible();
+await dialog.getByRole('button', { name: 'Confirm Deletion' }).click();
+</code></pre>
+<hr />
+<h2>3. AI Precision Prompt Swipe File</h2>
+<p>Use these system prompts and template pairs with advanced LLMs (Claude 3.5 Sonnet, GPT-4o, etc.) to generate robust, production-ready Playwright tests from user stories, functional specs, or Jira tickets.</p>
+<h3>The Enterprise Playwright System Prompt</h3>
+<pre><code class="language-markdown">You are a Staff Quality Engineer and Playwright Core Specialist. Write clean, robust, and maintainable Playwright (TypeScript) end-to-end test suites.
+
+Strict Constraints:
+1. Playwright Test Framework: Use modern `@playwright/test` APIs (Playwright v1.40+).
+2. Locator Rules:
+   - Prioritize user-facing, accessible locators: `page.getByRole()`, `page.getByLabel()`, `page.getByText()`.
+   - Never generate raw, brittle CSS or XPath selectors (e.g., NO `.btn-primary`, NO `div &gt; div &gt; span`).
+   - Use `page.getByTestId()` ONLY for dynamic/canvas elements lacking accessible representations.
+3. Asynchrony &amp; Waiting:
+   - NEVER use `page.waitForTimeout()`.
+   - Use web-first assertions: `await expect(locator).toBeVisible()`, `await expect(locator).toHaveText()`.
+   - Ensure proper use of `Promise.all` when waiting for navigations triggered by actions.
+4. Clean Architecture:
+   - Encapsulate interactive workflows into clean Page Object Models (POMs) or domain fixtures when requested.
+   - Tests must run independently with isolated state. Do not share mutable state across tests.
+   - Include realistic test data, utilizing TypeScript types throughout.
+</code></pre>
+<hr />
+<h3>Prompt 1: Standard User Story to Feature Spec</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Convert the following User Story and Acceptance Criteria into a fully realized Playwright test suite written in TypeScript.
+
+### USER STORY:
+As an Organization Admin
+I want to invite new team members via their email addresses and assign them roles (Admin, Editor, Viewer)
+So that they can collaborate on projects within our workspace.
+
+### ACCEPTANCE CRITERIA:
+1. Clicking &quot;Invite Member&quot; inside Workspace Settings opens a modal dialog.
+2. The modal contains an Email input field and a Role selection dropdown.
+3. Submitting an invalid email format displays an inline validation error: &quot;Please enter a valid work email&quot;.
+4. Selecting &quot;Admin&quot; shows a warning badge: &quot;Admins have full billing permissions&quot;.
+5. Submitting a valid payload fires a POST request to `/api/v1/invitations` and renders a success toast: &quot;Invitation sent successfully&quot;.
+6. The invited user immediately appears in the &quot;Pending Invitations&quot; table.
+
+### TECHNICAL REQUIREMENTS:
+- Use Web-First assertions exclusively.
+- Mock the network call to `/api/v1/invitations` using `page.route()`.
+- Ensure proper scoping of the modal dialog using `page.getByRole('dialog')`.
+</code></pre>
+<hr />
+<h3>Prompt 2: High-Complexity CRUD with Optimistic UI Validation</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Generate a Playwright test spec that validates an Optimistic UI update pattern for a Project Management Board.
+
+### INPUT REQUIREMENTS:
+- Target Action: Renaming a board column from &quot;To Do&quot; to &quot;Backlog&quot;.
+- Optimistic Behavior: The UI must update immediately without displaying a loading spinner.
+- Network Emulation: Introduce an artificial 1500ms network delay on the update endpoint: `PATCH /api/v2/columns/col-123`.
+- Failure Case: If the API responds with an HTTP 500 status code, verify that the UI rolls back to the original title (&quot;To Do&quot;) and displays an error toast: &quot;Failed to update column name. Changes reverted.&quot;
+
+### CODE CONSTRAINTS:
+- Use `page.route()` to delay and conditionally fail the API request.
+- Assert that the optimistic text change occurs *before* the network request completes.
+- Assert that the rollback occurs cleanly after the 500 error returns.
+</code></pre>
+<hr />
+<h3>Prompt 3: Multi-Role RBAC Permission Matrix Suite</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Generate a parameter-driven Playwright test file testing role-based access control (RBAC) across three distinct roles: Admin, Billing Manager, and Member.
+
+### DATA MATRIX:
+| Role | Can Access Invoices (/billing) | Can Delete Workspace | Can View Workspace Analytics |
+| :--- | :--- | :--- | :--- |
+| Admin | YES | YES | YES |
+| Billing Manager | YES | NO (Button Hidden) | NO (Redirect to 403) |
+| Member | NO (Redirect to 403) | NO (Button Hidden) | YES |
+
+### IMPLEMENTATION DETAILS:
+- Implement a data-driven test using `test.describe.each()`.
+- Use pre-configured auth states: `storageState: 'auth/admin.json'`, etc.
+- Verify both UI affordances (button visibility) and route protections (redirects to `/403`).
+</code></pre>
+<hr />
+<h3>Prompt 4: Resilient Visual Regression Spec with Dynamic Masking</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Generate a visual regression test for a Financial Dashboard containing dynamic, fluctuating data elements.
+
+### VISUAL REQUIREMENTS:
+- Component URL: `/analytics/revenue-dashboard`
+- Elements requiring dynamic masking:
+  - User avatars (loaded via random URLs).
+  - Real-time stock ticker values (`[data-testid=&quot;stock-ticker&quot;]`).
+  - Current timestamp display: &quot;Last updated: HH:mm:ss&quot;.
+- Target Viewports: Desktop (1280x800) and Tablet (768x1024).
+
+### PLAYWRIGHT CONSTRAINTS:
+- Use `await expect(page).toHaveScreenshot()`.
+- Use the `mask` option to hide the dynamic elements listed above.
+- Disable CSS animations: `animations: 'disabled'`.
+- Define an acceptable visual difference threshold: `maxDiffPixelRatio: 0.01`.
+</code></pre>
+<hr />
+<h3>Prompt 5: Payment Processing &amp; Stripe Elements Iframe Flow</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Generate a Playwright test covering a checkout flow that integrates Stripe Elements (embedded iframes).
+
+### WORKFLOW:
+1. User navigates to `/checkout?plan=pro_annual`.
+2. Verifies the order summary: &quot;$240.00 / year&quot;.
+3. Enters cardholder name in the standard DOM input.
+4. Locates the Stripe iframe for card details.
+5. Fills in the card number, expiration date, and CVC inside the Stripe iframe.
+6. Submits the form and verifies the redirect to `/checkout/success?session_id=...`.
+
+### IMPLEMENTATION RULES:
+- Use `page.frameLocator()` to interact with the Stripe iframe securely.
+- Avoid hardcoding card numbers as raw strings; declare them in a clear test-data constant.
+- Wait for the confirmation redirect with `page.waitForURL()`.
+</code></pre>
+<hr />
+<h3>Prompt 6: File Upload &amp; Drag-and-Drop Processing</h3>
+<pre><code class="language-markdown">### SYSTEM: Use the Enterprise Playwright System Prompt.
+
+### TASK:
+Generate a complete Playwright test suite for a document parser that supports both traditional file selection and drag-and-drop operations.
+
+### ACCEPTANCE CRITERIA:
+1. Handle hidden `&lt;input type=&quot;file&quot;&gt;` elements using `locator.setInputFiles()`.
+2. Emulate an HTML5 Drag and Drop event dispatching a sample PDF document onto the drop-zone element: `getByTestId('dropzone')`.
+3. Validate client-side file size restrictions: uploading a file larger than 10MB must trigger the error: &quot;File exceeds 10MB limit.&quot;
+4. Upon successful upload, assert the appearance of the processing status bar, followed by the text: &quot;Parsing Complete&quot;.
+
+### IMPLEMENTATION DETAILS:
+- Create mock file payloads dynamically using `Buffer.from()` inside the test.
+- Do not rely on external physical files on disk.
+</code></pre>
+<hr />
+<h3>Prompt 7: Data Table Sorting, Filtering, and Pagination</h3>
+<p>```markdown</p>
+<h3>SYSTEM: Use the Enterprise Play</h3>
+</body>
+</html>
