@@ -1,0 +1,43 @@
+{
+  "slug": "cloudflare-workers-hono-vault",
+  "name": "The Cloudflare Workers & Hono Production Vault: 50+ Edge APIs, D1, Durable Objects & Queues Blueprints",
+  "price_cents": 2900,
+  "suggested_price_cents": null,
+  "customizable_price": false,
+  "currency": "usd",
+  "native_type": "digital",
+  "custom_permalink": "cloudflare-workers-hono-vault",
+  "custom_summary": "Ship sub-10ms globally distributed edge microservices with 50+ production-grade Hono.js templates, D1 relational models, Durable Object states, and queue pipelines.",
+  "category": "software",
+  "tags": [
+    "cloudflare",
+    "hono js",
+    "serverless edge",
+    "durable objects",
+    "d1 database",
+    "edge api",
+    "typescript",
+    "backend",
+    "web development",
+    "micro-saas"
+  ],
+  "hashtags": [
+    "#Cloudflare",
+    "#HonoJs",
+    "#ServerlessEdge",
+    "#DurableObjects",
+    "#D1Database",
+    "#EdgeApi",
+    "#Typescript",
+    "#Backend",
+    "#WebDevelopment",
+    "#MicroSaas"
+  ],
+  "gumroad_product_id": "cTN4yX2EBO-KGY7v-8MW1A==",
+  "gumroad_short_url": "https://rahuldubey15.gumroad.com/l/cloudflare-workers-hono-vault",
+  "published": true,
+  "gumroad_file_url": "https://s3.amazonaws.com/gumroad/attachments/4414146565080/6bfd047132cb1b2deb258adb0780f59a/original/cloudflare-workers-hono-vault-bundle.zip",
+  "cover_uploaded": true,
+  "thumbnail_uploaded": true,
+  "thumbnail_url": "https://public-files.gumroad.com/ozw1x9buk1awfqmpuhvu2xf5qh0k"
+}
