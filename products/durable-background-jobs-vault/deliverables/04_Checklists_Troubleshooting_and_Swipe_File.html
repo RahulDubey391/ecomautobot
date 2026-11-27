@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Durable Workflows & Background Jobs Vault: 50+ Inngest, Trigger.dev & BullMQ Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Resiliency Audit Checklists, Dead Letter Queue Triage &amp; Cheat Sheet</h1>
+<hr />
+<h2>1. Production Readiness Audit Rubric</h2>
+<p>Use this battle-tested rubric to evaluate your background job processors and durable execution engines before deploying them to production. Any job processor scoring below 85% or failing any single "Critical" tier check must not be promoted to production.</p>
+<h3>1.1 The Six Pillars of Durable Execution</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dimension</th>
+<th style="text-align: left;">Verification Item</th>
+<th style="text-align: left;">Severity</th>
+<th style="text-align: left;">Verification Method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>1. Idempotency</strong></td>
+<td style="text-align: left;">Every step/job handler relies on a natural or deterministic synthetic key (<code>orderId:stepName:attempt</code>).</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Code review; verify no side-effect executes without an idempotency guard (e.g., Redis <code>SET NX</code>, DB unique constraint).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>1. Idempotency</strong></td>
+<td style="text-align: left;">State checks occur inside the same atomic database transaction as the business write.</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Integration test: Trigger identical concurrent payloads; verify exactly one state modification.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>1. Idempotency</strong></td>
+<td style="text-align: left;">External side effects (Stripe, Twilio, Resend) inject the idempotency key directly into the 3rd-party API client.</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Outgoing payload inspection via mock/proxy.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>2. Concurrency</strong></td>
+<td style="text-align: left;">Global, per-queue, and per-tenant concurrency limits are enforced to prevent downstream saturation.</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Load test: Flood system with 10,000 tasks for a single tenant; verify tenant limit holds and does not starve neighbors.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>2. Concurrency</strong></td>
+<td style="text-align: left;">In-flight execution limits match worker instance memory headroom (avoiding Node.js thread pool starvation).</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Benchmark: Measure event-loop lag (<code>libuv</code>) under max concurrency; must remain $&lt; 50\text{ms}$.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>3. Backoff &amp; Retries</strong></td>
+<td style="text-align: left;">Retries utilize full jitter exponential backoff ($T_{\text{wait}} = \text{random}(0, \min(M, B \times 2^{\text{attempt}}))$).</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Inspect backoff configuration. Verify multiplier, base interval, and maximum delay ceiling.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>3. Backoff &amp; Retries</strong></td>
+<td style="text-align: left;">Non-transient errors (HTTP <code>400</code>, <code>401</code>, <code>403</code>, <code>422</code>, JSON parse errors) fail immediately without retrying.</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Unit test: Inject a validation error; assert attempts terminate at attempt count 1 and move to DLQ.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>4. State &amp; Checkpoints</strong></td>
+<td style="text-align: left;">State transitions are persisted at distinct step boundaries (Durable Steps / Event sourcing).</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Chaos test: Kill worker container midway through multi-step pipeline; restart worker; verify pipeline resumes from last step.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>4. State &amp; Checkpoints</strong></td>
+<td style="text-align: left;">Job payload size is bounded ($&lt; 256\text{KB}$). Large payloads use reference-passing via object storage (S3/GCS pointer).</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Payload validation schema; reject direct base64/binary payloads at queue boundary.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>5. Observability</strong></td>
+<td style="text-align: left;">Distributed trace context (<code>traceparent</code>, <code>tracestate</code>) propagates across queue dispatch, execution, and step boundaries.</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Trace audit: Confirm Datadog or OpenTelemetry traces show single continuous waterfall across network boundaries.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>5. Observability</strong></td>
+<td style="text-align: left;">Queues emit metrics for: Active Jobs, Waiting Jobs, Delayed Jobs, Failed Jobs, Stalled Jobs, and Lag Duration.</td>
+<td style="text-align: left;"><strong>CRITICAL</strong></td>
+<td style="text-align: left;">Prometheus/Datadog scrape verification: Metric alerts must fire on synthetic queue saturation.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>6. Blast Radius</strong></td>
+<td style="text-align: left;">High-volume operational jobs (e.g., webhooks) run on isolated infrastructure separate from critical path tasks.</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Architecture review: Ensure independent queue names, Redis instances, and compute deployment targets.</td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 Sign-off Certification Checklist</h3>
+<pre><code class="language-markdown">[ ] 1. Idempotency Keys: Enforced on all non-idempotent operations via UUIDv5 or deterministic hash.
+[ ] 2. Stalled Job Protection: `stalledInterval` and `maxStalledCount` configured correctly (BullMQ default 30s verified).
+[ ] 3. Worker Graceful Shutdown: `SIGTERM` / `SIGINT` triggers `worker.close()`, drains in-flight jobs within orchestration budget (e.g., Kubernetes `terminationGracePeriodSeconds` set to worker timeout + 15s).
+[ ] 4. Lock Duration: Job lock duration comfortably exceeds the p99.9 execution duration of individual steps.
+[ ] 5. Rate Limits: Upstream API quotas mapped directly to worker rate-limit configs (e.g., BullMQ token-bucket limiter).
+[ ] 6. Zero Payload Bloat: Blobs, data URLs, large arrays offloaded to S3. Only URIs/IDs passed in job payloads.
+[ ] 7. Dead Letter Queue: Automatic routing to DLQ after exhaustion of retry attempts with failure reason preserved.
+[ ] 8. Alerting Active: Alerts configured for Queue Depth &gt; Threshold, Unhandled Rejections, DLQ Item Added.
+</code></pre>
+<hr />
+<h2>2. Memory Leak Diagnosis SOP for Long-Running Node.js Workers</h2>
+<p>Long-running Node.js worker pools (BullMQ processors, Inngest runner containers, Trigger.dev task agents) are prone to insidious memory leaks that cause <code>OOMKilled</code> (Exit Code 137) events under sustained load.</p>
+<h3>2.1 The Four Root Causes in Worker Runtimes</h3>
+<ol>
+<li><strong>Uncleaned Event Listeners:</strong> Attaching <code>EventEmitter.on()</code> handlers inside the job execution path (e.g., database clients, stream pipelines) without matching <code>removeListener()</code> calls on completion or failure.</li>
+<li><strong>Context Retention via Closures:</strong> Long-lived step function wrappers capturing heavy parent scope variables (like large payload buffers) in asynchronous continuation chains.</li>
+<li><strong>Global Metrics / Cache Bloat:</strong> In-memory maps accumulating keys without TTL or eviction (e.g., caching authentication tokens or tracking processed IDs in a module-level <code>Set</code>).</li>
+<li><strong>Redis / HTTP Socket Leaks:</strong> Instantiating new Redis/HTTP clients per job invocation instead of reusing a shared connection pool, causing socket leakages and unbounded internal buffer allocations.</li>
+</ol>
+<h3>2.2 Diagnosis and Investigation Workflow</h3>
+<pre><code>[ Worker Memory Alarm Triggers (&gt;85% RSS) ]
+                   │
+                   ▼
+[ Step 1: Capture Node.js Metrics via Diagnostics Channel ]
+                   │
+                   ▼
+[ Step 2: Trigger Programmatic On-Demand Heap Snapshot ]
+                   │
+                   ▼
+[ Step 3: Stream Heap Snapshot to Persistent Storage (S3) ]
+                   │
+                   ▼
+[ Step 4: Compare Retained Size via Chrome DevTools / Clinic.js ]
+                   │
+                   ▼
+[ Step 5: Identify Constructor Retainers &amp; Execute Remediation ]
+</code></pre>
+<h3>2.3 Automated Heap Profiler Utility</h3>
+<p>Integrate this production-ready watcher directly into your worker boot sequence. It monitors memory usage continuously and writes a <code>.heapsnapshot</code> to disk (or your monitoring bucket) before the orchestrator kills the pod.</p>
+<pre><code class="language-typescript">// memoryWatcher.ts
+import v8 from 'node:v8';
+import fs from 'node:fs';
+import path from 'node:path';
+
+interface MemoryWatcherOptions {
+  heapThresholdPercentage: number; // e.g., 85 for 85%
+  checkIntervalMs: number;
+  outputDir: string;
+}
+
+export function startMemoryWatcher(options: MemoryWatcherOptions): NodeJS.Timeout {
+  const { heapThresholdPercentage, checkIntervalMs, outputDir } = options;
+
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  let snapshotTaken = false;
+
+  const timer = setInterval(() =&gt; {
+    const mem = process.memoryUsage();
+    const heapStats = v8.getHeapStatistics();
+    const heapUsedPercent = (heapStats.used_heap_size / heapStats.heap_size_limit) * 100;
+
+    if (heapUsedPercent &gt;= heapThresholdPercentage &amp;&amp; !snapshotTaken) {
+      snapshotTaken = true; // Prevent cascading snapshot loops
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = path.join(outputDir, `heap-${process.pid}-${timestamp}.heapsnapshot`);
+
+      console.error(
+        `[CRITICAL ALERT] Heap threshold exceeded: ${heapUsedPercent.toFixed(2)}%! ` +
+        `RSS: ${(mem.rss / 1024 / 1024).toFixed(2)} MB, ` +
+        `Heap Used: ${(mem.heapUsed / 1024 / 1024).toFixed(2)} MB. ` +
+        `Writing snapshot to ${filename}...`
+      );
+
+      try {
+        const snapshotStream = v8.getHeapSnapshot();
+        const fileStream = fs.createWriteStream(filename);
+        snapshotStream.pipe(fileStream);
+
+        fileStream.on('finish', () =&gt; {
+          console.error(`[CRITICAL ALERT] Heap snapshot written successfully to ${filename}`);
+          // Graceful bail-out: allow your cluster manager (K8s/ECS) to restart the container cleanly
+          process.exit(137);
+        });
+      } catch (err) {
+        console.error('[CRITICAL ALERT] Failed to capture heap snapshot:', err);
+        process.exit(1);
+      }
+    } else if (heapUsedPercent &lt; heapThresholdPercentage) {
+      snapshotTaken = false; // Reset if memory recovers
+    }
+  }, checkIntervalMs);
+
+  timer.unref(); // Do not hold the Node.js event loop open
+  return timer;
+}
+</code></pre>
+<h3>2.4 Controlled Memory-Leak Isolation Test</h3>
+<p>Execute this script locally to replicate production event-loop leak dynamics and verify that your profiler isolates the offending retainers.</p>
+<pre><code class="language-typescript">// leakReproduction.ts
+import { EventEmitter } from 'node:events';
+import { Queue, Worker } from 'bullmq';
+
+const connection = { host: '127.0.0.1', port: 6379 };
+const queueName = 'leak-audit-queue';
+
+export const globalTelemetryBus = new EventEmitter();
+// Artificially increase max listeners to suppress Node.js default warnings
+globalTelemetryBus.setMaxListeners(100000);
+
+export const leakQueue = new Queue(queueName, { connection });
+
+// Bad Worker: Attaches listeners to an external event emitter per job without cleanup
+export const leakWorker = new Worker(
+  queueName,
+  async (job) =&gt; {
+    const localBuffer = Buffer.alloc(1024 * 512, 'x'); // 512 KB payload
+
+    // LEAK ROOT CAUSE: Closure retains localBuffer in listener context
+    globalTelemetryBus.on('metric_ping', () =&gt; {
+      if (localBuffer.length === 0) {
+        console.log('noop');
+      }
+    });
+
+    return { status: 'processed', id: job.id };
+  },
+  { connection, concurrency: 5 }
+);
+
+// Remediation Script:
+// Clean up all dynamically attached listeners inside a try/finally block:
+/*
+export const cleanWorker = new Worker(queueName, async (job) =&gt; {
+  const localBuffer = Buffer.alloc(1024 * 512, 'x');
+  const handler = () =&gt; { if (localBuffer.length === 0) console.log('noop'); };
+
+  globalTelemetryBus.on('metric_ping', handler);
+  try {
+    return { status: 'processed', id: job.id };
+  } finally {
+    globalTelemetryBus.removeListener('metric_ping', handler);
+  }
+}, { connection, concurrency: 5 });
+*/
+</code></pre>
+<hr />
+<h2>3. Poison-Pill Payload Resolution Workflows &amp; DLQ Runbooks</h2>
+<p>A "poison pill" is a job whose payload deterministically crashes the worker execution thread, triggers an uncatchable runtime failure, or exhausts retry policies due to invariant violations.</p>
+<h3>3.1 Taxonomy of Poison-Pill Payloads</h3>
+<pre><code>                                  POISON PILL DETECTED
+                                           │
+         ┌─────────────────────────────────┼─────────────────────────────────┐
+         ▼                                 ▼                                 ▼
+   [Type A: Syntax/Schema]       [Type B: Execution Trap]       [Type C: Domain Invariant]
+   - Corrupt JSON structure      - Catastrophic RegEx (ReDoS)   - Entity deleted upstream
+   - Type mismatches             - Circular JSON references     - Immutable state conflict
+   - Missing required fields     - Infinite loop payloads       - Invalid credit ledger balance
+         │                                 │                                 │
+         ▼                                 ▼                                 ▼
+   Action: Drop or Patch Schema   Action: Patch Code &amp; Replay     Action: Compensate &amp; Tombstone
+</code></pre>
+<h3>3.2 Dead Letter Queue (DLQ) Incident Response SOP</h3>
+<pre><code>SEVERITY LEVEL: SEV-2
+INCIDENT TRIGGER: DLQ Depth Monitor &gt; 50 messages OR &gt; 1% total queue throughput.
+
+PHASE 1: CONTAINMENT &amp; ISOLATION
+1. Pause the dead-letter consumer or alerting monitor to prevent log flooding.
+2. Route incoming matching poison payloads to a staging dead-letter queue via dynamic rule if identifiable.
+3. If worker pods are crash-looping (`CrashLoopBackOff`), scale down concurrency immediately to 1 to preserve logs.
+
+PHASE 2: TRIAGE &amp; ROOT-CAUSE ANALYSIS
+1. Pull 5 sample payloads from the DLQ (use the CLI tool below).
+2. Execute the payload locally against the target step handler using your isolated debugger.
+3. Classify failure according to the Taxonomy (Type A, B, or C).
+
+PHASE 3: RESOLUTION
+- For Type A (Schema): Write an in-flight mutation script to map old schema to new schema, then replay.
+- For Type B (Code Bug): Deploy code hotfix to workers FIRST. Verify patch in staging. Replay DLQ messages.
+- For Type C (Invariant): Emit a compensation event, notify the user/admin, mark job as &quot;Tombstoned&quot;.
+
+PHASE 4: VERIFICATION
+1. Replay 1 message from the DLQ in &quot;Dry Run&quot; mode.
+2. Replay 10 messages to production workers. Verify zero crashes.
+3. Drain the remaining DLQ with batch size &lt;= 100 jobs/min to protect downstream systems.
+</code></pre>
+<h3>3.3 BullMQ DLQ Inspection, Sanitization, and Replay Tool</h3>
+<p>This standalone script safely inspects, patches, and replays failed jobs without risking concurrency lockups or cascading worker crashes.</p>
+<pre><code class="language-typescript">// dlqManager.ts
+import { Queue, Job } from 'bullmq';
+import { z } from 'zod';
+
+const connection = { host: '127.0.0.1', port: 6379 };
+
+interface ReplayOptions {
+  queueName: string;
+  batchSize: number;
+  dryRun: boolean;
+  sanitizer?: (rawPayload: unknown) =&gt; unknown;
+}
+
+export class DeadLetterManager {
+  private queue: Queue;
+
+  constructor(queueName: string) {
+    this.queue = new Queue(queueName, { connection });
+  }
+
+  /**
+   * Inspect failed jobs without modifying queue state
+   */
+  async inspectFailures(limit = 10): Promise&lt;void&gt; {
+    const failedJobs = await this.queue.getFailed(0, limit - 1);
+    console.log(`\n=== Found ${failedJobs.length} Failed Jobs ===`);
+
+    for (const job of failedJobs) {
+      console.log(`------------------------------------------------------------`);
+      console.log(`Job ID: ${job.id}`);
+      console.log(`Attempts Made: ${job.attemptsMade}`);
+      console.log(`Failed Reason: ${job.failedReason}`);
+      console.log(`Stack Trace:\n${job.stacktrace.slice(0, 3).join('\n')}`);
+      console.log(`Data:`, JSON.stringify(job.data, null, 2));
+    }
+  }
+
+  /**
+   * Safely sanitize and re-queue failed jobs back to 'wait' status
+   */
+  async replayFailedJobs(options: ReplayOptions): Promise&lt;void&gt; {
+    const { batchSize, dryRun, sanitizer } = options;
+    const failedJobs = await this.queue.getFailed(0, batchSize - 1);
+
+    console.log(`[DLQ REPLAY] Initiating replay for ${failedJobs.length} jobs. Dry Run: ${dryRun}`);
+
+    let replayedCount = 0;
+    let droppedCount = 0;
+
+    for (const job of failedJobs) {
+      try {
+        let payloadToReplay = job.data;
+
+        if (sanitizer) {
+          payloadToReplay = sanitizer(job.data);
+        }
+
+        if (dryRun) {
+          console.log(`[DRY RUN] Would replay Job ID ${job.id} with payload:`, payloadToReplay);
+          replayedCount++;
+          continue;
+        }
+
+        // Update the job with sanitized payload if modified
+        if (sanitizer) {
+          await job.updateData(payloadToReplay);
+        }
+
+        // Retry the job: moves it from failed to waiting state
+        await job.retry();
+        console.log(`[REPLAYED] Job ID ${job.id} re-enqueued.`);
+        replayedCount++;
+      } catch (err) {
+        console.error(`[ERROR] Could not process Job ID ${job.id}:`, err);
+        droppedCount++;
+      }
+    }
+
+    console.log(`\n=== DLQ Operation Completed ===`);
+    console.log(`Processed: ${replayedCount}`);
+    console.log(`Errors/Dropped: ${droppedCount}`);
+  }
+
+  async close(): Promise&lt;void&gt; {
+    await this.queue.close();
+  }
+}
+
+// Example Execution Runbook Entry
+async function main() {
+  const manager = new DeadLetterManager('payment-processing');
+
+  // Step 1: Inspect first 5 errors
+  await manager.inspectFailures(5);
+
+  // Define Schema Validator / Patch Strategy
+  const ExpectedSchema = z.object({
+    orderId: z.string().uuid(),
+    amountInCents: z.number().int().positive(),
+    currency: z.string().default('USD')
+  });
+
+  // Step 2: Replay with inline schema remediation
+  await manager.replayFailedJobs({
+    queueName: 'payment-processing',
+    batchSize: 50,
+    dryRun: false, // Flip to false after dryRun audit passes
+    sanitizer: (raw: any) =&gt; {
+      // Remediation logic: Auto-fix string amounts passed by legacy clients
+      const fixedAmount = typeof raw.amountInCents === 'string'
+        ? parseInt(raw.amountInCents, 10)
+        : raw.amountInCents;
+
+      return ExpectedSchema.parse({
+        ...raw,
+        amountInCents: fixedAmount,
+        currency: raw.currency || 'USD'
+      });
+    }
+  });
+
+  await manager.close();
+}
+
+if (require.main === module) {
+  main().catch(console.error);
+}
+</code></pre>
+<h3>3.4 Inngest Failed Event Recovery CLI Commands</h3>
+<p>Inngest handles execution state inside its engine. When handling events that yield dead-letter or unhandled step failures, use the following operational procedures via the Inngest API/CLI:</p>
+<pre><code class="language-bash"># 1. Fetch failure details for a specific run ID
+curl -X GET &quot;https://api.inngest.com/v1/runs/01HV8VNZP9B3...&quot; \
+  -H &quot;Authorization: Bearer $INNGEST_SIGNING_KEY&quot;
+
+# 2. Resend the original event that triggered the failed run with patched idempotency
+curl -X POST &quot;https://inn.gs/e/$INNGEST_EVENT_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{
+    &quot;name&quot;: &quot;billing/subscription.created&quot;,
+    &quot;data&quot;: {
+      &quot;subscriptionId&quot;: &quot;sub_10928301&quot;,
+      &quot;replayedAt&quot;: &quot;'$(date -u +&quot;%Y-%m-%dT%H:%M:%SZ&quot;)'&quot;,
+      &quot;isReplay&quot;: true
+    }
+  }'
+
+# 3. Rerun a failed step directly via Inngest REST API (bypassing re-execution of completed steps)
+curl -X POST &quot;https://api.inngest.com/v1/runs/01HV8VNZP9B3.../rerun&quot; \
+  -H &quot;Authorization: Bearer $INNGEST_SIGNING_KEY&quot; \
+  -H &quot;Content-Type: application/json&quot; \
+  -d '{
+    &quot;stepId&quot;: &quot;charge-card&quot;
+  }'
+</code></pre>
+<hr />
+<h2>4. Observability Swipe File: OpenTelemetry &amp; Datadog Telemetry</h2>
+<p>Standard web-framework instrumentation misses asynchronous execution gaps. When a task is enqueued, goes idle in Redis, wakes up on a remote worker, and runs discrete steps across network calls, distributed traces routinely break.</p>
+<h3>4.1 Production OpenTelemetry SDK Setup for Worker Nodes</h3>
+<p>This configuration handles trace context propagation and links parent dispatch traces to child worker executions.</p>
+<pre><code class="language-typescript">// telemetry.ts
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { Resource } from '@opentelemetry/resources';
+import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-grpc';
+import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
+import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
+import { trace, context, SpanKind, SpanStatusCode, Tracer } from '@opentelemetry/api';
+
+export const otelSdk = new NodeSDK({
+  resource: new Resource({
+    [SemanticResourceAttributes.SERVICE_NAME]: process.env.SERVICE_NAME || 'background-worker',
+    [SemanticResourceAttributes.SERVICE_VERSION]: process.env.SERVICE_VERSION || '1.0.0',
+    [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: process.env.NODE_ENV || 'production',
+  }),
+  traceExporter: new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://otel-collector:4317',
+  }),
+  metricReader: new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter({
+      url: process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT || 'http://otel-collector:4317',
+    }),
+    exportIntervalMillis: 15000,
+  }),
+  instrumentations: [
+    new HttpInstrumentation(),
+    new IORedisInstrumentation(),
+  ],
+});
+
+otelSdk.start();
+
+export const tracer: Tracer = trace.getTracer('durable-workflow-tracer');
+
+/**
+ * Tracing Helper to instrument arbitrary background step functions
+ */
+export async function traceStep&lt;T&gt;(
+  stepName: string,
+  parentCarrier: Record&lt;string, string&gt; | undefined,
+  fn: () =&gt; Promise&lt;T&gt;
+): Promise&lt;T&gt; {
+  const extractedContext = parentCarrier 
+    ? trace.getTracer('bullmq').startSpan(stepName, undefined, context.active())
+    : undefined;
+
+  return tracer.startActiveSpan(
+    stepName,
+    {
+      kind: SpanKind.CONSUMER,
+      attributes: {
+        'workflow.step': stepName,
+      },
+    },
+    async (span) =&gt; {
+      try {
+        const result = await fn();
+        span.setStatus({ code: SpanStatusCode.OK });
+        return result;
+      } catch (error: any) {
+        span.recordException(error);
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: error?.message || 'Step execution encountered an error',
+        });
+        throw error;
+      } finally {
+        span.end();
+      }
+    }
+  );
+}
+</code></pre>
+<h3>4.2 BullMQ Telemetry Instrumentation with Datadog Metrics</h3>
+<p>This drop-in integration wraps a BullMQ worker to capture runtime execution metrics, stalled events, and step performance with Datadog custom metric dogstatsd protocols.</p>
+<pre><code class="language-typescript">// bullmqDatadogMonitor.ts
+import { Worker, Queue, Job } from 'bullmq';
+import StatsD from 'hot-shots';
+
+const dogstatsd = new StatsD({
+  host: process.env.DD_AGENT_HOST || '127.0.0.1',
+  port: 8125,
+  prefix: 'jobs.',
+  globalTags: { env: process.env.NODE_ENV || 'production', service: 'queue-processor' },
+});
+
+export function instrumentBullMQWorker(worker: Worker): void {
+  const queueName = worker.name;
+
+  worker.on('active', (job: Job) =&gt; {
+    dogstatsd.increment('execution.started', 1, [`queue:${queueName}`, `job_name:${job.name}`]);
+    // Tag latency between creation and execution start
+    const delayDurationMs = Date.now() - job.timestamp;
+    dogstatsd.histogram('queue.wait_delay_ms', delayDurationMs, [`queue:${queueName}`, `job_name:${job.name}`]);
+  });
+
+  worker.on('completed', (job: Job) =&gt; {
+    const runtimeMs = Date.now() - (job.processedOn || job.timestamp);
+    dogstatsd.increment('execution.completed', 1, [`queue:${queueName}`, `job_name:${job.name}`]);
+    dogstatsd.histogram('execution.duration_ms', runtimeMs, [`queue:${queueName}`, `job_name:${job.name}`]);
+  });
+
+  worker.on('failed', (job: Job | undefined, err: Error) =&gt; {
+    dogstatsd.increment('execution.failed', 1, [
+      `queue:${queueName}`,
+      `job_name:${job?.name || 'unknown'}`,
+      `error_type:${err.name || 'Error'}`,
+    ]);
+  });
+
+  worker.on('stalled', (jobId: string) =&gt; {
+    dogstatsd.increment('execution.stalled', 1, [`queue:${queueName}`, `stalled_job_id:${jobId}`]);
+  });
+
+  worker.on('error', (err: Error) =&gt; {
+    dogstatsd.increment('worker.system_error', 1, [`queue:${queueName}`, `error:${err.name}`]);
+  });
+}
+
+/**
+ * Polling service to emit queue health depths to Datadog
+ */
+export function startQueueDepthMetricsReporter(queue: Queue, intervalMs = 10000): NodeJS.Timeout {
+  const timer = setInterval(async () =&gt; {
+    try {
+      const counts = await queue.getJobCounts('active', 'wait', 'delayed', 'failed', 'paused');
+
+      dogstatsd.gauge('queue.depth.active', counts.active, [`queue:${queue.name}`]);
+      dogstatsd.gauge('queue.depth.wait', counts.wait, [`queue:${queue.name}`]);
+      dogstatsd.gauge('queue.depth.delayed', counts.delayed, [`queue:${queue.name}`]);
+      dogstatsd.gauge('queue.depth.failed', counts.failed, [`queue:${queue.name}`]);
+    } catch (err) {
+      console.error(`Failed to collect job counts for queue: ${queue.name}`, err);
+    }
+  }, intervalMs);
+
+  timer.unref();
+  return timer;
+}
+</code></pre>
+<h3>4.3 Inngest Middleware for Trace Context Injection and Step Timing</h3>
+<p>Drop this custom middleware into your Inngest client to automatically bridge Inngest executions into your Datadog or OpenTelemetry traces.</p>
+<pre><code class="language-typescript">// inngestTelemetryMiddleware.ts
+import { InngestMiddleware } from 'inngest';
+import StatsD from 'hot-shots';
+
+const statsd = new StatsD({ prefix: 'inngest.' });
+
+export const telemetryMiddleware = new InngestMiddleware({
+  name: 'Observability &amp; Metrics Middleware',
+  init() {
+    return {
+      onFunctionRun({ fn, ctx }) {
+        const functionId = fn.id(null as any);
+        const startTime = Date.now();
+        statsd.increment('function.started', 1, [`function_id:${functionId}`]);
+
+        return {
+          transformOutput({ result, step }) {
+            const stepName = step?.displayName || 'root';
+            statsd.increment('step.executed', 1, [
+              `function_id:${functionId}`,
+              `step_name:${stepName}`,
+            ]);
+          },
+          beforeExecution() {
+            // Can extract and mount trace carriers here
+          },
+          afterExecution() {
+            const duration = Date.now() - startTime;
+            statsd.histogram('function.duration_ms', duration, [`function_id:${functionId}`]);
+          },
+          transformError({ error }) {
+            statsd.increment('function.failed', 1, [
+              `function_id:${functionId}`,
+              `error_class:${(error as any)?.name || 'Error'}`,
+            ]);
+          },
+        };
+      },
+    };
+  },
+});
+</code></pre>
+<hr />
+<h2>5. Production Alert Rules: Datadog &amp; Prometheus (PromQL)</h2>
+<p>Copy and apply these alerting policies to trigger targeted incident escalation before queue delays impact end users.</p>
+<h3>5.1 Datadog Monitor Definitions (JSON Format)</h3>
+<h4>Alert 1: Unhandled Dead-Letter Queue Surge</h4>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;{{#is_alert}}CRITICAL: Dead Letter Queue Spiking - {{queue.name}} {{/is_alert}}{{#is_warning}}WARNING: Dead Letter Queue Rising - {{queue.name}} {{/is_warning}}&quot;,
+  &quot;type&quot;: &quot;query alert&quot;,
+  &quot;query&quot;: &quot;sum(last_5m):sum:jobs.execution.failed{*} by {queue} &gt; 10&quot;,
+  &quot;message&quot;: &quot;Jobs are exhausting retries and entering the DLQ in queue {{queue.name}}.\n\nSOP Runbook: Follow 04_Checklists_Troubleshooting Section 3 to safely inspect and patch the failing payloads.\n\n@pagerduty-tier-1&quot;,
+  &quot;tags&quot;: [&quot;service:background-jobs&quot;, &quot;severity:page&quot;, &quot;tier:data-platform&quot;],
+  &quot;options&quot;: {
+    &quot;thresholds&quot;: {
+      &quot;critical&quot;: 10.0,
+      &quot;warning&quot;: 3.0
+    },
+    &quot;notify_no_data&quot;: false,
+    &quot;renotify_interval&quot;: 30,
+    &quot;evaluation_delay&quot;: 60
+  }
+}
+</code></pre>
+<h4>Alert 2: Worker Process Memory Saturation (Near OOM)</h4>
+<p>```json
+{
+  "name": "CRITICAL: Background Worker Node Heap Memory Ex</p>
+</body>
+</html>

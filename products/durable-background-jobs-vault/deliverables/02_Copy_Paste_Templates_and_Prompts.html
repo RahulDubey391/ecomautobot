@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Durable Workflows & Background Jobs Vault: 50+ Inngest, Trigger.dev & BullMQ Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: 50+ Production Blueprints, Step Functions &amp; Worker Configurations</h1>
+<hr />
+<h2>1. Multi-Step LLM Batch Pipeline with Self-Healing Retries (Inngest v3)</h2>
+<p>This blueprint processes high-volume document batches through chunking, parallel LLM analysis, schema validation with Zod, and automatic fallback to a smaller, faster model when rate limits (HTTP 429) or context limits (HTTP 400) are encountered.</p>
+<pre><code class="language-typescript">import { Inngest } from &quot;inngest&quot;;
+import { z } from &quot;zod&quot;;
+import OpenAI from &quot;openai&quot;;
+
+export const inngest = new Inngest({ id: &quot;document-processing-service&quot; });
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
+
+const AnalysisSchema = z.object({
+  summary: z.string().min(20),
+  keyEntities: z.array(z.string()),
+  sentimentScore: z.number().min(-1).max(1),
+  actionItems: z.array(z.string()),
+});
+
+type DocumentAnalysis = z.infer&lt;typeof AnalysisSchema&gt;;
+
+interface DocumentBatchEvent {
+  data: {
+    batchId: string;
+    documents: Array&lt;{
+      id: string;
+      rawText: string;
+    }&gt;;
+  };
+}
+
+export const processDocumentBatch = inngest.createFunction(
+  {
+    id: &quot;process-document-batch&quot;,
+    retries: 3,
+    concurrency: {
+      limit: 5,
+      key: &quot;event.data.batchId&quot;,
+    },
+    throttle: {
+      limit: 50,
+      period: &quot;1m&quot;,
+    },
+  },
+  { event: &quot;documents/batch.submitted&quot; },
+  async ({ event, step }) =&gt; {
+    const { batchId, documents } = event.data as DocumentBatchEvent[&quot;data&quot;];
+
+    // Step 1: Chunk documents deterministically
+    const chunkedDocuments = await step.run(&quot;chunk-documents&quot;, async () =&gt; {
+      return documents.map((doc) =&gt; {
+        const words = doc.rawText.split(/\s+/);
+        const chunkSize = 800;
+        const chunks: string[] = [];
+        for (let i = 0; i &lt; words.length; i += chunkSize) {
+          chunks.push(words.slice(i, i + chunkSize).join(&quot; &quot;));
+        }
+        return { docId: doc.id, chunks };
+      });
+    });
+
+    // Step 2: Fan-out analysis per document with rate-limit self-healing
+    const analysisResults: Array&lt;{ docId: string; analysis: DocumentAnalysis }&gt; = [];
+
+    for (const doc of chunkedDocuments) {
+      const result = await step.run(`analyze-doc-${doc.docId}`, async () =&gt; {
+        const aggregatedText = doc.chunks.join(&quot;\n\n--- CHUNK BREAK ---\n\n&quot;);
+        let model = &quot;gpt-4o&quot;;
+        let responsePayload: string | null = null;
+
+        try {
+          const completion = await openai.chat.completions.create({
+            model,
+            response_format: { type: &quot;json_object&quot; },
+            messages: [
+              {
+                role: &quot;system&quot;,
+                content:
+                  &quot;Extract structured metadata. Output JSON matching: { summary: string, keyEntities: string[], sentimentScore: number, actionItems: string[] }&quot;,
+              },
+              { role: &quot;user&quot;, content: aggregatedText },
+            ],
+            temperature: 0.2,
+          });
+          responsePayload = completion.choices[0].message.content;
+        } catch (err: any) {
+          // Fallback to gpt-4o-mini if rate-limited or payload overloaded
+          if (err?.status === 429 || err?.status === 400) {
+            model = &quot;gpt-4o-mini&quot;;
+            const fallbackCompletion = await openai.chat.completions.create({
+              model,
+              response_format: { type: &quot;json_object&quot; },
+              messages: [
+                {
+                  role: &quot;system&quot;,
+                  content:
+                    &quot;Extract structured metadata concisely. Output JSON matching schema: { summary: string, keyEntities: string[], sentimentScore: number, actionItems: string[] }&quot;,
+                },
+                { role: &quot;user&quot;, content: aggregatedText.slice(0, 12000) },
+              ],
+              temperature: 0.1,
+            });
+            responsePayload = fallbackCompletion.choices[0].message.content;
+          } else {
+            throw err;
+          }
+        }
+
+        if (!responsePayload) {
+          throw new Error(`Empty LLM response for document ${doc.docId}`);
+        }
+
+        const parsed = AnalysisSchema.parse(JSON.parse(responsePayload));
+        return { docId: doc.docId, analysis: parsed };
+      });
+
+      analysisResults.push(result);
+    }
+
+    // Step 3: Fan-in aggregation and persistence
+    const batchSummary = await step.run(&quot;persist-and-aggregate&quot;, async () =&gt; {
+      const totalEntities = new Set(
+        analysisResults.flatMap((r) =&gt; r.analysis.keyEntities)
+      ).size;
+      const avgSentiment =
+        analysisResults.reduce((acc, r) =&gt; acc + r.analysis.sentimentScore, 0) /
+        analysisResults.length;
+
+      return {
+        batchId,
+        processedCount: analysisResults.length,
+        uniqueEntitiesFound: totalEntities,
+        averageSentimentScore: Number(avgSentiment.toFixed(3)),
+        completedAt: new Date().toISOString(),
+      };
+    });
+
+    return batchSummary;
+  }
+);
+</code></pre>
+<hr />
+<h2>2. Distributed Video Transcoding &amp; Fan-Out/Fan-In (Trigger.dev v3)</h2>
+<p>This blueprint accepts a source video in S3, generates renditions across multiple resolutions (<code>1080p</code>, <code>720p</code>, <code>480p</code>, <code>360p</code>) in parallel child tasks, generates an HLS master manifest, and updates database records upon completion.</p>
+<pre><code class="language-typescript">import { task, wait } from &quot;@trigger.dev/sdk/v3&quot;;
+import { S3Client, PutObjectCommand, HeadObjectCommand } from &quot;@aws-sdk/client-s3&quot;;
+import { exec } from &quot;child_process&quot;;
+import { promisify } from &quot;util&quot;;
+import * as fs from &quot;fs&quot;;
+import * as path from &quot;path&quot;;
+
+const execAsync = promisify(exec);
+const s3 = new S3Client({ region: process.env.AWS_REGION! });
+
+interface TranscodeTaskPayload {
+  videoId: string;
+  sourceS3Key: string;
+  sourceBucket: string;
+  destinationBucket: string;
+}
+
+interface RenditionSpec {
+  resolution: string;
+  bitrate: string;
+  width: number;
+  height: number;
+}
+
+const RENDITIONS: RenditionSpec[] = [
+  { resolution: &quot;1080p&quot;, bitrate: &quot;4500k&quot;, width: 1920, height: 1080 },
+  { resolution: &quot;720p&quot;, bitrate: &quot;2200k&quot;, width: 1280, height: 720 },
+  { resolution: &quot;480p&quot;, bitrate: &quot;800k&quot;, width: 854, height: 480 },
+  { resolution: &quot;360p&quot;, bitrate: &quot;400k&quot;, width: 640, height: 360 },
+];
+
+export const transcodeRenditionTask = task({
+  id: &quot;transcode-rendition&quot;,
+  retry: {
+    maxAttempts: 2,
+    factor: 2,
+    minTimeoutInMs: 1000,
+  },
+  run: async (payload: {
+    videoId: string;
+    sourceLocalPath: string;
+    rendition: RenditionSpec;
+    destinationBucket: string;
+  }) =&gt; {
+    const { videoId, sourceLocalPath, rendition, destinationBucket } = payload;
+    const outputDir = path.join(&quot;/tmp&quot;, videoId, rendition.resolution);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const outputPath = path.join(outputDir, &quot;output.m3u8&quot;);
+    const segmentPath = path.join(outputDir, &quot;segment_%03d.ts&quot;);
+
+    const ffmpegCmd = [
+      &quot;ffmpeg -y -i&quot;,
+      `&quot;${sourceLocalPath}&quot;`,
+      `-vf scale=w=${rendition.width}:h=${rendition.height}:force_original_aspect_ratio=decrease`,
+      `-c:a aac -ar 48000 -b:a 128k`,
+      `-c:v h264 -profile:v main -crf 20 -b:v ${rendition.bitrate} -maxrate ${rendition.bitrate} -bufsize ${rendition.bitrate}`,
+      `-hls_time 6 -hls_playlist_type vod -hls_segment_filename &quot;${segmentPath}&quot;`,
+      `&quot;${outputPath}&quot;`,
+    ].join(&quot; &quot;);
+
+    await execAsync(ffmpegCmd);
+
+    const generatedFiles = fs.readdirSync(outputDir);
+    for (const file of generatedFiles) {
+      const fileData = fs.readFileSync(path.join(outputDir, file));
+      const s3Key = `transcoded/${videoId}/${rendition.resolution}/${file}`;
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: destinationBucket,
+          Key: s3Key,
+          Body: fileData,
+          ContentType: file.endsWith(&quot;.m3u8&quot;)
+            ? &quot;application/vnd.apple.mpegurl&quot;
+            : &quot;video/MP2T&quot;,
+        })
+      );
+    }
+
+    return {
+      resolution: rendition.resolution,
+      manifestS3Key: `transcoded/${videoId}/${rendition.resolution}/output.m3u8`,
+      bandwidth: parseInt(rendition.bitrate) * 1000,
+      width: rendition.width,
+      height: rendition.height,
+    };
+  },
+});
+
+export const videoPipelineOrchestrator = task({
+  id: &quot;video-transcoding-pipeline&quot;,
+  run: async (payload: TranscodeTaskPayload) =&gt; {
+    const { videoId, sourceS3Key, sourceBucket, destinationBucket } = payload;
+    const localSourcePath = path.join(&quot;/tmp&quot;, `${videoId}_source.mp4`);
+
+    // Ensure source exists
+    await s3.send(
+      new HeadObjectCommand({ Bucket: sourceBucket, Key: sourceS3Key })
+    );
+
+    // Download source to scratch disk
+    await execAsync(
+      `aws s3 cp s3://${sourceBucket}/${sourceS3Key} ${localSourcePath}`
+    );
+
+    // Fan-out across all target resolutions
+    const renditionRuns = await Promise.all(
+      RENDITIONS.map((rendition) =&gt;
+        transcodeRenditionTask.triggerAndWait({
+          videoId,
+          sourceLocalPath: localSourcePath,
+          rendition,
+          destinationBucket,
+        })
+      )
+    );
+
+    const completedRenditions = renditionRuns
+      .filter((run) =&gt; run.ok)
+      .map((run) =&gt; run.output);
+
+    if (completedRenditions.length === 0) {
+      throw new Error(`All transcoding passes failed for videoId: ${videoId}`);
+    }
+
+    // Fan-in: Generate Master Playlist
+    let masterPlaylist = &quot;#EXTM3U\n#EXT-X-VERSION:3\n&quot;;
+    for (const ren of completedRenditions) {
+      masterPlaylist += `#EXT-X-STREAM-INF:BANDWIDTH=${ren.bandwidth},RESOLUTION=${ren.width}x${ren.height}\n`;
+      masterPlaylist += `${ren.resolution}/output.m3u8\n`;
+    }
+
+    const masterKey = `transcoded/${videoId}/master.m3u8`;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: destinationBucket,
+        Key: masterKey,
+        Body: Buffer.from(masterPlaylist, &quot;utf-8&quot;),
+        ContentType: &quot;application/vnd.apple.mpegurl&quot;,
+      })
+    );
+
+    // Clean up scratch source
+    if (fs.existsSync(localSourcePath)) {
+      fs.unlinkSync(localSourcePath);
+    }
+
+    return {
+      videoId,
+      status: &quot;COMPLETED&quot;,
+      masterPlaylistUrl: `s3://${destinationBucket}/${masterKey}`,
+      renditionsAvailable: completedRenditions.map((r) =&gt; r.resolution),
+    };
+  },
+});
+</code></pre>
+<hr />
+<h2>3. Stripe Billing Reconciliation &amp; Dunning Step Function (Inngest v3)</h2>
+<p>Handles <code>invoice.payment_failed</code> webhooks, initiates a 14-day progressive dunning flow, and suspends tenant workspaces if payment is not recovered.</p>
+<pre><code class="language-typescript">import { Inngest } from &quot;inngest&quot;;
+import Stripe from &quot;stripe&quot;;
+
+export const inngest = new Inngest({ id: &quot;billing-reconciliation-engine&quot; });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: &quot;2024-06-20&quot;,
+});
+
+interface InvoiceFailedEvent {
+  data: {
+    invoiceId: string;
+    customerId: string;
+    attemptCount: number;
+    amountDue: number;
+    currency: string;
+  };
+}
+
+export const stripeDunningWorkflow = inngest.createFunction(
+  {
+    id: &quot;stripe-dunning-and-reconciliation&quot;,
+    retries: 5,
+    cancelOn: [
+      {
+        event: &quot;stripe/invoice.payment_succeeded&quot;,
+        match: &quot;data.invoiceId&quot;,
+      },
+    ],
+  },
+  { event: &quot;stripe/invoice.payment_failed&quot; },
+  async ({ event, step }) =&gt; {
+    const { invoiceId, customerId, amountDue, currency } =
+      event.data as InvoiceFailedEvent[&quot;data&quot;];
+
+    // Phase 1: Immediate Grace Period &amp; Email Notification
+    await step.run(&quot;send-first-dunning-notice&quot;, async () =&gt; {
+      const customer = await stripe.customers.retrieve(customerId);
+      if (customer.deleted) throw new Error(&quot;Customer deleted&quot;);
+
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: `${process.env.APP_BASE_URL}/billing`,
+      });
+
+      await fetch(`${process.env.EMAIL_API_URL}/send`, {
+        method: &quot;POST&quot;,
+        headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+        body: JSON.stringify({
+          to: customer.email,
+          subject: &quot;Urgent: Payment failed for your subscription&quot;,
+          template: &quot;payment-failed-first-notice&quot;,
+          variables: {
+            portalUrl: portalSession.url,
+            amount: (amountDue / 100).toFixed(2),
+            currency: currency.toUpperCase(),
+          },
+        }),
+      });
+
+      return { noticeNumber: 1, sentAt: new Date().toISOString() };
+    });
+
+    // Wait 3 days before retrying payment card charge
+    await step.sleep(&quot;wait-for-first-retry-window&quot;, &quot;3d&quot;);
+
+    // Phase 2: First Automated Retry &amp; Second Notice
+    const firstRetryResult = await step.run(&quot;attempt-first-charge-retry&quot;, async () =&gt; {
+      try {
+        const paidInvoice = await stripe.invoices.pay(invoiceId);
+        return { status: paidInvoice.status };
+      } catch (err: any) {
+        return { status: &quot;failed&quot;, code: err?.code || &quot;unknown_error&quot; };
+      }
+    });
+
+    if (firstRetryResult.status === &quot;paid&quot;) {
+      return { resolution: &quot;PAID_ON_FIRST_RETRY&quot;, invoiceId };
+    }
+
+    await step.run(&quot;send-second-dunning-notice&quot;, async () =&gt; {
+      const customer = await stripe.customers.retrieve(customerId);
+      if (customer.deleted) return;
+
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: `${process.env.APP_BASE_URL}/billing`,
+      });
+
+      await fetch(`${process.env.EMAIL_API_URL}/send`, {
+        method: &quot;POST&quot;,
+        headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+        body: JSON.stringify({
+          to: customer.email,
+          subject: &quot;Final Notice: Your service will be downgraded in 4 days&quot;,
+          template: &quot;payment-failed-urgent-notice&quot;,
+          variables: { portalUrl: portalSession.url },
+        }),
+      });
+    });
+
+    // Wait 4 more days (Day 7 overall)
+    await step.sleep(&quot;wait-for-second-retry-window&quot;, &quot;4d&quot;);
+
+    // Phase 3: Final Card Attempt
+    const finalRetry = await step.run(&quot;attempt-final-charge-retry&quot;, async () =&gt; {
+      try {
+        const invoice = await stripe.invoices.pay(invoiceId);
+        return { status: invoice.status };
+      } catch (err) {
+        return { status: &quot;failed&quot; };
+      }
+    });
+
+    if (finalRetry.status === &quot;paid&quot;) {
+      return { resolution: &quot;PAID_ON_FINAL_RETRY&quot;, invoiceId };
+    }
+
+    // Phase 4: Demote Account Access &amp; Void Uncollectible Invoice
+    const reconciliationOutcome = await step.run(&quot;suspend-workspace&quot;, async () =&gt; {
+      // Mark invoice uncollectible
+      await stripe.invoices.markUncollectible(invoiceId);
+
+      // Lock tenant database permissions
+      const response = await fetch(
+        `${process.env.INTERNAL_API_URL}/tenants/suspend`,
+        {
+          method: &quot;POST&quot;,
+          headers: {
+            &quot;Authorization&quot;: `Bearer ${process.env.INTERNAL_SERVICE_TOKEN}`,
+            &quot;Content-Type&quot;: &quot;application/json&quot;,
+          },
+          body: JSON.stringify({ stripeCustomerId: customerId, reason: &quot;DUNNING_EXHAUSTED&quot; }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Failed to suspend workspace for customer ${customerId}`);
+      }
+
+      return { suspended: true, suspendedAt: new Date().toISOString() };
+    });
+
+    return {
+      resolution: &quot;SUSPENDED_UNPAID&quot;,
+      invoiceId,
+      customerId,
+      reconciliationOutcome,
+    };
+  }
+);
+</code></pre>
+<hr />
+<h2>4. Enterprise Webhook Ingestion Engine with Jitter &amp; DLQ (BullMQ v5)</h2>
+<p>This blueprint contains an express/hono edge receiver verifying HMAC-SHA256 signatures, pushing to a BullMQ queue configured with exponential backoff and decorrelated jitter, and handling permanent dead-letter drops with structured audit storage.</p>
+<pre><code class="language-typescript">import { Queue, Worker, Job, QueueEvents } from &quot;bullmq&quot;;
+import Redis from &quot;ioredis&quot;;
+import * as crypto from &quot;crypto&quot;;
+
+const connection = new Redis(process.env.REDIS_URL!, {
+  maxRetriesPerRequest: null,
+});
+
+export interface WebhookJobPayload {
+  deliveryId: string;
+  source: string;
+  rawPayload: Record&lt;string, any&gt;;
+  signature: string;
+  timestamp: number;
+}
+
+// 1. Initialize BullMQ Queue
+export const webhookIngestionQueue = new Queue&lt;WebhookJobPayload&gt;(
+  &quot;enterprise-webhook-queue&quot;,
+  {
+    connection,
+    defaultJobOptions: {
+      attempts: 8,
+      backoff: {
+        type: &quot;custom&quot;,
+      },
+      removeOnComplete: {
+        age: 86400, // keep 24 hours
+        count: 5000,
+      },
+      removeOnFail: false, // Never auto-remove failed jobs, retain for DLQ auditing
+    },
+  }
+);
+
+// 2. Custom Backoff Strategy: Full Jitter Exponential Backoff
+export const calculateBackoffWithJitter = (attemptsMade: number): number =&gt; {
+  const baseDelayMs = 1000;
+  const maxDelayMs = 1000 * 60 * 30; // 30 minutes cap
+  const exponentialLimit = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attemptsMade));
+  // Random jitter between baseDelay and calculated power
+  return Math.floor(Math.random() * (exponentialLimit - baseDelayMs) + baseDelayMs);
+};
+
+// 3. Worker Implementation
+export const webhookWorker = new Worker&lt;WebhookJobPayload&gt;(
+  &quot;enterprise-webhook-queue&quot;,
+  async (job: Job&lt;WebhookJobPayload&gt;) =&gt; {
+    const { deliveryId, source, rawPayload, signature, timestamp } = job.data;
+
+    // Verify freshness (reject replay attacks older than 5 minutes)
+    const currentTime = Date.now();
+    if (currentTime - timestamp &gt; 300000) {
+      throw new Error(`Replay attack detected: Payload timestamp delta exceeds 300s`);
+    }
+
+    // Verify Cryptographic Signature
+    const secret = process.env.WEBHOOK_SIGNING_SECRET!;
+    const expectedSignature = crypto
+      .createHmac(&quot;sha256&quot;, secret)
+      .update(JSON.stringify(rawPayload))
+      .digest(&quot;hex&quot;);
+
+    const signatureBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSignature);
+
+    if (
+      signatureBuffer.length !== expectedBuffer.length ||
+      !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
+    ) {
+      // Permanent structural failure: do not retry
+      throw new Error(&quot;UNAUTHORIZED_SIGNATURE_MISMATCH&quot;);
+    }
+
+    // Route event to internal systems
+    const downstreamResponse = await fetch(
+      `${process.env.CORE_DISPATCH_URL}/webhooks/consume`,
+      {
+        method: &quot;POST&quot;,
+        headers: {
+          &quot;Content-Type&quot;: &quot;application/json&quot;,
+          &quot;X-Delivery-Id&quot;: deliveryId,
+          &quot;X-Source&quot;: source,
+        },
+        body: JSON.stringify(rawPayload),
+      }
+    );
+
+    if (!downstreamResponse.ok) {
+      const errText = await downstreamResponse.text();
+      throw new Error(`Downstream HTTP ${downstreamResponse.status}: ${errText}`);
+    }
+
+    return { processed: true, deliveryId };
+  },
+  {
+    connection,
+    concurrency: 25,
+    settings: {
+      backoffStrategies: {
+        custom: (attemptsMade: number) =&gt; calculateBackoffWithJitter(attemptsMade),
+      },
+    },
+  }
+);
+
+// 4. Dead Letter Queue Handler on Total Exhaustion
+webhookWorker.on(&quot;failed&quot;, async (job: Job&lt;WebhookJobPayload&gt; | undefined, err: Error) =&gt; {
+  if (!job) return;
+
+  if (job.attemptsMade &gt;= (job.opts.attempts || 8)) {
+    await connection.hset(
+      `dlq:enterprise-webhooks:${job.data.deliveryId}`,
+      {
+        deliveryId: job.data.deliveryId,
+        source: job.data.source,
+        payload: JSON.stringify(job.data.rawPayload),
+        failedReason: err.message,
+        stackTrace: err.stack || &quot;&quot;,
+        attemptsMade: job.attemptsMade.toString(),
+        droppedAt: new Date().toISOString(),
+      }
+    );
+
+    // Alert incident response webhook
+    await fetch(process.env.OPSGENIE_ALERT_WEBHOOK_URL!, {
+      method: &quot;POST&quot;,
+      headers: { &quot;Content-Type&quot;: &quot;application/json&quot; },
+      body: JSON.stringify({
+        message: `Webhook processing moved to DLQ: ${job.data.deliveryId}`,
+        details: { error: err.message, attempts: job.attemptsMade },
+      }),
+    });
+  }
+});
+</code></pre>
+<hr />
+<h2>5. Fan-Out / Fan-In Aggregation Worker (BullMQ + Redis Coordination)</h2>
+<p>This pattern slices large datasets (e.g., 50,000 customers for tax calculation) into batches, fans out jobs across distributed worker pools, tracks progress atomically with Redis hashes, and triggers a single reconciliation job when the entire batch is verified complete.</p>
+<pre><code class="language-typescript">import { Queue, Worker, Job } from &quot;bullmq&quot;;
+import Redis from &quot;ioredis&quot;;
+
+const redis = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+
+const CHUNK_QUEUE_NAME = &quot;tax-fanout-chunk-queue&quot;;
+const AGGREGATE_QUEUE_NAME = &quot;tax-fanin-aggregate-queue&quot;;
+
+export const chunkQueue = new Queue(CHUNK_QUEUE_NAME, { connection: redis });
+export const aggregateQueue = new Queue(AGGREGATE_QUEUE_NAME, { connection: redis });
+
+interface ChunkJobPayload {
+  masterBatchId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  records: Array&lt;{ customerId: string; subtotal: number; state: string }&gt;;
+}
+
+interface AggregateJobPayload {
+  masterBatchId: string;
+  totalChunks: number;
+}
+
+// 1. Dispatcher: Slices and Enqueues
+export async function dispatchBatch(
+  masterBatchId: string,
+  records: Array&lt;{ customerId: string; subtotal: number; state: string }&gt;
+) {
+  const CHUNK_SIZE = 500;
+  const totalChunks = Math.ceil(records.length / CHUNK_SIZE);
+
+  // Initialize tracking ledger in Redis
+  await redis
+    .multi()
+    .set(`batch:${masterBatchId}:total`, totalChunks)
+    .set(`batch:${masterBatchId}:completed`, 0)
+    .del(`batch:${masterBatchId}:results`)
+    .exec();
+
+  const jobs = [];
+  for (let i = 0; i &lt; totalChunks; i++) {
+    const chunk = records.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+    jobs.push({
+      name: `chunk-${i}`,
+      data: {
+        masterBatchId,
+        chunkIndex: i,
+        totalChunks,
+        records: chunk,
+      } as ChunkJobPayload,
+      opts: {
+        attempts: 3,
+        backoff: { type: &quot;exponential&quot;, delay: 2000 },
+      },
+    });
+  }
+
+  await chunkQueue.addBulk(jobs);
+}
+
+// 2. Child Worker: Processes Subsets
+export const chunkWorker = new Worker&lt;ChunkJobPayload&gt;(
+  CHUNK_QUEUE_NAME,
+  async (job: Job&lt;ChunkJobPayload&gt;) =&gt; {
+    const { masterBatchId, chunkIndex, totalChunks, records } = job.data;
+
+    let chunkTaxSum = 0;
+    for (const record of records) {
+      // Deterministic state tax rules
+      const rate = record.state === &quot;CA&quot; ? 0.0825 : record.state === &quot;NY&quot; ? 0.08875 : 0.05;
+      chunkTaxSum += record.subtotal * rate;
+    }
+
+    // Atomic tallying and completion tracking using Lua Script
+    const luaScript = `
+      local batchId = KEYS[1]
+      local chunkSum = ARGV[1]
+      local totalChunks = tonumber(redis.call('get', 'batch:' .. batchId .. ':total'))
+
+      redis.call('rpush', 'batch:' .. batchId .. ':results', chunkSum)
+      local completed = redis.call('incr', 'batch:' .. batchId .. ':completed')
+
+      if completed == totalChunks then
+        return 1
+      else
+        return 0
+      end
+    `;
+
+    const isLastChunk = await redis.eval(
+      luaScript,
+      1,
+      masterBatchId,
+      chunkTaxSum.toFixed(4)
+    );
+
+    // If this execution completed the entire set, queue the parent fan-in job
+    if (isLastChunk === 1) {
+      await aggregateQueue.add(&quot;finalize-tax-run&quot;, {
+        masterBatchId,
+        totalChunks,
+      } as AggregateJobPayload);
+    }
+
+    return { chunkIndex, processed: records.length, chunkTaxSum };
+  },
+  { connection: redis, concurrency: 10 }
+);
+
+// 3. Parent Worker: Final Fan-in Aggregator
+export const aggregateWorker = new Worker&lt;AggregateJobPayload&gt;(
+  AGGREGATE_QUEUE_NAME,
+  async (job: Job&lt;AggregateJobPayload&gt;) =&gt; {
+    const { masterBatchId, totalChunks } = job.data;
+
+    const rawResults = await redis.lrange(`batch:${masterBatchId}:results`, 0, -1);
+    if (rawResults.length !== totalChunks) {
+      throw new Error(
+        `Desynchronization: expected ${totalChunks} chunks in Redis, found ${rawResults.length}`
+      );
+    }
+
+    const grandTotalTax = rawResults
+      .map(parseFloat)
+      .reduce((acc, val) =&gt; acc + val, 0);
+
+    // Persist final aggregated run
+    await redis.set(
+      `batch:${masterBatchId}:final`,
+      JSON.stringify({
+        masterBatchId,
+        grandTotalTax: Number(grandTotalTax.toFixed(2)),
+        chunksProcessed: rawResults.length,
+        finishedAt: new Date().toISOString(),
+      })
+    );
+
+    // Clean up temporary keys
+    await redis.del(
+      `batch:${masterBatchId}:total`,
+      `batch:${masterBatchId}:completed`,
+      `batch:${masterBatchId}:results`
+    );
+
+    return { masterBatchId, grandTotalTax: Number(grandTotalTax.toFixed(2)) };
+  },
+  { connection: redis, concurrency: 2 }
+);
+</code></pre>
+<hr />
+<h2>6. Framework Implementation Comparison Matrix</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter / Requirement</th>
+<th style="text-align: left;">BullMQ v5</th>
+<th style="text-align: left;">Inngest v3</th>
+<th style="text-align: left;">Trigger.dev v3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>State Storage Layer</strong></td>
+<td style="text-align: left;">Redis / Redis Cluster</td>
+<td style="text-align: left;">Managed Cloud / Self-hosted Event Log</td>
+<td style="text-align: left;">PostgreSQL Engine / Managed Cloud</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Step Execution Ceiling</strong></td>
+<td style="text-align: left;">Single process run per job (must manage internal sub-queues)</td>
+<td style="text-align: left;">Indefinite duration via durable deterministic steps</td>
+<td style="text-align: left;">Up to 24+ hours uninterrupted compute per run</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Backoff Configuration</strong></td>
+<td style="text-align: left;">Custom code, exponential, fixed, jitter algorithms</td>
+<td style="text-align: left;">Fully managed automatic backoff per step</td>
+<td style="text-align: left;">Per-task retry policy with factor and timeout caps</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sleep/Wait Capability</strong></td>
+<td style="text-align: left;">Requires Redis delayed queue tracking</td>
+<td style="text-align: left;"><code>step.sleep(name, duration)</code> or <code>step.waitForEvent(...)</code></td>
+<td style="text-align: left;"><code>wait.for({ seconds })</code> / <code>wait.until()</code> durable primitives</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Cold Start Performance</strong></td>
+<td style="text-align: left;">Microseconds (persistent worker polling)</td>
+<td style="text-align: left;">Minimal (HTTP endpoint webhook invocation)</td>
+<td style="text-align: left;">Serverless task container startup (~200ms)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Local Development</strong></td>
+<td style="text-align: left;">Docker run Redis + local Node instances</td>
+<td style="text-align: left;">Inngest Dev Server CLI (<code>npx inngest-cli dev</code>)</td>
+<td style="text-align: left;">Trigger Dev CLI Session (<code>npx trigger.dev dev</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Concurrency Controls</strong></td>
+<td style="text-align: left;">Worker-level limits + Redis rate-limiting locks</td>
+<td style="text-align: left;">Group/Key-level throttles and concurrency limits</td>
+<td style="text-align: left;">Unified concurrency limits scoped by queue/task/key</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>7. Production Configuration Schemas</h2>
+<h3>7.1. BullMQ Worker Production Options Object</h3>
+<p>```typescript
+import { WorkerOptions } from "bullmq";</p>
+<p>export const productionWorkerOptions: WorkerOptions = {
+  concurrency: 50,
+  lockDuration: 60000, // 60 seconds to prevent early lock drop under high GC
+  lockRenewTime:</p>
+</body>
+</html>

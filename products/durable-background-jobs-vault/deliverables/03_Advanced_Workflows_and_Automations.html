@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Durable Workflows & Background Jobs Vault: 50+ Inngest, Trigger.dev & BullMQ Blueprints</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Advanced AI Agent Orchestration &amp; High-Throughput Pipelines</h1>
+<h2>1. Architectural Foundations of Durable AI Agents</h2>
+<p>Building production AI agents requires decoupling nondeterministic LLM evaluation loops from transient network connections. When an LLM executes a plan spanning multiple tool calls, API queries, or database writes, standard HTTP requests fail due to platform timeouts, network partitions, and upstream rate limits.</p>
+<p>Durable orchestration transforms recursive agent loops into deterministic, state-hydrated execution graphs.</p>
+<pre><code>+---------------------------------------------------------------------------------------+
+|                                Durable Agent Execution Loop                           |
+|                                                                                       |
+|  [Incoming Intent]                                                                    |
+|         |                                                                             |
+|         v                                                                             |
+|  +---------------+      +-----------------------+      +---------------------------+  |
+|  | step.run:     | ---&gt; | step.run:             | ---&gt; | step.run:                 |  |
+|  | Hydrate State |      | Model Plan Generation |      | Tool Execution Dispatcher |  |
+|  +---------------+      +-----------------------+      +---------------------------+  |
+|         ^                                                            |                |
+|         |                     Check Termination Condition            |                |
+|         +------------------------------------------------------------+                |
+|                                   (Loop: Iteration &lt; Max)                             |
++---------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Determinism vs. Non-Determinism Isolation</h3>
+<p>To guarantee deterministic replay without duplicate LLM costs or phantom tool side effects:
+- <strong>Wrap every LLM call in an individual memoized step.</strong> If step 4 fails, replaying the workflow must read steps 1 through 3 from the durable execution log rather than re-billing tokens against your OpenAI/Anthropic quota.
+- <strong>Isolate tool executions into dedicated sub-steps.</strong> Never bundle a model call and a database mutation in the same execution boundary.
+- <strong>Enforce monotonic state reduction.</strong> Maintain agent scratchpads inside an append-only transaction log serialized across steps.</p>
+<hr />
+<h2>2. Blueprint 3.1: Recursive Multi-Turn Agent with Hard Depth Caps (Inngest)</h2>
+<p>This blueprint implements an autonomous research and remediation agent. It runs iteratively, selects dynamic tools (e.g., executing SQL, querying documentation, issuing GitHub PRs), maintains context state across crashes, and enforces hard recursion boundaries to prevent runaway billing loops.</p>
+<h3>Blueprint Architecture</h3>
+<pre><code>[Inngest Trigger: agent/remediation.invoked]
+        │
+        ├──► step.run(&quot;initialize-context&quot;)
+        │
+        ▼
+ ┌──► Iteration Check: current_iteration &lt; MAX_ITERATIONS (10)
+ │      │
+ │      ├──► step.run(`model-inference-${iteration}`)
+ │      │       └─ Anthropic Claude 3.5 Sonnet Tool Evaluation
+ │      │
+ │      ├──► Choice: Stop Token or Tool Call?
+ │      │       ├─ Stop Token ──► Break Loop
+ │      │       └─ Tool Call  ──► step.run(`execute-tool-${iteration}`)
+ │      │
+ │      └──► Update Scratchpad &amp; Increment Iteration
+ └───┘
+        │
+        ├──► step.run(&quot;finalize-summary&quot;)
+        ▼
+[Execution Complete: Run Saved to Database]
+</code></pre>
+<h3>Production Implementation</h3>
+<pre><code class="language-typescript">// src/inngest/functions/agentRemediation.ts
+import { Inngest, NonRetriableError } from &quot;inngest&quot;;
+import Anthropic from &quot;@anthropic-ai/sdk&quot;;
+
+export const inngest = new Inngest({ id: &quot;enterprise-agent-engine&quot; });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+
+const MAX_ITERATIONS = 10;
+
+interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: Anthropic.Tool.InputSchema;
+}
+
+interface AgentState {
+  ticketId: string;
+  query: string;
+  messages: Anthropic.MessageParam[];
+  iterations: number;
+  completed: boolean;
+  finalResolution: string | null;
+}
+
+const TOOLS: ToolDefinition[] = [
+  {
+    name: &quot;query_database&quot;,
+    description: &quot;Execute a read-only SQL query against the system state database.&quot;,
+    input_schema: {
+      type: &quot;object&quot;,
+      properties: {
+        sql: { type: &quot;string&quot;, description: &quot;Read-only SELECT SQL statement.&quot; }
+      },
+      required: [&quot;sql&quot;]
+    }
+  },
+  {
+    name: &quot;patch_configuration&quot;,
+    description: &quot;Submit a configuration patch to fix degraded customer nodes.&quot;,
+    input_schema: {
+      type: &quot;object&quot;,
+      properties: {
+        nodeId: { type: &quot;string&quot; },
+        patchPayload: { type: &quot;string&quot; }
+      },
+      required: [&quot;nodeId&quot;, &quot;patchPayload&quot;]
+    }
+  }
+];
+
+async function executeInternalTool(name: string, input: Record&lt;string, unknown&gt;): Promise&lt;string&gt; {
+  switch (name) {
+    case &quot;query_database&quot;: {
+      const sql = String(input.sql);
+      if (!sql.trim().toUpperCase().startsWith(&quot;SELECT&quot;)) {
+        throw new NonRetriableError(&quot;Safety Violation: Non-SELECT queries are strictly prohibited.&quot;);
+      }
+      return JSON.stringify({ status: &quot;healthy&quot;, nodeId: &quot;node-prd-048&quot;, latency_ms: 1240 });
+    }
+    case &quot;patch_configuration&quot;: {
+      return JSON.stringify({
+        applied: true,
+        nodeId: input.nodeId,
+        previousState: &quot;degraded&quot;,
+        currentState: &quot;operational&quot;
+      });
+    }
+    default:
+      throw new NonRetriableError(`Unknown tool invocation attempt: ${name}`);
+  }
+}
+
+export const autonomousRemediationAgent = inngest.createFunction(
+  {
+    id: &quot;autonomous-system-remediation&quot;,
+    retries: 3,
+    concurrency: {
+      limit: 5,
+      key: &quot;event.data.ticketId&quot;
+    }
+  },
+  { event: &quot;agent/remediation.invoked&quot; },
+  async ({ event, step }) =&gt; {
+    let state = await step.run(&quot;initialize-context&quot;, async (): Promise&lt;AgentState&gt; =&gt; {
+      return {
+        ticketId: event.data.ticketId,
+        query: event.data.query,
+        messages: [{ role: &quot;user&quot;, content: event.data.query }],
+        iterations: 0,
+        completed: false,
+        finalResolution: null
+      };
+    });
+
+    while (!state.completed &amp;&amp; state.iterations &lt; MAX_ITERATIONS) {
+      const currentIteration = state.iterations;
+
+      const modelResponse = await step.run(
+        `inference-cycle-${currentIteration}`,
+        async () =&gt; {
+          return await anthropic.messages.create({
+            model: &quot;claude-3-5-sonnet-20241022&quot;,
+            max_tokens: 4096,
+            tools: TOOLS,
+            messages: state.messages
+          });
+        }
+      );
+
+      if (modelResponse.stop_reason === &quot;tool_use&quot;) {
+        const toolUseBlocks = modelResponse.content.filter(
+          (block): block is Anthropic.ToolUseBlock =&gt; block.type === &quot;tool_use&quot;
+        );
+
+        const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+        for (const toolUse of toolUseBlocks) {
+          const toolOutput = await step.run(
+            `tool-${toolUse.name}-iter-${currentIteration}-${toolUse.id}`,
+            async () =&gt; {
+              return await executeInternalTool(
+                toolUse.name,
+                toolUse.input as Record&lt;string, unknown&gt;
+              );
+            }
+          );
+
+          toolResults.push({
+            type: &quot;tool_result&quot;,
+            tool_use_id: toolUse.id,
+            content: toolOutput
+          });
+        }
+
+        state = await step.run(`reduce-state-tool-${currentIteration}`, async () =&gt; {
+          return {
+            ...state,
+            iterations: currentIteration + 1,
+            messages: [
+              ...state.messages,
+              { role: &quot;assistant&quot;, content: modelResponse.content },
+              { role: &quot;user&quot;, content: toolResults }
+            ]
+          };
+        });
+      } else {
+        const textBlock = modelResponse.content.find((block) =&gt; block.type === &quot;text&quot;);
+        const resolution = textBlock ? textBlock.text : &quot;Task completed without detailed text output.&quot;;
+
+        state = await step.run(`reduce-state-terminal-${currentIteration}`, async () =&gt; {
+          return {
+            ...state,
+            iterations: currentIteration + 1,
+            completed: true,
+            finalResolution: resolution,
+            messages: [
+              ...state.messages,
+              { role: &quot;assistant&quot;, content: modelResponse.content }
+            ]
+          };
+        });
+        break;
+      }
+    }
+
+    if (!state.completed &amp;&amp; state.iterations &gt;= MAX_ITERATIONS) {
+      await step.run(&quot;enforce-safety-cutoff&quot;, async () =&gt; {
+        // Circuit breaker: Maximum recursive context depth reached
+        return {
+          status: &quot;ESCALATION_TRIGGERED&quot;,
+          reason: `Exceeded hard loop ceiling of ${MAX_ITERATIONS} iterations.`
+        };
+      });
+      throw new NonRetriableError(&quot;Circuit breaker tripped: Agent iteration ceiling exceeded.&quot;);
+    }
+
+    return await step.run(&quot;persist-final-resolution&quot;, async () =&gt; {
+      return {
+        ticketId: state.ticketId,
+        cycles: state.iterations,
+        resolution: state.finalResolution
+      };
+    });
+  }
+);
+</code></pre>
+<hr />
+<h2>3. Blueprint 3.2: 72-Hour Human-in-the-Loop (HITL) Approval Engine (Trigger.dev v3)</h2>
+<p>Long-running workflows frequently require explicit user interaction before executing dangerous or high-cost operations (e.g., executing a $100,000 ACH sweep or running irreversible migrations). </p>
+<p>This blueprint implements a 72-hour durable pause using Trigger.dev v3, with real-time webhook token verification, timeout escalation, and compensating rollbacks.</p>
+<pre><code>+---------------------------------------------------------------------------------------+
+|                       72-Hour Human-in-the-Loop Approval Lifecycle                    |
+|                                                                                       |
+|  [Initiate Transfer]                                                                  |
+|         │                                                                             |
+|         ▼                                                                             |
+|  [Stage Ledger Entry] ──► [Generate Token &amp; Dispatch Notification]                    |
+|                                     │                                                 |
+|                                     ▼                                                 |
+|                      +-----------------------------+                                  |
+|                      | wait.forEvent(&quot;wire.review&quot;)|                                  |
+|                      | Max Duration: 72 Hours      |                                  |
+|                      +-----------------------------+                                  |
+|                                     │                                                 |
+|                    ┌────────────────┴────────────────┐                                |
+|             Received within 72h?               Timed Out?                             |
+|                    │                                 │                                |
+|        ┌───────────┴───────────┐                     ▼                                |
+|    Approved                 Rejected            [Expire Staged Entry]                 |
+|        │                       │                     │                                |
+|        ▼                       ▼                     ▼                                |
+|  [Execute Wire]         [Unlock Ledger]         [Alert Compliance]                    |
++---------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Production Implementation</h3>
+<pre><code class="language-typescript">// src/trigger/tasks/financialApprovals.ts
+import { task, wait } from &quot;@trigger.dev/sdk/v3&quot;;
+import crypto from &quot;crypto&quot;;
+
+export interface WireRequestPayload {
+  transactionId: string;
+  sourceAccountId: string;
+  destinationRoutingNumber: string;
+  destinationAccountNumber: string;
+  amountCents: number;
+  originatorEmail: string;
+  complianceTier: &quot;STANDARD&quot; | &quot;HIGH_RISK&quot;;
+}
+
+export interface ReviewSubmittedEvent {
+  decision: &quot;APPROVED&quot; | &quot;REJECTED&quot;;
+  reviewerUserId: string;
+  signatureToken: string;
+  reason?: string;
+}
+
+export const financialWireWorkflow = task({
+  id: &quot;financial-wire-orchestrator&quot;,
+  retry: {
+    maxAttempts: 2
+  },
+  run: async (payload: WireRequestPayload) =&gt; {
+    // 1. Stage the ledger entry to hold the balance
+    const holdRecord = await stageLedgerHold(payload.transactionId, payload.amountCents);
+
+    // 2. Generate a tamper-proof review token
+    const reviewToken = crypto.randomBytes(32).toString(&quot;hex&quot;);
+    const tokenHash = crypto.createHash(&quot;sha256&quot;).update(reviewToken).digest(&quot;hex&quot;);
+
+    await persistReviewIntent({
+      transactionId: payload.transactionId,
+      tokenHash,
+      expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString()
+    });
+
+    // 3. Dispatch multi-channel notification with verification URL
+    await dispatchComplianceAlert({
+      transactionId: payload.transactionId,
+      amountCents: payload.amountCents,
+      actionUrl: `https://compliance.internal.bank/review/${payload.transactionId}?token=${reviewToken}`
+    });
+
+    // 4. Suspend execution durably for up to 72 hours
+    const reviewEvent = await wait.forEvent&lt;ReviewSubmittedEvent&gt;(
+      &quot;wire.transfer.reviewed&quot;,
+      `review-${payload.transactionId}`,
+      {
+        timeout: &quot;72h&quot;
+      }
+    );
+
+    // 5. Check if execution timed out
+    if (!reviewEvent) {
+      await releaseLedgerHold(holdRecord.holdId, &quot;EXPIRED_TIMEOUT&quot;);
+      await dispatchEscalation({
+        transactionId: payload.transactionId,
+        reason: &quot;Manual review SLA breached. Transfer automatically cancelled.&quot;
+      });
+
+      return {
+        status: &quot;CANCELLED_TIMEOUT&quot;,
+        transactionId: payload.transactionId,
+        resolvedAt: new Date().toISOString()
+      };
+    }
+
+    // 6. Cryptographic validation of the external review action
+    const incomingHash = crypto.createHash(&quot;sha256&quot;).update(reviewEvent.signatureToken).digest(&quot;hex&quot;);
+    if (incomingHash !== tokenHash) {
+      await releaseLedgerHold(holdRecord.holdId, &quot;SECURITY_VIOLATION&quot;);
+      throw new Error(`Invalid authorization signature detected for transaction ${payload.transactionId}`);
+    }
+
+    // 7. Route terminal decision branches
+    if (reviewEvent.decision === &quot;REJECTED&quot;) {
+      await releaseLedgerHold(holdRecord.holdId, &quot;EXPLICITLY_REJECTED&quot;);
+      return {
+        status: &quot;REJECTED&quot;,
+        transactionId: payload.transactionId,
+        reviewerId: reviewEvent.reviewerUserId,
+        reason: reviewEvent.reason ?? &quot;No reason provided&quot;
+      };
+    }
+
+    // 8. Execute the wire transfer via payment gateway
+    const settlementResult = await dispatchFedwireSettlement({
+      transactionId: payload.transactionId,
+      routing: payload.destinationRoutingNumber,
+      account: payload.destinationAccountNumber,
+      amount: payload.amountCents,
+      reviewerId: reviewEvent.reviewerUserId
+    });
+
+    await commitLedgerHold(holdRecord.holdId, settlementResult.paymentReferenceId);
+
+    return {
+      status: &quot;SETTLED&quot;,
+      transactionId: payload.transactionId,
+      settlementId: settlementResult.paymentReferenceId,
+      settledAt: new Date().toISOString()
+    };
+  }
+});
+
+// Mock implementations of domain boundary adapters
+async function stageLedgerHold(txId: string, amount: number) {
+  return { holdId: `hld_${crypto.randomUUID()}`, txId, amount, status: &quot;STAGED&quot; };
+}
+async function persistReviewIntent(record: { transactionId: string; tokenHash: string; expiresAt: string }) {
+  return { saved: true, record };
+}
+async function dispatchComplianceAlert(meta: { transactionId: string; amountCents: number; actionUrl: string }) {
+  return { delivered: true, timestamp: Date.now() };
+}
+async function releaseLedgerHold(holdId: string, reason: string) {
+  return { holdId, status: &quot;RELEASED&quot;, reason };
+}
+async function commitLedgerHold(holdId: string, settlementRef: string) {
+  return { holdId, status: &quot;COMMITTED&quot;, settlementRef };
+}
+async function dispatchEscalation(detail: { transactionId: string; reason: string }) {
+  return { alertSent: true };
+}
+async function dispatchFedwireSettlement(data: Record&lt;string, unknown&gt;) {
+  return { paymentReferenceId: `FEDWIRE_${crypto.randomUUID().slice(0, 8).toUpperCase()}` };
+}
+</code></pre>
+<hr />
+<h2>4. High-Throughput Distributed Deduplication &amp; Throttling</h2>
+<p>High-throughput systems inevitably face duplicated messages, out-of-order events, and traffic spikes that can exhaust downstream systems. Applying the wrong deduplication strategy leads to race conditions, dropped jobs, or memory leaks.</p>
+<h3>Deduplication and Rate-Limiting Strategies</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Pattern</th>
+<th style="text-align: left;">Scope</th>
+<th style="text-align: left;">Latency Penalty</th>
+<th style="text-align: left;">False Drop Risk</th>
+<th style="text-align: left;">Storage Overhead</th>
+<th style="text-align: left;">Best Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>BullMQ Native Job ID Deduplication</strong></td>
+<td style="text-align: left;">Pre-queue ingestion</td>
+<td style="text-align: left;">&lt;1ms (Redis native)</td>
+<td style="text-align: left;">High, if Job IDs expire before downstream duplicates arrive</td>
+<td style="text-align: left;">Negligible (<code>O(1)</code> per job entry)</td>
+<td style="text-align: left;">Webhook deliveries with unique headers (<code>X-Delivery-ID</code>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Sliding Window Token Bucket (Lua)</strong></td>
+<td style="text-align: left;">Worker pre-execution</td>
+<td style="text-align: left;">~2-5ms (Atomic execution)</td>
+<td style="text-align: left;">Zero (Throttled, not dropped)</td>
+<td style="text-align: left;">Moderate (Ordered set per tenant)</td>
+<td style="text-align: left;">Protecting rate-limited external APIs (Stripe, GitHub)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Content-Hash Lock (Distributed)</strong></td>
+<td style="text-align: left;">Pre-queue</td>
+<td style="text-align: left;">5-10ms</td>
+<td style="text-align: left;">Medium (Payload mutations drop dedupe)</td>
+<td style="text-align: left;">Low (<code>TTL</code>-bound cache entries)</td>
+<td style="text-align: left;">Accidental double-clicks on idempotent forms</td>
+</tr>
+</tbody>
+</table>
+<pre><code>High-Throughput Deduplication &amp; Concurrency Architecture
+
+[Incoming Webhook Ingestion]
+             │
+             ├──► Hash Payload Components: SHA256(WorkspaceID + Method + DeterministicJSON(Body))
+             │
+             ▼
+   [Redis Atomic Lua Script]
+             │
+     Is Fingerprint Cached?
+             ├─── YES ──► Log Cache Hit ──► Short-circuit 200 OK (Drop Execution)
+             └─── NO  ──► SET NX with TTL
+                                │
+                                ▼
+                   [BullMQ Enqueue: Unique Job ID]
+                                │
+                                ▼
+     [Worker Level: Sliding Window Concurrency Controller]
+                                │
+             Is Tenant Allowed by Rate-Limit Window?
+             ├─── YES ──► Process Job Durably
+             └─── NO  ──► Delay / Re-queue Job with Exponential Backoff
+</code></pre>
+<hr />
+<h2>5. Blueprint 3.3: High-Throughput Pipeline with Atomic Deduplication (BullMQ + Redis Lua)</h2>
+<p>This blueprint processes high-volume webhook bursts. It prevents duplicate execution using atomic Redis Lua scripts, throttles processing by tenant, and tracks deduplication stats across high-concurrency Node.js clusters.</p>
+<h3>Custom Atomic Lua Deduplication Script</h3>
+<pre><code class="language-lua">-- File: src/redis/scripts/dedupeLock.lua
+-- KEYS[1]: Deduplication key (e.g. dedupe:event:hash)
+-- ARGV[1]: Job fingerprint (unique payload hash)
+-- ARGV[2]: TTL in seconds (e.g. 86400)
+local key = KEYS[1]
+local fingerprint = ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+local exists = redis.call(&quot;EXISTS&quot;, key)
+
+if exists == 1 then
+    -- Record hit frequency
+    redis.call(&quot;HINCRBY&quot;, key, &quot;hits&quot;, 1)
+    return 0 -- Duplicate detected, do not enqueue
+else
+    redis.call(&quot;HSET&quot;, key, &quot;fingerprint&quot;, fingerprint, &quot;hits&quot;, 1, &quot;created_at&quot;, redis.call(&quot;TIME&quot;)[1])
+    redis.call(&quot;EXPIRE&quot;, key, ttl)
+    return 1 -- Unique job, proceed
+end
+</code></pre>
+<h3>Production Implementation</h3>
+<pre><code class="language-typescript">// src/queues/ingestionPipeline.ts
+import { Queue, Worker, QueueEvents, Job } from &quot;bullmq&quot;;
+import Redis from &quot;ioredis&quot;;
+import crypto from &quot;crypto&quot;;
+import fs from &quot;fs&quot;;
+import path from &quot;path&quot;;
+
+const REDIS_CONNECTION = {
+  host: process.env.REDIS_HOST || &quot;127.0.0.1&quot;,
+  port: Number(process.env.REDIS_PORT) || 6379,
+  maxRetriesPerRequest: null
+};
+
+export const redisClient = new Redis(REDIS_CONNECTION);
+const LUA_DEDUPE_SCRIPT = fs.readFileSync(
+  path.join(__dirname, &quot;../redis/scripts/dedupeLock.lua&quot;),
+  &quot;utf8&quot;
+);
+
+// Register dynamic command on ioredis client
+redisClient.defineCommand(&quot;checkAndSetDedupe&quot;, {
+  numberOfKeys: 1,
+  lua: LUA_DEDUPE_SCRIPT
+});
+
+declare module &quot;ioredis&quot; {
+  interface RedisCommander&lt;Context&gt; {
+    checkAndSetDedupe(
+      key: string,
+      fingerprint: string,
+      ttlSeconds: number,
+      callback?: (err: Error | null, result: number) =&gt; void
+    ): Result&lt;number, Context&gt;;
+  }
+}
+
+export interface WebhookEventPayload {
+  workspaceId: string;
+  source: string;
+  eventType: string;
+  payload: Record&lt;string, unknown&gt;;
+  timestamp: number;
+}
+
+export const INGESTION_QUEUE_NAME = &quot;tenant-event-ingestion&quot;;
+
+export const ingestionQueue = new Queue&lt;WebhookEventPayload&gt;(INGESTION_QUEUE_NAME, {
+  connection: redisClient,
+  defaultJobOptions: {
+    attempts: 5,
+    backoff: {
+      type: &quot;exponential&quot;,
+      delay: 1500
+    },
+    removeOnComplete: { count: 10000, age: 3600 },
+    removeOnFail: { count: 50000, age: 86400 * 7 }
+  }
+});
+
+/**
+ * Generate a deterministic SHA256 signature from critical payload dimensions.
+ */
+export function generatePayloadFingerprint(data: WebhookEventPayload): string {
+  const normalized = {
+    workspaceId: data.workspaceId,
+    source: data.source,
+    eventType: data.eventType,
+    payload: data.payload
+  };
+  return crypto.createHash(&quot;sha256&quot;).update(JSON.stringify(normalized)).digest(&quot;hex&quot;);
+}
+
+/**
+ * High-performance enqueue entry point with atomic Redis deduping.
+ */
+export async function enqueueEventSafely(event: WebhookEventPayload): Promise&lt;{ enqueued: boolean; jobId?: string }&gt; {
+  const fingerprint = generatePayloadFingerprint(event);
+  const dedupeKey = `dedupe:${event.workspaceId}:${fingerprint}`;
+
+  // 24-hour deduplication TTL window
+  const isUnique = await redisClient.checkAndSetDedupe(dedupeKey, fingerprint, 86400);
+
+  if (isUnique === 0) {
+    return { enqueued: false };
+  }
+
+  const job = await ingestionQueue.add(event.eventType, event, {
+    jobId: fingerprint, // Prevents duplicate active jobs inside the queue
+    priority: event.source === &quot;system_alert&quot; ? 1 : 10
+  });
+
+  return { enqueued: true, jobId: job.id };
+}
+
+/**
+ * Production worker with rate limiting and per-tenant concurrency control.
+ */
+export const ingestionWorker = new Worker&lt;WebhookEventPayload&gt;(
+  INGESTION_QUEUE_NAME,
+  async (job: Job&lt;WebhookEventPayload&gt;) =&gt; {
+    const { workspaceId, eventType, payload } = job.data;
+
+    // Apply strict concurrency limits on downstream workers
+    const activeTenantWorkers = await redisClient.incr(`concurrency:${workspaceId}`);
+    try {
+      if (activeTenantWorkers &gt; 10) {
+        // Delay this job when tenant concurrency is saturated
+        await job.moveToDelayed(Date.now() + 2000, job.token);
+        return { status: &quot;THROTTLED_CONCURRENCY&quot; };
+      }
+
+      await processBusinessLogic(workspaceId, eventType, payload);
+      return { status: &quot;PROCESSED&quot;, workspaceId, jobId: job.id };
+    } finally {
+      await redisClient.decr(`concurrency:${workspaceId}`);
+    }
+  },
+  {
+    connection: new Redis(REDIS_CONNECTION),
+    concurrency: 50,
+    limiter: {
+      max: 1000,
+      duration: 1000 // Global throttle: 1,000 jobs per second across all nodes
+    }
+  }
+);
+
+async function processBusinessLogic(workspace: string, type: string, data: Record&lt;string, unknown&gt;): Promise&lt;void&gt; {
+  // Deterministic operations (e.g., transforming records, dispatching to DB)
+  if (Math.random() &lt; 0.001) {
+    throw new Error(&quot;Intermittent downstream database timeout.&quot;);
+  }
+}
+</code></pre>
+<hr />
+<h2>6. Blueprint 3.4: Zero-Downtime Queue Migration (BullMQ to Trigger.dev / Inngest)</h2>
+<p>Migrating an active production system between queue engines (e.g., moving from BullMQ on self-hosted Redis to Trigger.dev v3 or Inngest Cloud) cannot be done with a hard cutover. In-flight jobs, delayed retries, and high-throughput write streams will drop data unless managed through an orchestrated transition.</p>
+<h3>The 4-Phase Migration Lifecycle</h3>
+<pre><code>PHASE 0: Single System          PHASE 1: Dual-Write &amp; Shadow
++-------------------+           +-------------------+
+|   Write: BullMQ   |           |   Write: Both     |
+|   Read:  BullMQ   |           |   Read:  BullMQ   |
++-------------------+           +-------------------+
+                                          │
+                                          ▼
+PHASE 3: Cutover Complete       PHASE 2: Shift Execution
++-------------------+           +-------------------+
+|   Write: Engine B |           |   Write: Both     |
+|   Read:  Engine B |           |   Read:  Engine B |
++-------------------+           +-------------------+
+</code></pre>
+<h3>Migration Phase Matrix</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Phase</th>
+<th style="text-align: left;">Writing To</th>
+<th style="text-align: left;">Reading From</th>
+<th style="text-align: left;">Migration Gate / Success Metric</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>0: Baseline</strong></td>
+<td style="text-align: left;">BullMQ</td>
+<td style="text-align: left;">BullMQ</td>
+<td style="text-align: left;">Verify baseline throughput, error rates, and latency.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>1: Dual-Write / Shadow</strong></td>
+<td style="text-align: left;">BullMQ + Engine B</td>
+<td style="text-align: left;">BullMQ</td>
+<td style="text-align: left;">Engine B writes succeed at &gt;99.999% without increasing ingestion latency. Engine B jobs are dropped or run in dry-run mode.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>2: Shift Execution</strong></td>
+<td style="text-align: left;">BullMQ + Engine B</td>
+<td style="text-align: left;">Engine B (Primary), BullMQ (Draining)</td>
+<td style="text-align: left;">Drain BullMQ delayed retries and active jobs completely. Verify zero parity drift.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>3: Complete Cutover</strong></td>
+<td style="text-align: left;">Engine B</td>
+<td style="text-align: left;">Engine B</td>
+<td style="text-align: left;">Decommission BullMQ workers, stop dual writes, tear down Redis queue infrastructure.</td>
+</tr>
+</tbody>
+</table>
+<h3>Zero-Downtime Dual-Write Router</h3>
+<p>```typescript
+// src/orchestration/migrationRouter.ts
+import { Queue } from "bullmq";
+import { Inngest } from "inngest";
+import { Redis } from "ioredis";</p>
+<p>export interface MigrationConfig {
+  phase: "PHASE_0_BASELINE" | "PHASE_1_SHADOW" | "PHASE_2_EXECUTION_SHIFT" | "PHASE_3_COMPLETE";
+  shadowSamplingRate: number; // 0.0 to 1.0
+}</p>
+<p>export class ZeroDowntimeDispatcher {
+  private bullmqQueue: Queue;
+  private inngestClient: Inngest;
+  private redis: Redis;
+  private configKey = "migration:config:state";</p>
+<p>constructor(bullmqQueue: Queue, inngestClient: Inngest, redis: Redis) {
+    this.bullmqQueue = bullmqQueue;
+    this.inngestClient = inngestClient;
+    this.redis = redis;
+  }</p>
+<p>public async getActivePhase(): Promise<MigrationConfig> {
+    const raw = await this.redis.get(this.configKey);
+    if (!raw) {
+      return { phase: "PHASE_0_BASELINE", shadowSamplingRate: 0.0 };
+    }
+    return JSON.parse(raw) as MigrationConfig;
+  }</p>
+<p>public async updatePhase(config: MigrationConfig): Promise<void> {
+    await this.redis.set(this.configKey, JSON.stringify(config));
+  }</p>
+<p>public async dispatch&lt;T extends Record<string, unknown>&gt;(
+    eventName: string,
+    payload: T,
+    idempotencyKey: string
+  ): Promise&lt;{ dispatchedTo: string[] }&gt; {
+    const { phase, shadowSamplingRate } = await this.getActivePhase();
+    const destinations: string[] = [];</p>
+<pre><code>switch (phase) {
+  case "PHASE_0_BASELINE": {
+    await this.bullmqQueue.add(eventName, payload, { jobId: idempotencyKey });
+    destinations.push("BULLMQ");
+    break;
+  }
+
+  case "PHASE_1_SHADOW": {
+    // Enqueue to primary engine
+    await this.bullmqQueue.add(eventName, payload, { jobId: idempotencyKey });
+    destinations.push("BULLMQ");
+
+    // Dual-write to target engine for validation
+    if (Math.random() &lt; shadowSamplingRate) {
+      await this.inngestClient.send({
+        name: `shadow/${eventName}`,
+        data: payload,
+        id: idempotencyKey
+      });
+      destinations.push("INNGEST_SHADOW");
+    }
+    break;
+  }
+
+  case "PHASE_2_EXECUTION_SHIFT": {
+    // Engine B becomes primary. BullMQ receives only shadow/fallback tasks.
+    await this.inngestClient.send({
+      name: eventName,
+      data: payload,
+      id: idempotencyKey
+    });
+    destinations.push("INNGEST_PRIMARY");
+
+    // Keep BullMQ active to process its delayed retry queue
+    break;
+  }
+
+  case "PHASE_3_COMPLETE": {
+    // BullMQ fully bypassed
+    await this.inngestClient.send({
+      name: eventName,
+      data:
+</code></pre>
+</body>
+</html>
