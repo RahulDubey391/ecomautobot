@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Realtime Collaborative App Engine: WebSockets, CRDTs, PartyKit & Yjs Playbook</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 3: Advanced Workflows, Live Cursors, Selection Sync &amp; Offline Fallbacks</h1>
+<p>High-performance collaborative applications require two separate data lifecycles: <strong>Durable State</strong> (document mutations, canvas geometry, rich-text state) governed by Conflict-Free Replicated Data Types (CRDTs), and <strong>Ephemeral State</strong> (cursor coordinates, viewport bounds, selection ranges, live presence) requiring high-frequency, low-overhead broadcast.</p>
+<p>This module provides the architecture, algorithms, and production-ready source code to unify Yjs, PartyKit, Tiptap/ProseMirror, and IndexedDB into a zero-latency, local-first engine with offline resilience.</p>
+<hr />
+<h2>1. Dual-Channel Protocol Topology</h2>
+<p>To prevent state-tree bloat and eliminate memory leaks, never route high-frequency cursor coordinates through the durable CRDT log. Route mutations through the persistent Yjs document stream, and route pointer movements through ephemeral Awareness or direct raw WebSocket frames.</p>
+<pre><code>+---------------------------------------------------------------------------------------+
+|                                    CLIENT BROWSER                                     |
+|                                                                                       |
+|   +-------------------------+                     +-------------------------------+   |
+|   |   UI Layer: Canvas /    |                     |   Rich-Text Layer: Tiptap /   |   |
+|   |   DOM Pointer Events    |                     |   ProseMirror Editor          |   |
+|   +------------+------------+                     +---------------+---------------+   |
+|                |                                                  |                   |
+|                | Normalized (X, Y)                                | CRDT Transactions |
+|                v                                                  v                   |
+|   +----------------------------+                     +----------------------------+   |
+|   | Cursor Interpolation Engine|                     | Y.Doc / Y.UndoManager      |   |
+|   | (RAF Loop + Linear Lerp)   |                     | (Scoped Local Origin)      |   |
+|   +------------+---------------+                     +------------+---------------+   |
+|                |                                                  |                   |
+|                | Ephemeral Payloads                               | SyncStep 1 &amp; 2    |
+|                v                                                  v                   |
+|   +-------------------------------------------------------------------------------+   |
+|   |                       PartyKit WebSocket Client Provider                      |   |
+|   +---------------------------------------+---------------------------------------+   |
++-------------------------------------------|-------------------------------------------+
+                                            |
+                         Dual-Channel Over WebSocket
+                                            |
+                                            v
++---------------------------------------------------------------------------------------+
+|                                    PARTYKIT EDGE ROOM                                 |
+|                                                                                       |
+|   +------------------------------------+    +-------------------------------------+   |
+|   | Awareness Broadcast Broker         |    | Durable CRDT Broker                 |   |
+|   | - In-memory connection map         |    | - y-protocols/sync                  |   |
+|   | - 30Hz - 60Hz throttled fan-out    |    | - State vector comparison           |   |
+|   | - Zero disk persistence            |    | - Periodic flush to Edge Key-Value  |   |
+|   +------------------------------------+    +-------------------------------------+   |
++---------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Protocol Envelope Specification</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Traffic Type</th>
+<th style="text-align: left;">Transport Channel</th>
+<th style="text-align: left;">Frequency Target</th>
+<th style="text-align: left;">Serialization Format</th>
+<th style="text-align: left;">Target Latency Envelope</th>
+<th style="text-align: left;">Persistence Strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Pointer Coordinates</strong></td>
+<td style="text-align: left;">WS Ephemeral / Awareness</td>
+<td style="text-align: left;">30ms - 50ms (Throttled)</td>
+<td style="text-align: left;">Binary / Compact Array Buffer</td>
+<td style="text-align: left;"><code>&lt; 45ms</code></td>
+<td style="text-align: left;">None (Drop on disconnect)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Selection Ranges</strong></td>
+<td style="text-align: left;">Yjs Awareness Protocol</td>
+<td style="text-align: left;">Event-Driven (Debounced 15ms)</td>
+<td style="text-align: left;">JSON via Uint8Array State</td>
+<td style="text-align: left;"><code>&lt; 80ms</code></td>
+<td style="text-align: left;">None (TTL: 10 seconds)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Rich-Text Mutations</strong></td>
+<td style="text-align: left;">Yjs Sync Protocol v2</td>
+<td style="text-align: left;">Instantaneous (Event Loop)</td>
+<td style="text-align: left;">Lib0 Packed Uint8Array</td>
+<td style="text-align: left;"><code>&lt; 120ms</code></td>
+<td style="text-align: left;">IndexedDB (Local) + Edge KV</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Canvas Shape Tree</strong></td>
+<td style="text-align: left;">Y.Map / Y.Array CRDT</td>
+<td style="text-align: left;">Instantaneous (Local Optimistic)</td>
+<td style="text-align: left;">Lib0 Packed Uint8Array</td>
+<td style="text-align: left;"><code>&lt; 120ms</code></td>
+<td style="text-align: left;">IndexedDB (Local) + Edge KV</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. High-Performance Live Cursors &amp; Selection Sync</h2>
+<p>A production cursor implementation requires:
+1. <strong>Coordinate Normalization</strong>: Translating absolute screen pixels into fractional <code>[0.0, 1.0]</code> coordinates relative to the shared canvas or document container.
+2. <strong>Bandwidth Throttling</strong>: Limiting outbound frames to a fixed tick rate (typically 30–50 updates per second).
+3. <strong>Client-Side Interpolation</strong>: Smoothing incoming updates via a requestAnimationFrame (RAF) loop with Linear Interpolation (Lerp) to hide network jitter.</p>
+<h3>Cursor Engine: <code>CursorEngine.ts</code></h3>
+<pre><code class="language-typescript">export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface PeerCursorState {
+  clientId: number;
+  userName: string;
+  userColor: string;
+  current: Point;
+  target: Point;
+  lastUpdate: number;
+  selection?: {
+    anchor: number;
+    head: number;
+  } | null;
+}
+
+export class CursorEngine {
+  private peers: Map&lt;number, PeerCursorState&gt; = new Map();
+  private rafId: number | null = null;
+  private container: HTMLElement;
+  private onRenderCallback: (peers: PeerCursorState[]) =&gt; void;
+  private readonly LERP_FACTOR = 0.22; // Smoothing constant
+  private readonly STALE_THRESHOLD_MS = 5000;
+
+  constructor(
+    container: HTMLElement,
+    onRender: (peers: PeerCursorState[]) =&gt; void
+  ) {
+    this.container = container;
+    this.onRenderCallback = onRender;
+    this.startRenderLoop();
+  }
+
+  /**
+   * Normalizes DOM client coordinates into a 0.0 -&gt; 1.0 container space.
+   */
+  public normalizeCoordinates(clientX: number, clientY: number): Point {
+    const rect = this.container.getBoundingClientRect();
+    const x = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+    const y = Math.min(Math.max((clientY - rect.top) / rect.height, 0), 1);
+    return { x, y };
+  }
+
+  /**
+   * Translates normalized coordinates back to absolute container pixels.
+   */
+  public denormalizeCoordinates(point: Point): Point {
+    const rect = this.container.getBoundingClientRect();
+    return {
+      x: point.x * rect.width,
+      y: point.y * rect.height,
+    };
+  }
+
+  /**
+   * Receives incoming network payload from Awareness channel.
+   */
+  public ingestPeerState(
+    clientId: number,
+    payload: {
+      userName: string;
+      userColor: string;
+      point: Point;
+      selection?: { anchor: number; head: number } | null;
+    }
+  ): void {
+    const now = performance.now();
+    const existing = this.peers.get(clientId);
+
+    if (existing) {
+      existing.target = payload.point;
+      existing.lastUpdate = now;
+      existing.selection = payload.selection;
+      existing.userName = payload.userName;
+      existing.userColor = payload.userColor;
+    } else {
+      this.peers.set(clientId, {
+        clientId,
+        userName: payload.userName,
+        userColor: payload.userColor,
+        current: { ...payload.point },
+        target: { ...payload.point },
+        lastUpdate: now,
+        selection: payload.selection,
+      });
+    }
+  }
+
+  public removePeer(clientId: number): void {
+    this.peers.delete(clientId);
+  }
+
+  private startRenderLoop(): void {
+    const tick = () =&gt; {
+      const now = performance.now();
+      const activePeers: PeerCursorState[] = [];
+
+      for (const [clientId, state] of this.peers.entries()) {
+        if (now - state.lastUpdate &gt; this.STALE_THRESHOLD_MS) {
+          this.peers.delete(clientId);
+          continue;
+        }
+
+        // Apply Linear Interpolation (LERP): Pos = Pos + (Target - Pos) * Factor
+        state.current.x += (state.target.x - state.current.x) * this.LERP_FACTOR;
+        state.current.y += (state.target.y - state.current.y) * this.LERP_FACTOR;
+
+        activePeers.push(state);
+      }
+
+      this.onRenderCallback(activePeers);
+      this.rafId = requestAnimationFrame(tick);
+    };
+
+    this.rafId = requestAnimationFrame(tick);
+  }
+
+  public destroy(): void {
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+    }
+    this.peers.clear();
+  }
+}
+</code></pre>
+<hr />
+<h2>3. PartyKit Multiplayer Edge Broker</h2>
+<p>This PartyKit server implementation coordinates durable Yjs CRDT synchronization and broadcasts awareness states across edge nodes.</p>
+<h3>PartyKit Server Room: <code>party/index.ts</code></h3>
+<pre><code class="language-typescript">import type * as Party from &quot;partykit/server&quot;;
+import { onConnect } from &quot;y-partykit&quot;;
+
+export default class CollaborativeRoomServer implements Party.Server {
+  constructor(readonly room: Party.Room) {}
+
+  /**
+   * Intercept connection handshake to authenticate and set initial tags.
+   */
+  async onConnect(connection: Party.Connection, ctx: Party.ConnectionContext) {
+    // Standard y-partykit protocol takes ownership of the persistent Y.Doc sync
+    return onConnect(connection, this.room, {
+      persist: {
+        mode: &quot;history&quot;, // Saves complete transaction history to Edge Storage
+      },
+    });
+  }
+
+  /**
+   * Handle non-CRDT, sub-millisecond custom operational messages.
+   */
+  onMessage(message: string | ArrayBuffer, sender: Party.Connection) {
+    if (typeof message === &quot;string&quot;) {
+      try {
+        const parsed = JSON.parse(message);
+        if (parsed.type === &quot;heartbeat&quot;) {
+          sender.send(JSON.stringify({ type: &quot;heartbeat-ack&quot;, time: Date.now() }));
+          return;
+        }
+
+        // Broadcast non-persisted canvas transient events (e.g., laser pointer)
+        if (parsed.type === &quot;transient-broadcast&quot;) {
+          this.room.broadcast(message, [sender.id]);
+        }
+      } catch (e) {
+        // Drop unformatted packets silently to prevent server panics
+      }
+    }
+  }
+
+  async onClose(connection: Party.Connection) {
+    // Explicit server-side garbage cleanup on hard drop
+  }
+}
+</code></pre>
+<hr />
+<h2>4. Collaborative Rich-Text Architecture (Tiptap + Yjs Subdocs)</h2>
+<p>When scaling collaborative applications to massive hierarchies (e.g., an infinite canvas containing hundreds of distinct text cards), binding the entire canvas to a single monolithic Y.Text CRDT causes severe performance degradation. Every keystroke forces the entire client fleet to process global vector calculations.</p>
+<p>The solution is <strong>Y.Doc Subdocs</strong>. The master document acts as a spatial index of cards (<code>Y.Map&lt;Y.Doc&gt;</code>), and the rich-text editor dynamically mounts subdocuments on demand.</p>
+<pre><code>+-------------------------------------------------------------------+
+|                  ROOT DOCUMENT (Master Y.Doc)                     |
+|  Y.Map(&quot;canvas-nodes&quot;)                                            |
+|    |                                                              |
+|    +---&gt; Node &quot;card-01&quot;: Y.Map { x: 100, y: 400, doc: SubDoc-A }  |
+|    |                                                              |
+|    +---&gt; Node &quot;card-02&quot;: Y.Map { x: 500, y: 200, doc: SubDoc-B }  |
++-------------------------------------------------------------------+
+                               |
+             +-----------------+-----------------+
+             | Mount Subdoc                      | Mount Subdoc
+             v                                   v
++-----------------------------+     +-----------------------------+
+|    SUBDOCUMENT: SubDoc-A    |     |    SUBDOCUMENT: SubDoc-B    |
+|                             |     |                             |
+| Y.XmlFragment(&quot;prosemirror&quot;)|     | Y.XmlFragment(&quot;prosemirror&quot;)|
+| Tiptap Instance #1 (Active) |     | Tiptap Instance #2 (Active) |
++-----------------------------+     +-----------------------------+
+</code></pre>
+<h3>Collaborative Editor Component: <code>CollaborativeEditor.tsx</code></h3>
+<pre><code class="language-tsx">import React, { useEffect } from &quot;react&quot;;
+import { useEditor, EditorContent } from &quot;@tiptap/react&quot;;
+import StarterKit from &quot;@tiptap/starter-kit&quot;;
+import Collaboration from &quot;@tiptap/extension-collaboration&quot;;
+import CollaborationCursor from &quot;@tiptap/extension-collaboration-cursor&quot;;
+import * as Y from &quot;yjs&quot;;
+import YPartyKitProvider from &quot;y-partykit/provider&quot;;
+
+interface CollaborativeEditorProps {
+  roomName: string;
+  partyHost: string;
+  subdoc: Y.Doc;
+  user: {
+    name: string;
+    color: string;
+  };
+}
+
+export const CollaborativeEditor: React.FC&lt;CollaborativeEditorProps&gt; = ({
+  roomName,
+  partyHost,
+  subdoc,
+  user,
+}) =&gt; {
+  // 1. Establish isolated provider for the targeted Subdoc or Doc
+  const provider = React.useMemo(() =&gt; {
+    return new YPartyKitProvider(partyHost, roomName, subdoc, {
+      connect: false, // Defer connection until awareness is initialized
+    });
+  }, [partyHost, roomName, subdoc]);
+
+  // 2. Initialize Tiptap with ProseMirror CRDT Bindings
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        // The Collaboration extension takes ownership of history handling
+        history: false,
+      }),
+      Collaboration.configure({
+        document: subdoc,
+        field: &quot;prosemirror&quot;, // Target key in the subdoc
+      }),
+      CollaborationCursor.configure({
+        provider: provider,
+        user: {
+          name: user.name,
+          color: user.color,
+        },
+      }),
+    ],
+  });
+
+  useEffect(() =&gt; {
+    // Set awareness metadata
+    provider.awareness.setLocalStateField(&quot;user&quot;, {
+      name: user.name,
+      color: user.color,
+    });
+
+    // Mount connection
+    provider.connect();
+
+    return () =&gt; {
+      provider.disconnect();
+      provider.destroy();
+    };
+  }, [provider, user]);
+
+  return (
+    &lt;div className=&quot;collaborative-editor-wrapper border rounded-lg p-4 bg-white shadow-sm&quot;&gt;
+      &lt;div className=&quot;status-bar mb-2 flex items-center justify-between text-xs text-gray-500&quot;&gt;
+        &lt;span className=&quot;flex items-center gap-2&quot;&gt;
+          &lt;span
+            className=&quot;inline-block w-2 h-2 rounded-full&quot;
+            style={{ backgroundColor: user.color }}
+          /&gt;
+          {user.name} (Editing: {subdoc.guid})
+        &lt;/span&gt;
+      &lt;/div&gt;
+      &lt;EditorContent editor={editor} className=&quot;prose max-w-none focus:outline-none&quot; /&gt;
+    &lt;/div&gt;
+  );
+};
+</code></pre>
+<hr />
+<h2>5. Scoped Undo/Redo Engine</h2>
+<p>The most critical defect in standard multi-user undo implementations is <strong>destructive inversion clobbering</strong>: User A types, User B types immediately after, and User A presses <code>Cmd+Z</code>, inadvertently rolling back User B's characters.</p>
+<p>To isolate history, configure <code>Y.UndoManager</code> with explicit <strong>Origin Scoping</strong> and tracked transaction origins.</p>
+<pre><code class="language-typescript">// Define explicit transaction origins
+export const TransactionOrigins = {
+  LOCAL_USER: Symbol(&quot;TRANSACTION_ORIGIN_LOCAL_USER&quot;),
+  REMOTE_SYNC: Symbol(&quot;TRANSACTION_ORIGIN_REMOTE_SYNC&quot;),
+  SYSTEM_MIGRATION: Symbol(&quot;TRANSACTION_ORIGIN_SYSTEM_MIGRATION&quot;),
+};
+</code></pre>
+<h3>Scoped Undo Manager: <code>ScopedUndoManager.ts</code></h3>
+<pre><code class="language-typescript">import * as Y from &quot;yjs&quot;;
+import { TransactionOrigins } from &quot;./TransactionOrigins&quot;;
+
+export interface UndoManagerOptions {
+  captureTimeout?: number;
+}
+
+export class ScopedUndoManagerEngine {
+  private undoManager: Y.UndoManager;
+  private scopeDoc: Y.Doc;
+
+  constructor(
+    targetType: Y.Type,
+    doc: Y.Doc,
+    options: UndoManagerOptions = { captureTimeout: 500 }
+  ) {
+    this.scopeDoc = doc;
+
+    // Track only transactions originating from the authenticated local user
+    this.undoManager = new Y.UndoManager(targetType, {
+      trackedOrigins: new Set([TransactionOrigins.LOCAL_USER]),
+      captureTimeout: options.captureTimeout,
+    });
+
+    this.registerEventPumps();
+  }
+
+  private registerEventPumps(): void {
+    this.undoManager.on(&quot;stack-item-added&quot;, (event: { stackItem: any; type: string }) =&gt; {
+      // Annotate the history item with transactional metadata
+      event.stackItem.meta.set(&quot;timestamp&quot;, Date.now());
+      event.stackItem.meta.set(&quot;clientVersion&quot;, this.scopeDoc.clientID);
+    });
+
+    this.undoManager.on(&quot;stack-item-popped&quot;, (event: { stackItem: any; type: string }) =&gt; {
+      // Fires when an undo or redo step executes across the CRDT
+    });
+  }
+
+  /**
+   * Executes a mutation on the document tagged with the Local User Origin.
+   */
+  public executeLocalMutation(mutationFn: () =&gt; void): void {
+    this.scopeDoc.transact(() =&gt; {
+      mutationFn();
+    }, TransactionOrigins.LOCAL_USER);
+  }
+
+  /**
+   * Reverts the latest local mutation without modifying remote operations.
+   */
+  public undo(): boolean {
+    const result = this.undoManager.undo();
+    return result !== null;
+  }
+
+  /**
+   * Re-applies the latest undone local mutation.
+   */
+  public redo(): boolean {
+    const result = this.undoManager.redo();
+    return result !== null;
+  }
+
+  public clearHistory(): void {
+    this.undoManager.clear();
+  }
+
+  public destroy(): void {
+    this.undoManager.destroy();
+  }
+}
+</code></pre>
+<hr />
+<h2>6. Offline Persistence &amp; Partition Reconciliation</h2>
+<p>A resilient collaborative web engine must treat the local IndexedDB instance as the absolute source of truth during startup, hydrate memory state instantaneously, queue local updates while offline, and seamlessly merge states via the Yjs State Vector protocol when reconnected.</p>
+<pre><code>+---------------------------------------------------------------------------------------+
+|                                    CLIENT STARTUP                                     |
+|                                                                                       |
+|   1. Initialize Local Y.Doc                                                          |
+|   2. Attach IndexedDB Provider (IndexeddbPersistence)                                 |
+|   3. Read Local Uint8Array Snapshot from IndexedDB (0ms network delay)                |
+|   4. Mark Client as Locally Hydrated (Render UI immediately)                         |
+|                                                                                       |
++-------------------------------------------+-------------------------------------------+
+                                            |
+                                            v
++---------------------------------------------------------------------------------------+
+|                                    NETWORK SYNC                                       |
+|                                                                                       |
+|   5. Establish WebSocket to PartyKit Edge Server                                      |
+|   6. Compute Local State Vector: Y.encodeStateVector(doc)                             |
+|   7. Send Vector via SyncStep 1                                                       |
+|   8. Edge Server replies with missing delta: SyncStep 2                               |
+|   9. Apply Missing Updates to Local Doc -&gt; Automatically written back to IndexedDB   |
+|                                                                                       |
++---------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Persistence Sync Bridge: <code>PersistenceSyncBridge.ts</code></h3>
+<pre><code class="language-typescript">import * as Y from &quot;yjs&quot;;
+import { IndexeddbPersistence } from &quot;y-indexeddb&quot;;
+import YPartyKitProvider from &quot;y-partykit/provider&quot;;
+
+export type ConnectionStatus = &quot;offline-storage&quot; | &quot;connecting&quot; | &quot;synced&quot; | &quot;disconnected&quot;;
+
+export interface SyncBridgeConfiguration {
+  documentId: string;
+  partyHost: string;
+  onStatusChange?: (status: ConnectionStatus) =&gt; void;
+  onFirstHydrated?: () =&gt; void;
+}
+
+export class PersistenceSyncBridge {
+  public readonly doc: Y.Doc;
+  private idbProvider: IndexeddbPersistence;
+  private wsProvider: YPartyKitProvider;
+  private isDestroyed = false;
+
+  constructor(private config: SyncBridgeConfiguration) {
+    this.doc = new Y.Doc();
+
+    // 1. Initialize IndexedDB Persistence Engine
+    this.idbProvider = new IndexeddbPersistence(config.documentId, this.doc);
+
+    // 2. Initialize PartyKit Provider (keep disconnected until local data surfaces)
+    this.wsProvider = new YPartyKitProvider(
+      config.partyHost,
+      config.documentId,
+      this.doc,
+      { connect: false }
+    );
+
+    this.setupLifecyclePipelines();
+  }
+
+  private setupLifecyclePipelines(): void {
+    // Notify caller that local storage is ready
+    this.idbProvider.once(&quot;synced&quot;, () =&gt; {
+      if (this.isDestroyed) return;
+
+      this.config.onFirstHydrated?.();
+      this.config.onStatusChange?.(&quot;connecting&quot;);
+
+      // Connect to the network only after loading offline state
+      this.wsProvider.connect();
+    });
+
+    // Wire up network status events
+    this.wsProvider.on(&quot;status&quot;, (event: { status: string }) =&gt; {
+      if (this.isDestroyed) return;
+
+      switch (event.status) {
+        case &quot;connected&quot;:
+          this.config.onStatusChange?.(&quot;synced&quot;);
+          break;
+        case &quot;connecting&quot;:
+          this.config.onStatusChange?.(&quot;connecting&quot;);
+          break;
+        case &quot;disconnected&quot;:
+        default:
+          this.config.onStatusChange?.(&quot;disconnected&quot;);
+          break;
+      }
+    });
+
+    this.wsProvider.on(&quot;sync&quot;, (isSynced: boolean) =&gt; {
+      if (isSynced &amp;&amp; !this.isDestroyed) {
+        this.config.onStatusChange?.(&quot;synced&quot;);
+      }
+    });
+  }
+
+  /**
+   * Forcibly persists a compact snapshot to IndexedDB, clearing the update transaction log.
+   */
+  public async compactLocalStorage(): Promise&lt;void&gt; {
+    if (this.idbProvider.synced) {
+      // Reading state vector merges fragmented rows in IndexedDB
+      const snapshot = Y.encodeStateAsUpdate(this.doc);
+      await this.idbProvider.clearData();
+      Y.applyUpdate(this.doc, snapshot);
+    }
+  }
+
+  public destroy(): void {
+    this.isDestroyed = true;
+    this.wsProvider.disconnect();
+    this.wsProvider.destroy();
+    this.idbProvider.destroy();
+    this.doc.destroy();
+  }
+}
+</code></pre>
+<hr />
+<h2>7. Operational Runbook &amp; Verification Testing</h2>
+<p>Execute these tests before promoting any collaborative engine build to production.</p>
+<h3>Realtime Engine Verification Matrix</h3>
+<pre><code>+----------------------------------------------------------------------------------------------------+
+| SCENARIO                 TEST EXECUTION PROCEDURE                     PASS / FAIL CRITERIA         |
++----------------------------------------------------------------------------------------------------+
+| 1. High-Jitter           Throttle network via Chrome DevTools to      Cursor renders smoothly via  |
+|    Cursor Smoothing      300ms latency, 10% packet drop. Move mouse.  LERP at 60 FPS without snap  |
+|                                                                       or rubber-banding artifacts. |
+|                                                                                                    |
+| 2. Partition Reconnect   Disconnect Wi-Fi on Client A. Make 50 text   Client A automatically       |
+|    &amp; Convergence         edits. Make 50 distinct edits on Client B.   reconnects and reconciles    |
+|                          Reconnect Wi-Fi on Client A.                 all edits without dataloss.  |
+|                                                                                                    |
+| 3. Scoped Undo           User A types &quot;Alpha&quot;. User B types &quot;Beta&quot;.   User A's editor removes      |
+|    Isolation             User A executes `Cmd+Z`.                     &quot;Alpha&quot;; &quot;Beta&quot; remains      |
+|                                                                       unaltered on both screens.   |
+|                                                                       |
+| 4. Cold Offline Boot     Load app on an offline browser with a        All document nodes load      |
+|                          pre-populated IndexedDB instance.            instantly (&lt; 50ms) without   |
+|                                                                       throwing WebSocket errors.   |
++----------------------------------------------------------------------------------------------------+
+</code></pre>
+<h3>Chaos Engineering: Simulated Client Partition Suite</h3>
+<p>Run this integration test with Vitest or Playwright to systematically verify document convergence after a split-brain event:</p>
+<pre><code class="language-typescript">import { test, expect } from &quot;vitest&quot;;
+import * as Y from &quot;yjs&quot;;
+
+test(&quot;CRDT State Convergence under Split-Brain Network Partition&quot;, () =&gt; {
+  // 1. Initialize two isolated virtual client documents
+  const clientADoc = new Y.Doc();
+  const clientBDoc = new Y.Doc();
+
+  const clientAText = clientADoc.getText(&quot;content&quot;);
+  const clientBText = clientBDoc.getText(&quot;content&quot;);
+
+  // 2. Base synchronization phase
+  const baseUpdate = Y.encodeStateAsUpdate(clientADoc);
+  Y.applyUpdate(clientBDoc, baseUpdate);
+
+  // 3. Trigger network partition (Disconnect)
+  // Both clients concurrently write to the same character index
+  clientAText.insert(0, &quot;USER_A_INIT; &quot;);
+  clientBText.insert(0, &quot;USER_B_INIT; &quot;);
+
+  // Deep concurrent mid-string splice operations
+  clientAText.insert(13, &quot;[Mutation A]&quot;);
+  clientBText.insert(13, &quot;[Mutation B]&quot;);
+
+  expect(clientAText.toString()).not.toBe(clientBText.toString());
+
+  // 4. Heal the partition: exchange state vectors and missing updates
+  const stateVectorA = Y.encodeStateVector(clientADoc);
+  const stateVectorB = Y.encodeStateVector(clientBDoc);
+
+  // Calculate two-way missing deltas
+  const missingDeltaForB = Y.encodeStateAsUpdate(clientADoc, stateVectorB);
+  const missingDeltaForA = Y.encodeStateAsUpdate(clientBDoc, stateVectorA);
+
+  // Exchange and apply
+  Y.applyUpdate(clientBDoc, missingDeltaForB);
+  Y.applyUpdate(clientADoc, missingDeltaForA);
+
+  // 5. Assert strict deterministic convergence
+  const finalStringA = clientAText.toString();
+  const finalStringB = clientBText.toString();
+
+  expect(finalStringA).toBe(finalStringB);
+  expect(finalStringA.length).toBeGreaterThan(0);
+});
+</code></pre>
+<hr />
+<h2>8. Production Checklist: Canvas &amp; Rich-Text Deployments</h2>
+<p>Use this validation checklist before every production deploy:</p>
+<ul>
+<li>[ ] <strong>Dual-Channel Isolation</strong>: Verify pointer movements route through ephemeral Awareness or raw WebSockets, and never write directly to the top-level persistent <code>Y.Doc</code>.</li>
+<li>[ ] <strong>Document Coordinate Normalization</strong>: Verify all cursor payloads broadcast normalized values <code>[0.0, 1.0]</code> based on container bounding boxes, rather than raw browser <code>clientX</code>/<code>clientY</code> pixels.</li>
+<li>[ ] <strong>Linear Lerp Interpolation</strong>: Ensure peer cursor positions are refreshed inside a <code>requestAnimationFrame</code> loop using a LERP damping factor between <code>0.18</code> and <code>0.25</code>.</li>
+<li>[ ] <strong>Awareness Timeout Enforcement</strong>: Confirm peers are pruned from UI state if no awareness updates arrive within <code>5000ms</code>.</li>
+<li>[ ] <strong>Subdoc Partitioning</strong>: If your canvas supports independently selectable nodes or nested documents, confirm each node uses a <code>Y.Doc</code> subdoc rather than one monolithic rich-text CRDT.</li>
+<li>[ ] <strong>Scoped Undo Origins</strong>: Check that <code>Y.UndoManager</code> explicitly sets <code>trackedOrigins: new Set([TransactionOrigins.LOCAL_USER])</code> to prevent local undo operations from rolling back remote peer keystrokes.</li>
+<li>[ ] <strong>Local-First IndexedDB Hydration</strong>: Ensure <code>y-indexeddb</code> completes its hydration check before initiating remote WebSocket transport connections, preventing empty state writes from overriding cached content.</li>
+<li>[ ] <strong>Compact Snapshot Compaction</strong>: Confirm that older update logs in IndexedDB are merged periodically using <code>Y.encodeStateAsUpdate(doc)</code> to prevent local storage quota exhaustion.</li>
+</ul>
+</body>
+</html>

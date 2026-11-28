@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Realtime Collaborative App Engine: WebSockets, CRDTs, PartyKit & Yjs Playbook</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 1: Realtime Systems Architecture &amp; Conflict-Free Mental Models</h1>
+<p>To construct resilient, ultra-low latency collaborative systems, engineers must abandon the traditional client-server request-response paradigm. In a collaborative application—whether it is a Figma-style vector canvas, a multi-cursor code editor, or a live visual whiteboard—state exists simultaneously across distributed, volatile client runtimes and edge nodes. </p>
+<p>This module delivers the mathematical foundations, data-structure internals, network state machines, and edge topologies required to build fault-tolerant, conflict-free collaborative engines.</p>
+<hr />
+<h2>1. Foundations of Distributed State Convergence</h2>
+<p>Collaborative architectures fall into two primary paradigms: <strong>Operational Transformation (OT)</strong> and <strong>Conflict-Free Replicated Data Types (CRDTs)</strong>. While OT relies on a centralized coordinator to transform operation indices against concurrent operations, CRDTs achieve <strong>Strong Eventual Consistency (SEC)</strong> mathematically: if all nodes receive the same set of updates (regardless of order), they will compute identical local states without a central authority resolving conflicts.</p>
+<h3>Mathematical Prerequisites for Convergence</h3>
+<p>A data structure qualifies as a join-semilattice (the core of state-based CRDTs) if it features a partial order ($\le$) and a merge operator ($\sqcup$) satisfying three algebraic invariants:</p>
+<ol>
+<li><strong>Associativity</strong>: $(a \sqcup b) \sqcup c = a \sqcup (b \sqcup c)$<br />
+<em>Network packets can be grouped and merged in arbitrary batches without altering the final state.</em></li>
+<li><strong>Commutativity</strong>: $a \sqcup b = b \sqcup a$<br />
+<em>Packets can arrive out-of-order over asynchronous transport channels without divergence.</em></li>
+<li><strong>Idempotence</strong>: $a \sqcup a = a$<br />
+<em>Duplicate packets resulting from network retries or overlapping syncing routines cause zero state corruption.</em></li>
+</ol>
+<h3>OT vs. CvRDT vs. CmRDT vs. Yjs Hybrid Model</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dimension</th>
+<th style="text-align: left;">Operational Transformation (OT)</th>
+<th style="text-align: left;">State-based CRDT (CvRDT)</th>
+<th style="text-align: left;">Operation-based CRDT (CmRDT)</th>
+<th style="text-align: left;">Yjs Hybrid (YATA / StructStore)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Primary Convergence Mechanism</strong></td>
+<td style="text-align: left;">Centralized transformation functions rewrite array indices based on logical timestamps.</td>
+<td style="text-align: left;">Monotonic join operation over full state or state deltas using semilattices.</td>
+<td style="text-align: left;">Messaging middleware with Causal Delivery guarantees executes commutative operations.</td>
+<td style="text-align: left;">Append-only doubly-linked items indexed in a contiguous linear memory array (<code>StructStore</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Network Wire Overhead</strong></td>
+<td style="text-align: left;"><strong>Extremely Low</strong>: Payloads contain single-character operations and integer positions (e.g., <code>Retain(5), Insert("a")</code>).</td>
+<td style="text-align: left;"><strong>Extremely High</strong>: Re-transmits the complete state or large delta payloads on every write.</td>
+<td style="text-align: left;"><strong>Low</strong>: Broadcasts discrete operations; requires exact, causal delivery (often via vector clocks).</td>
+<td style="text-align: left;"><strong>Ultra-Low</strong>: State vectors exchange missing sequence ranges; updates are packed via run-length binary encoding (<code>lib0</code>).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Server Requirement</strong></td>
+<td style="text-align: left;">Centralized, stateful single-threaded sequence authority required to define global execution order.</td>
+<td style="text-align: left;">Completely decentralized, peer-to-peer or star topology; merges are naturally associative and commutative.</td>
+<td style="text-align: left;">Decentralized or edge-brokered; requires causal messaging infrastructure (e.g., reliable broadcast).</td>
+<td style="text-align: left;">Flexible: Decentralized P2P (WebRTC), Client-Server (WebSockets), or Distributed Serverless Edge (PartyKit / Cloudflare DO).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Tombstone Overhead</strong></td>
+<td style="text-align: left;">Zero tombstones; deleted elements are removed from array memory immediately.</td>
+<td style="text-align: left;">High; deleted items remain as tombstones to prevent resurrecting deleted nodes during state merges.</td>
+<td style="text-align: left;">Moderate; requires tracking deleted identifiers unless causal garbage collection is applied.</td>
+<td style="text-align: left;">Optimized; adjacent deleted items are compacted into single tombstone structs containing sequence length ranges.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Computational Complexity</strong></td>
+<td style="text-align: left;">$\mathcal{O}(N \times M)$ where $N, M$ are concurrent operations requiring mutual transformation.</td>
+<td style="text-align: left;">$\mathcal{O}(S)$ where $S$ is state size during full lattice merge.</td>
+<td style="text-align: left;">$\mathcal{O}(1)$ local apply time, but requires buffer management for causally delayed updates.</td>
+<td style="text-align: left;">$\mathcal{O}(\log M)$ lookup via binary search over client clock arrays, near $\mathcal{O}(1)$ amortized local insertion.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Inside Yjs: The Mechanics of <code>lib0</code> and <code>StructStore</code></h2>
+<p>Yjs implements the <strong>YATA</strong> (Yet Another Transformation Approach) algorithm, functioning not as a pure state-based or pure operation-based CRDT, but as a sequence-based structural CRDT optimized around contiguous memory blocks.</p>
+<h3>The StructStore Memory Model</h3>
+<p>At the core of a <code>Y.Doc</code> is the <code>StructStore</code>. The <code>StructStore</code> maintains a dictionary mapping unique <code>client</code> identifiers (64-bit unsigned integers) to an array of items (<code>Item[]</code>), ordered strictly by their logical timestamp (<code>clock</code>).</p>
+<pre><code>Y.Doc
+ └── StructStore
+      ├── clients: Map&lt;ClientID, Item[]&gt;
+      │    ├── Client 1024: [ Item(0..2), Item(3..7), Item(8..8) ]
+      │    └── Client 2048: [ Item(0..0), Item(1..5) ]
+      └── ds: DeleteSet (Garbage Collector tracking unmapped clocks)
+</code></pre>
+<h4>Anatomical Breakdown of an <code>Item</code></h4>
+<p>Every insert operation creates an <code>Item</code>. An <code>Item</code> contains:
+- <strong><code>id</code> (<code>ID</code>)</strong>: Composed of <code>client</code> (uint) and <code>clock</code> (uint). If an item represents the string <code>"world"</code>, it occupies 5 clock ticks: <code>id.clock</code> through <code>id.clock + 4</code>.
+- <strong><code>left</code> / <code>right</code> (<code>Item | null</code>)</strong>: Direct pointers forming a doubly linked list representing the intended display order at the moment of insertion.
+- <strong><code>origin</code> / <code>rightOrigin</code> (<code>ID | null</code>)</strong>: The immutable IDs of the neighbors flanking this item at creation. These fields break concurrent insert ties deterministically without reordering existing text.
+- <strong><code>content</code> (<code>Content</code>)</strong>: The payload (<code>ContentString</code>, <code>ContentEmbed</code>, <code>ContentFormat</code>, <code>ContentDeleted</code>, or <code>ContentJSON</code>).
+- <strong><code>info</code> (bitfield byte)</strong>: Stores metadata including whether the item is deleted, whether its left/right pointers are mapped, and whether it can merge with adjacent items.</p>
+<pre><code>+----------------------------------------------------------------------------------------+
+|                                     Yjs Item                                           |
++--------------------+-------------------+-----------------------+-----------------------+
+| id: {1024, 5}      | len: 4 (&quot;data&quot;)   | origin: {1024, 4}     | rightOrigin: {2048, 1}|
++--------------------+-------------------+-----------------------+-----------------------+
+| left: -&gt; [Item]    | right: -&gt; [Item]  | parent: -&gt; [Y.Text]   | info: 0b00000100      |
++--------------------+-------------------+-----------------------+-----------------------+
+</code></pre>
+<p>When an item is deleted, Yjs does not delete the <code>Item</code> object from memory. Doing so would sever the doubly-linked list and corrupt causality proofs for future concurrent operations. Instead, Yjs sets the item's content to <code>ContentDeleted</code> (or sets a bit in <code>info</code>), increments the deletion counters, and registers the sequence range within the <strong>DeleteSet (<code>ds</code>)</strong>.</p>
+<h3>State Vectors, Updates, and Diff Calculations</h3>
+<p>Yjs eliminates redundant network bandwidth via <strong>State Vectors</strong>. A State Vector represents the compact summary of all updates a given client has integrated.</p>
+<p>$$\text{StateVector} = { \text{ClientID}_1: \text{Clock}_1, \ \text{ClientID}_2: \text{Clock}_2, \ \dots, \ \text{ClientID}_n: \text{Clock}_n }$$</p>
+<p>When two nodes sync:
+1. <strong>Node A</strong> transmits its <code>StateVector</code> to <strong>Node B</strong> (Sync Step 1).
+2. <strong>Node B</strong> reads Node A's <code>StateVector</code>, queries its own <code>StructStore</code>, and extracts all <code>Item</code> sequences with $\text{clock} &gt; \text{StateVector}[\text{ClientID}]$.
+3. <strong>Node B</strong> encodes these missing items along with its local <code>DeleteSet</code> into a binary blob using the <code>lib0</code> framework and transmits it to Node A (Sync Step 2).
+4. <strong>Node A</strong> applies the binary blob directly into its <code>StructStore</code>. Convergence is reached in exactly $1$ round-trip ($1.5$ RTT for bidirectional sync).</p>
+<h3>lib0 Variable-Length Encoding</h3>
+<p>Yjs writes to network sockets via the <code>lib0/encoding</code> library, which enforces aggressive binary compression:
+- <strong>VarUint / VarInt</strong>: Unsigned integers are serialized 7 bits per byte. The 8th bit indicates if another byte follows. A client ID like <code>5</code> consumes 1 byte instead of 8 bytes.
+- <strong>Run-Length Encoding (RLE)</strong>: Repeated client IDs, consecutive clocks, and sequential deletes are compressed into <code>[client, start_clock, length]</code> tuples.
+- <strong>String Table Compression</strong>: Duplicate property keys in map structures are mapped to an integer dictionary within the payload header.</p>
+<hr />
+<h2>3. Edge Persistence Topologies &amp; Room Lifecycles</h2>
+<p>In modern edge environments (PartyKit, Cloudflare Durable Objects, Fastly Compute), state must transition cleanly between ultra-fast volatile memory and durable long-term storage.</p>
+<h3>The Three-Tier Storage Topology</h3>
+<pre><code>+-------------------------------------------------------------------------------+
+| Tier 1: Volatile Memory (Edge Worker / PartyKit Core)                         |
+| - Y.Doc resides fully in-memory as native V8 objects.                         |
+| - Microsecond reads/writes; mutations handled via pure pointer modifications.|
++---------------------------------------+---------------------------------------+
+                                        |
+                   Debounced WAL Flush  | Flush on 100 updates OR 2000ms
+                                        v
++-------------------------------------------------------------------------------+
+| Tier 2: Transactional Write-Ahead Log (WAL) (Edge KV / SQLite / DO Storage)    |
+| - High-throughput append-only table: `room_updates(id, room, update_blob)`    |
+| - Un-compacted, monotonic log of lib0-encoded byte arrays.                    |
++---------------------------------------+---------------------------------------+
+                                        |
+                 Compaction Worker Hook | Every 500 updates OR Room Idle
+                                        v
++-------------------------------------------------------------------------------+
+| Tier 3: Cold Durable Snapshot Store (S3 / R2 / GCS)                          |
+| - Monolithic compacted Yjs snapshot (`Y.encodeStateAsUpdate(ydoc)`).          |
+| - Truncates Tier 2 WAL completely; serves as cold boot payload.               |
++-------------------------------------------------------------------------------+
+</code></pre>
+<h3>Snapshot Compaction Lifecycle</h3>
+<pre><code>[ Room Wakeup ] 
+       │
+       ▼
+Read Tier 3 Snapshot from S3/R2 ──► Y.applyUpdate(doc, s3Snapshot)
+       │
+       ▼
+Query Tier 2 WAL (WHERE id &gt; snapshot_seq) ──► Loop: Y.applyUpdate(doc, row.blob)
+       │
+       ▼
+[ Room Ready: Accept WebSocket Connections ]
+       │
+       ├─► Client Update ──► Apply to Memory ──► Write to Tier 2 WAL (Batch)
+       │
+       ▼
+[ Compaction Threshold Met (e.g., 500 Updates) ]
+       │
+       ├─► 1. Acquire Distributed Mutex (prevent concurrent compaction)
+       ├─► 2. snapshotBytes = Y.encodeStateAsUpdate(doc)
+       ├─► 3. Atomic PUT to Tier 3 (S3/R2)
+       ├─► 4. DELETE FROM Tier 2 WAL WHERE seq &lt;= compacted_seq
+       └─► 5. Release Mutex
+</code></pre>
+<hr />
+<h2>4. Production Engine: Resilient Client WebSocket State Machine</h2>
+<p>This client-side connection manager uses an explicit Finite State Machine (FSM). It handles exponential backoff with full jitter, binary frame serialization, and an offline mutation queue that flushes upon reconnection.</p>
+<pre><code>       ┌────────────────────────┐
+       │      DISCONNECTED      │◄─────────────────────────────┐
+       └───────────┬────────────┘                              │
+                   │ connect()                                 │
+                   ▼                                           │
+       ┌────────────────────────┐                              │
+       │       CONNECTING       │                              │
+       └───────────┬────────────┘                              │
+                   │ onopen                                    │
+                   ▼                                           │
+       ┌────────────────────────┐      Heartbeat Timeout       │
+       │       CONNECTED        ├──────────────────────────────┤
+       └───────────┬────────────┘      (or unrecoverable err)  │
+                   │ sync_complete                             │
+                   ▼                                           │
+       ┌────────────────────────┐                              │
+       │         SYNCED         ├──────────────────────────────┘
+       └────────────────────────┘
+</code></pre>
+<p>Save this implementation as <code>ConnectionStateMachine.ts</code>:</p>
+<pre><code class="language-typescript">import * as Y from &quot;yjs&quot;;
+import * as syncProtocol from &quot;y-protocols/sync&quot;;
+import * as awarenessProtocol from &quot;y-protocols/awareness&quot;;
+import * as encoding from &quot;lib0/encoding&quot;;
+import * as decoding from &quot;lib0/decoding&quot;;
+
+export type ConnectionState = &quot;DISCONNECTED&quot; | &quot;CONNECTING&quot; | &quot;CONNECTED&quot; | &quot;SYNCED&quot;;
+
+export interface EngineConfig {
+  url: string;
+  room: string;
+  doc: Y.Doc;
+  awareness: awarenessProtocol.Awareness;
+  baseBackoffMs?: number;
+  maxBackoffMs?: number;
+  heartbeatIntervalMs?: number;
+  heartbeatTimeoutMs?: number;
+}
+
+const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
+const MESSAGE_HEARTBEAT = 2;
+
+export class ResilientConnectionEngine {
+  private ws: WebSocket | null = null;
+  private state: ConnectionState = &quot;DISCONNECTED&quot;;
+  private backoffAttempts = 0;
+  private readonly baseBackoffMs: number;
+  private readonly maxBackoffMs: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatTimeoutMs: number;
+  private heartbeatIntervalTimer: ReturnType&lt;typeof setInterval&gt; | null = null;
+  private heartbeatTimeoutTimer: ReturnType&lt;typeof setTimeout&gt; | null = null;
+  private offlineBuffer: Uint8Array[] = [];
+  private isExplicitlyClosed = false;
+
+  constructor(private readonly config: EngineConfig) {
+    this.baseBackoffMs = config.baseBackoffMs ?? 1000;
+    this.maxBackoffMs = config.maxBackoffMs ?? 30000;
+    this.heartbeatIntervalMs = config.heartbeatIntervalMs ?? 15000;
+    this.heartbeatTimeoutMs = config.heartbeatTimeoutMs ?? 5000;
+
+    // Hook local doc updates
+    this.config.doc.on(&quot;update&quot;, this.handleLocalDocUpdate);
+    this.config.awareness.on(&quot;update&quot;, this.handleLocalAwarenessUpdate);
+  }
+
+  public connect(): void {
+    if (this.state === &quot;CONNECTED&quot; || this.state === &quot;SYNCED&quot; || this.state === &quot;CONNECTING&quot;) {
+      return;
+    }
+
+    this.isExplicitlyClosed = false;
+    this.transitionTo(&quot;CONNECTING&quot;);
+
+    const endpoint = `${this.config.url}/${encodeURIComponent(this.config.room)}`;
+    this.ws = new WebSocket(endpoint);
+    this.ws.binaryType = &quot;arraybuffer&quot;;
+
+    this.ws.onopen = this.handleOpen;
+    this.ws.onmessage = this.handleMessage;
+    this.ws.onerror = this.handleError;
+    this.ws.onclose = this.handleClose;
+  }
+
+  public disconnect(): void {
+    this.isExplicitlyClosed = true;
+    this.cleanupTimers();
+    if (this.ws) {
+      this.ws.close(1000, &quot;Normal Closure&quot;);
+      this.ws = null;
+    }
+    this.transitionTo(&quot;DISCONNECTED&quot;);
+  }
+
+  public getState(): ConnectionState {
+    return this.state;
+  }
+
+  private handleOpen = (): void =&gt; {
+    this.backoffAttempts = 0;
+    this.transitionTo(&quot;CONNECTED&quot;);
+    this.startHeartbeat();
+
+    // 1. Send Sync Step 1: advertise what we know via our State Vector
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.writeSyncStep1(encoder, this.config.doc);
+    this.sendRaw(encoding.toUint8Array(encoder));
+
+    // 2. Broadcast local Awareness
+    const awarenessStates = this.config.awareness.getStates();
+    if (awarenessStates.size &gt; 0) {
+      const awarenessEncoder = encoding.createEncoder();
+      encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS);
+      encoding.writeVarUint8Array(
+        awarenessEncoder,
+        awarenessProtocol.encodeAwarenessUpdate(
+          this.config.awareness,
+          Array.from(awarenessStates.keys())
+        )
+      );
+      this.sendRaw(encoding.toUint8Array(awarenessEncoder));
+    }
+
+    // 3. Flush updates that accumulated while offline
+    while (this.offlineBuffer.length &gt; 0) {
+      const pending = this.offlineBuffer.shift();
+      if (pending) {
+        this.sendRaw(pending);
+      }
+    }
+  };
+
+  private handleMessage = (event: MessageEvent): void =&gt; {
+    if (!(event.data instanceof ArrayBuffer)) {
+      return;
+    }
+
+    const payload = new Uint8Array(event.data);
+    const decoder = decoding.createDecoder(payload);
+    const messageType = decoding.readVarUint(decoder);
+
+    switch (messageType) {
+      case MESSAGE_SYNC: {
+        const syncEncoder = encoding.createEncoder();
+        encoding.writeVarUint(syncEncoder, MESSAGE_SYNC);
+
+        // syncProtocol handles Step 1, Step 2, and update parsing
+        const syncMessageType = syncProtocol.readSyncMessage(
+          decoder,
+          syncEncoder,
+          this.config.doc,
+          this
+        );
+
+        // If the reply contains bytes, send it back immediately
+        if (encoding.length(syncEncoder) &gt; 1) {
+          this.sendRaw(encoding.toUint8Array(syncEncoder));
+        }
+
+        // If we completed Step 2 (received our missing data), we are fully synced
+        if (syncMessageType === syncProtocol.messageYjsSyncStep2 &amp;&amp; this.state !== &quot;SYNCED&quot;) {
+          this.transitionTo(&quot;SYNCED&quot;);
+        }
+        break;
+      }
+
+      case MESSAGE_AWARENESS: {
+        const update = decoding.readVarUint8Array(decoder);
+        awarenessProtocol.applyAwarenessUpdate(this.config.awareness, update, this);
+        break;
+      }
+
+      case MESSAGE_HEARTBEAT: {
+        // Pong received; cancel timeout disconnect
+        if (this.heartbeatTimeoutTimer) {
+          clearTimeout(this.heartbeatTimeoutTimer);
+          this.heartbeatTimeoutTimer = null;
+        }
+        break;
+      }
+
+      default:
+        console.warn(`[YjsEngine] Unknown protocol message type: ${messageType}`);
+    }
+  };
+
+  private handleError = (err: Event): void =&gt; {
+    console.error(&quot;[YjsEngine] WebSocket emitted an error:&quot;, err);
+    // Let onclose handle reconnect logic
+  };
+
+  private handleClose = (event: CloseEvent): void =&gt; {
+    this.cleanupTimers();
+    this.ws = null;
+    this.transitionTo(&quot;DISCONNECTED&quot;);
+
+    if (!this.isExplicitlyClosed) {
+      this.scheduleReconnect();
+    }
+  };
+
+  private scheduleReconnect(): void {
+    this.backoffAttempts++;
+
+    // Exponential Backoff with Decorrelated Jitter:
+    // sleep = min(maxBackoff, baseBackoff * 2 ^ attempt) * random(0.8, 1.2)
+    const exponential = Math.min(
+      this.maxBackoffMs,
+      this.baseBackoffMs * Math.pow(2, this.backoffAttempts)
+    );
+    const jitter = 0.8 + Math.random() * 0.4;
+    const delay = Math.floor(exponential * jitter);
+
+    console.info(`[YjsEngine] Reconnecting in ${delay}ms (attempt ${this.backoffAttempts})`);
+    setTimeout(() =&gt; this.connect(), delay);
+  }
+
+  private startHeartbeat(): void {
+    this.cleanupTimers();
+    this.heartbeatIntervalTimer = setInterval(() =&gt; {
+      if (this.ws &amp;&amp; this.ws.readyState === WebSocket.OPEN) {
+        const encoder = encoding.createEncoder();
+        encoding.writeVarUint(encoder, MESSAGE_HEARTBEAT);
+        this.sendRaw(encoding.toUint8Array(encoder));
+
+        // Start dead-man switch timer: fail if pong not returned within heartbeatTimeoutMs
+        this.heartbeatTimeoutTimer = setTimeout(() =&gt; {
+          console.warn(&quot;[YjsEngine] Heartbeat timeout. Severing stalled socket.&quot;);
+          if (this.ws) {
+            this.ws.close(4000, &quot;Heartbeat Timeout&quot;);
+          }
+        }, this.heartbeatTimeoutMs);
+      }
+    }, this.heartbeatIntervalMs);
+  }
+
+  private cleanupTimers(): void {
+    if (this.heartbeatIntervalTimer) {
+      clearInterval(this.heartbeatIntervalTimer);
+      this.heartbeatIntervalTimer = null;
+    }
+    if (this.heartbeatTimeoutTimer) {
+      clearTimeout(this.heartbeatTimeoutTimer);
+      this.heartbeatTimeoutTimer = null;
+    }
+  }
+
+  private handleLocalDocUpdate = (update: Uint8Array, origin: unknown): void =&gt; {
+    // Suppress loops: do not broadcast back updates originating from this engine instance
+    if (origin === this) {
+      return;
+    }
+
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.writeUpdate(encoder, update);
+    const serialized = encoding.toUint8Array(encoder);
+
+    if (this.state === &quot;SYNCED&quot; || this.state === &quot;CONNECTED&quot;) {
+      this.sendRaw(serialized);
+    } else {
+      this.offlineBuffer.push(serialized);
+    }
+  };
+
+  private handleLocalAwarenessUpdate = (
+    { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+    origin: unknown
+  ): void =&gt; {
+    if (origin === this) {
+      return;
+    }
+
+    const changedClients = added.concat(updated, removed);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(this.config.awareness, changedClients)
+    );
+    this.sendRaw(encoding.toUint8Array(encoder));
+  };
+
+  private sendRaw(data: Uint8Array): void {
+    if (this.ws &amp;&amp; this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    }
+  }
+
+  private transitionTo(newState: ConnectionState): void {
+    const oldState = this.state;
+    this.state = newState;
+    if (oldState !== newState) {
+      console.info(`[YjsEngine] State: ${oldState} -&gt; ${newState}`);
+    }
+  }
+
+  public destroy(): void {
+    this.config.doc.off(&quot;update&quot;, this.handleLocalDocUpdate);
+    this.config.awareness.off(&quot;update&quot;, this.handleLocalAwarenessUpdate);
+    this.disconnect();
+    this.offlineBuffer = [];
+  }
+}
+</code></pre>
+<hr />
+<h2>5. Production Engine: Edge Room Coordinator</h2>
+<p>Below is the complete server-side PartyKit / Edge Worker class. It coordinates the room lifecycle: hydrating state from snapshot and transactional logs on cold boot, processing binary updates, broadcasting awareness, debouncing disk writes, and running garbage collection during teardown.</p>
+<p>Save this implementation as <code>RoomCoordinator.ts</code>:</p>
+<p>```typescript
+import type * as Party from "partykit/server";
+import * as Y from "yjs";
+import * as syncProtocol from "y-protocols/sync";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as encoding from "lib0/encoding";
+import * as decoding from "lib0/decoding";</p>
+<p>const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
+const MESSAGE_HEARTBEAT = 2;</p>
+<p>export interface StorageDriver {
+  fetchLatestSnapshot(roomId: string): Promise<Uint8Array | null>;
+  saveSnapshot(roomId: string, data: Uint8Array): Promise<void>;
+  appendLogEntry(roomId: string, update: Uint8Array): Promise<void>;
+  drainLogEntries(roomId: string): Promise<Uint8Array[]>;
+}</p>
+<p>export default class RoomCoordinator implements Party.Server {
+  private doc: Y.Doc = new Y.Doc();
+  private awareness: awarenessProtocol.Awareness = new awarenessProtocol.Awareness(this.doc);
+  private isHydrated = false;
+  private pendingUpdatesCount = 0;
+  private flushDebounceTimer: ReturnType<typeof setTimeout> | null = null;</p>
+<p>constructor(readonly room: Party.Room) {}</p>
+<p>/**
+   * Cold-boot initialization: runs once per worker instance lifecycle.
+   */
+  async onStart(): Promise<void> {
+    await this.hydrateRoom();</p>
+<pre><code>// Hook internal doc events to manage local mutations and persistence accounting
+this.doc.on("update", (update: Uint8Array, origin: unknown) =&gt; {
+  // Avoid tracking updates sourced directly from storage hydration
+  if (origin === "storage-hydration") return;
+
+  this.pendingUpdatesCount++;
+  this.scheduleStorageFlush();
+});
+
+this.awareness.on("update", ({ added, updated, removed }, origin) =&gt; {
+  if (origin === "local") return;
+  const changed = added.concat(updated, removed);
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
+  encoding.writeVarUint8Array(
+    encoder,
+    awarenessProtocol.encodeAwarenessUpdate(this.awareness, changed)
+  );
+  this.room.broadcast(encoding.toUint8Array(encoder));
+});
+</code></pre>
+<p>}</p>
+<p>/**
+   * Handles incoming WebSocket connection upgrades.
+   */
+  async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): Promise<void> {
+    // Block connections until state hydration completes
+    if (!this.isHydrated) {
+      await this.hydrateRoom();
+    }</p>
+<pre><code>// Handshake: Send Step 1 to new client to query what it needs
+const encoder = encoding.createEncoder();
+encoding.writeVarUint(encoder, MESSAGE_SYNC);
+syncProtocol.writeSyncStep1(encoder, this.doc);
+conn.send(encoding.toUint8Array(encoder));
+
+// Send the current room awareness state
+const awarenessStates = this.awareness.getStates();
+if (awarenessStates.size &gt; 0) {
+  const awarenessEncoder = encoding.createEncoder();
+  encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS);
+  encoding.writeVarUint8Array(
+    awarenessEncoder,
+    awarenessProtocol.encodeAwarenessUpdate(
+      this.awareness,
+      Array.from(awarenessStates.keys())
+    )
+  );
+  conn.send(encoding.toUint8Array(awarenessEncoder));
+}
+</code></pre>
+<p>}</p>
+<p>/**
+   * Demuxes binary protocol messages received from clients.
+   */
+  onMessage(message: string | ArrayBuffer, sender: Party.Connection): void {
+    if (typeof message === "string") {
+      // In strict binary protocols, ignore plain text payloads
+      return;
+    }</p>
+<pre><code>const payload = new Uint8Array(message);
+const decoder = decoding.createDecoder(payload);
+const messageType = decoding.readVarUint(decoder);
+
+switch (messageType) {
+  case MESSAGE_SYNC: {
+    const replyEncoder = encoding.createEncoder();
+    encoding.writeVarUint(replyEncoder, MESSAGE_SYNC);
+
+    // Apply client update / process Step 1 or Step 2
+    syncProtocol.readSyncMessage(decoder, replyEncoder, this.doc, sender);
+
+    // If the syncProtocol output contains payload bytes, reply directly to sender
+    if (encoding.length(replyEncoder) &gt; 1) {
+      sender.send(encoding.toUint8Array(replyEncoder));
+    }
+
+    // Broadcast raw updates to all other peers in the room
+    this.room.broadcast(payload, [sender.id]);
+    break;
+  }
+
+  case MESSAGE_AWARENESS: {
+    const update = decoding.readVarUint8Array(decoder);
+    awarenessProtocol.applyAwarenessUpdate(this.awareness, update, sender);
+    // Echo to all connections except sender
+    this.room.broadcast(payload, [sender.id]);
+    break;
+  }
+
+  case MESSAGE_HEARTBEAT: {
+    // Echo heartbeat ping directly back to client as heartbeat pong
+    const echoEncoder = encoding.createEncoder();
+    encoding.writeVarUint(echoEncoder, MESSAGE_HEARTBEAT);
+    sender.send(encoding.toUint8Array(echoEncoder));
+    break;
+  }
+
+  default:
+    console.warn(`[RoomCoordinator] Unknown message type: ${messageType}`);
+}
+</code></pre>
+<p>}</p>
+<p>/**
+   * Cleanup awareness when clients disconnect.
+   */
+  onClose(connection: Party.Connection): void {
+    awarenessProtocol.removeAwarenessStates(
+      this.awareness,
+      [parseInt(connection.id, 10)],
+      "connection-closed"
+    );
+  }</p>
+<p>/**
+   * Cold Hydration pipeline: Snapshots + Write-Ahead Log playback.
+   */
+  private async hydrateRoom(): Promise<void> {
+    if (this.isHydrated) return;</p>
+<pre><code>try {
+  // Read binary snapshot from Edge Key-Value Durable Storage
+  const snapshot = await this.room.storage.get&lt;Uint8Array&gt;("base_snapshot");
+  if (snapshot) {
+    Y.applyUpdate(this.doc, snapshot, "storage-hydration");
+  }
+
+  // Replay all un-compacted WAL entries
+  const walEntries = (await this.room.storage.get&lt;Uint8Array[]&gt;("wal_log")) ?? [];
+  for (const entry of walEntries) {
+    Y.applyUpdate(this.doc, entry, "storage-hydration");
+  }
+
+  this.isHydrated = true;
+  console.info(`[RoomCoordinator] Room ${this.room.id} hydrated successfully.`);
+} catch (err) {
+  console.error(`[RoomCoordinator] Critical failure hydrating room ${this.room.id}:`, err);
+  throw err;
+}
+</code></pre>
+<p>}</p>
+<p>/**
+   * Batched/Debounced Flush to Durable Storage.
+   */
+  private scheduleStorageFlush(): void {
+    if (this.flushDebounceTimer) return;</p>
+<pre><code>this.flushDebounceTimer = setTimeout(async () =&gt; {
+  this.flushDebounceTimer = null;
+  await this.persistState();
+}, 2000); // Debounce interval: 2 seconds
+</code></pre>
+<p>}</p>
+<p>/**
+   * Performs Snapshot Compaction or WAL appends.
+   */
+  private async persistState(): Promise<void> {
+    // If pending updates exceed the compaction threshold, compress to a monolithic snapshot
+    if (this.pendingUpdatesCount &gt;= 200) {
+      const compactedBytes = Y.encodeStateAsUpdate(this.doc);
+      await this.room.storage.put("base_snapshot", compactedBytes);
+      await this.room.storage.delete("wal_log");
+      this.pendingUpdatesCount = 0;
+      console.info(<code>[RoomCoordinator] Compacted room ${this.room.id} into monolithic snapshot.</code>);
+    } else {
+      // Otherwise, save the full document state to storage
+      const snapshotBytes = Y.encodeStateAsUpdate(this.doc);
+      await this.room.storage.put("base_snapshot", snapshotBytes);
+      this.pendingUpdatesCount = 0;</p>
+</body>
+</html>

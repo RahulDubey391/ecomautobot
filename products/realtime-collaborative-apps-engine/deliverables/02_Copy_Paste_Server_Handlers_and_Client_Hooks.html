@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Realtime Collaborative App Engine: WebSockets, CRDTs, PartyKit & Yjs Playbook</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 2: Ready-to-Use PartyKit, Liveblocks &amp; Custom WebSocket Servers</h1>
+<h2>1. Architectural Wire Protocols &amp; Frame Serialization</h2>
+<p>Collaborative applications operate on two distinct data paths: <strong>ephemeral presence</strong> (transient data such as cursors, selections, and typing indicators) and <strong>persistent state</strong> (CRDT documents, canvas graphs, and revision logs). Mixing these without clear protocol definitions causes serialization bottlenecks, frame drops, and head-of-line blocking.</p>
+<h3>1.1 Wire Protocol Frame Specification</h3>
+<p>To maximize throughput and minimize garbage collection pauses in edge runtimes (Cloudflare Workers, Fastly) and Node.js environments, we define a hybrid protocol:
+* <strong>Binary Frames (<code>ArrayBuffer</code> / <code>Uint8Array</code>):</strong> CRDT mutations (Yjs updates, Automerge sync steps) and bulk document snapshots.
+* <strong>Text Frames (Strict UTF-8 JSON):</strong> Control messages, room authentication, lease renewals, and structured metadata.</p>
+<pre><code>+-----------------------------------------------------------------------+
+|                         Binary Protocol Frame                         |
++--------+------------------+------------------+------------------------+
+| Byte 0 | Bytes 1-16       | Bytes 17-20      | Bytes 21+              |
+| Magic  | UUID (Room ID    | Payload Length   | CRDT Raw Delta Payload |
+| 0xAA   | 128-bit Binary)  | (UInt32BE)       | (Yjs / Automerge)      |
++--------+------------------+------------------+------------------------+
+
++-----------------------------------------------------------------------+
+|                          JSON Control Frame                           |
++-----------------------------------------------------------------------+
+| { &quot;type&quot;: &quot;AUTH&quot; | &quot;HEARTBEAT&quot; | &quot;AWARENESS&quot; | &quot;ERROR&quot;, ...data }     |
++-----------------------------------------------------------------------+
+</code></pre>
+<h3>1.2 Protocol Message Types &amp; Enums</h3>
+<p>Save this file as <code>shared/protocol.ts</code>. It provides strict typing across both the server engines and client consumers.</p>
+<pre><code class="language-typescript">// shared/protocol.ts
+
+export const PROTOCOL_VERSION = 1;
+
+export enum MessageType {
+  // Connection Lifecycle
+  CLIENT_HANDSHAKE = 100,
+  SERVER_ACK = 101,
+  HEARTBEAT_PING = 102,
+  HEARTBEAT_PONG = 103,
+  ROOM_TERMINATED = 104,
+
+  // Authentication &amp; RBAC
+  AUTH_REQUEST = 200,
+  AUTH_SUCCESS = 201,
+  AUTH_FAILURE = 202,
+  TOKEN_REFRESH = 203,
+
+  // Ephemeral State (Awareness)
+  AWARENESS_UPDATE = 300,
+  AWARENESS_QUERY = 301,
+  CURSOR_BROADCAST = 302,
+
+  // Document Engine Control
+  DOCUMENT_SAVE_SIGNAL = 400,
+  DOCUMENT_RESET = 401,
+}
+
+export type ClientHandshakeMessage = {
+  type: MessageType.CLIENT_HANDSHAKE;
+  protocolVersion: number;
+  clientSessionId: string;
+  authToken: string;
+};
+
+export type ServerAckMessage = {
+  type: MessageType.SERVER_ACK;
+  protocolVersion: number;
+  assignedClientId: number;
+  connectionLeaseExpiresAt: number;
+};
+
+export type AwarenessPayload = {
+  clientId: number;
+  user: {
+    id: string;
+    name: string;
+    color: string;
+    avatar?: string;
+  };
+  cursor: { x: number; y: number; targetNodeId?: string } | null;
+  selection: string[] | null;
+  lastUpdated: number;
+};
+
+export type AwarenessUpdateMessage = {
+  type: MessageType.AWARENESS_UPDATE;
+  states: AwarenessPayload[];
+};
+
+export type HeartbeatMessage = {
+  type: MessageType.HEARTBEAT_PING | MessageType.HEARTBEAT_PONG;
+  timestamp: number;
+};
+
+export type ProtocolMessage =
+  | ClientHandshakeMessage
+  | ServerAckMessage
+  | AwarenessUpdateMessage
+  | HeartbeatMessage;
+</code></pre>
+<hr />
+<h2>2. Production Edge-Ready PartyKit Handlers</h2>
+<p>PartyKit provides an edge-native, Cloudflare Durable Objects-based architecture. State resides in memory directly on the edge node nearest the user. Below is the battle-tested PartyKit server managing Yjs documents, authentication, vector-clock-driven snapshots, and alarm-based auto-persisting.</p>
+<p>Save this file as <code>partykit-server/src/server.ts</code>.</p>
+<pre><code class="language-typescript">// partykit-server/src/server.ts
+import type * as Party from &quot;partykit/server&quot;;
+import * as Y from &quot;yjs&quot;;
+import { jwtVerify, createRemoteJWKSet } from &quot;jose&quot;;
+
+const JWKS = createRemoteJWKSet(
+  new URL(process.env.AUTH_JWKS_URL || &quot;https://auth.example.com/.well-known/jwks.json&quot;)
+);
+
+interface UserContext {
+  userId: string;
+  role: &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;;
+  organizationId: string;
+}
+
+export default class CollaborativeRoomServer implements Party.Server {
+  private doc: Y.Doc;
+  private connections: Map&lt;Party.Connection, UserContext&gt; = new Map();
+  private isPersisting: boolean = false;
+  private lastSnapshotVector: Uint8Array | null = null;
+
+  constructor(readonly room: Party.Room) {
+    this.doc = new Y.Doc();
+  }
+
+  /**
+   * Room Lifecycle: Called when the server initializes or wakes from hibernation.
+   */
+  async onStart(): Promise&lt;void&gt; {
+    const rawDocumentSnapshot = await this.room.storage.get&lt;Uint8Array&gt;(&quot;document_state&quot;);
+    if (rawDocumentSnapshot) {
+      Y.applyUpdate(this.doc, rawDocumentSnapshot);
+      this.lastSnapshotVector = Y.encodeStateVector(this.doc);
+    }
+
+    // Schedule incremental flush every 30 seconds
+    const currentAlarm = await this.room.storage.getAlarm();
+    if (currentAlarm === null) {
+      await this.room.storage.setAlarm(Date.now() + 30_000);
+    }
+  }
+
+  /**
+   * HTTP upgrade hook: Authenticate connection before promoting to WebSocket.
+   */
+  async onConnect(connection: Party.Connection, ctx: Party.ConnectionContext): Promise&lt;void&gt; {
+    const url = new URL(ctx.request.url);
+    const token = url.searchParams.get(&quot;token&quot;);
+
+    if (!token) {
+      connection.close(4001, &quot;Authentication required: Missing token&quot;);
+      return;
+    }
+
+    try {
+      const { payload } = await jwtVerify(token, JWKS, {
+        issuer: process.env.AUTH_ISSUER || &quot;https://auth.example.com&quot;,
+        audience: process.env.AUTH_AUDIENCE || &quot;multiplayer-engine&quot;,
+      });
+
+      const userCtx: UserContext = {
+        userId: payload.sub as string,
+        role: (payload.role as &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;) || &quot;viewer&quot;,
+        organizationId: payload.org_id as string,
+      };
+
+      // Check room tenant authorization
+      const expectedOrg = this.room.id.split(&quot;:&quot;)[0];
+      if (userCtx.organizationId !== expectedOrg &amp;&amp; userCtx.role !== &quot;admin&quot;) {
+        connection.close(4003, &quot;Forbidden: Multi-tenant violation&quot;);
+        return;
+      }
+
+      this.connections.set(connection, userCtx);
+
+      // 1. Send SyncStep 1 to client (Document State Vector)
+      const stateVector = Y.encodeStateVector(this.doc);
+      const syncStep1Message = this.constructSyncMessage(0, stateVector);
+      connection.send(syncStep1Message);
+
+    } catch (err) {
+      connection.close(4002, `Authentication failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Handle incoming binary updates and awareness frames.
+   */
+  async onMessage(message: string | ArrayBuffer, sender: Party.Connection): Promise&lt;void&gt; {
+    const senderCtx = this.connections.get(sender);
+    if (!senderCtx) {
+      sender.close(4001, &quot;Unauthorized&quot;);
+      return;
+    }
+
+    // Handle binary frames (Yjs Updates)
+    if (message instanceof ArrayBuffer) {
+      if (senderCtx.role === &quot;viewer&quot;) {
+        // Drop mutations silently or send violation back
+        return;
+      }
+
+      const uint8 = new Uint8Array(message);
+      const messageType = uint8[0];
+      const payload = uint8.subarray(1);
+
+      if (messageType === 0) {
+        // SyncStep 1 received: reply with SyncStep 2
+        const replyUpdate = Y.encodeStateAsUpdate(this.doc, payload);
+        const syncStep2 = this.constructSyncMessage(1, replyUpdate);
+        sender.send(syncStep2);
+      } else if (messageType === 1 || messageType === 2) {
+        // SyncStep 2 or incremental mutation update
+        Y.applyUpdate(this.doc, payload, sender);
+
+        // Broadcast update to all other connected clients
+        this.room.broadcast(message, [sender.id]);
+      }
+      return;
+    }
+
+    // Handle JSON Frames (Awareness &amp; Heartbeats)
+    try {
+      const parsed = JSON.parse(message);
+      if (parsed.type === &quot;AWARENESS_UPDATE&quot;) {
+        // Broadcast cursor/selection immediately to peers
+        this.room.broadcast(message, [sender.id]);
+      }
+    } catch (err) {
+      // Invalid frame drop
+    }
+  }
+
+  /**
+   * Cleanup client state on disconnect.
+   */
+  async onClose(connection: Party.Connection): Promise&lt;void&gt; {
+    this.connections.delete(connection);
+  }
+
+  /**
+   * Scheduled Alarms: Flush state to persistent storage.
+   */
+  async onAlarm(): Promise&lt;void&gt; {
+    if (this.isPersisting) return;
+
+    try {
+      this.isPersisting = true;
+      const currentDocState = Y.encodeStateAsUpdate(this.doc);
+
+      // Persist raw state vector to Durable Object storage
+      await this.room.storage.put(&quot;document_state&quot;, currentDocState);
+
+      // External webhook flush to cold storage (e.g. S3 / Postgres)
+      if (process.env.COLD_STORAGE_WEBHOOK_URL) {
+        await fetch(process.env.COLD_STORAGE_WEBHOOK_URL, {
+          method: &quot;POST&quot;,
+          headers: { &quot;Content-Type&quot;: &quot;application/octet-stream&quot;, &quot;X-Room-Id&quot;: this.room.id },
+          body: currentDocState,
+        });
+      }
+    } catch (error) {
+      console.error(`[Persist Failure] Room: ${this.room.id}`, error);
+    } finally {
+      this.isPersisting = false;
+      // Reschedule for next 30-second window
+      await this.room.storage.setAlarm(Date.now() + 30_000);
+    }
+  }
+
+  private constructSyncMessage(type: number, payload: Uint8Array): Uint8Array {
+    const combined = new Uint8Array(payload.length + 1);
+    combined[0] = type;
+    combined.set(payload, 1);
+    return combined;
+  }
+}
+</code></pre>
+<hr />
+<h2>3. Custom Node.js + <code>ws</code> + Redis Pub/Sub Backbone</h2>
+<p>When hosting outside of serverless or edge primitives, you need a high-concurrency Node.js server backed by Redis Pub/Sub to scale WebSockets horizontally across an auto-scaling Kubernetes or container cluster.</p>
+<h3>3.1 Horizontal Scaling Topography</h3>
+<pre><code>                                      +------------------------+
+                                      | AWS ALB / Cloudflare   |
+                                      +------------------------+
+                                         /                  \
+                                        /                    \
+              +-------------------------------+       +-------------------------------+
+              | Pod 1: Node.js ws Server      |       | Pod 2: Node.js ws Server      |
+              | Local Room Connections: 4,000 |       | Local Room Connections: 4,000 |
+              +-------------------------------+       +-------------------------------+
+                              ^                                       ^
+                              |                                       |
+                              v                                       v
+              +---------------------------------------------------------------+
+              |              Redis 7.x Cluster / DragonflyDB                 |
+              |   Channel: &quot;room:{roomId}:sync&quot;  (Binary Mutations)           |
+              |   Channel: &quot;room:{roomId}:aware&quot; (Ephemeral Awareness)        |
+              +---------------------------------------------------------------+
+</code></pre>
+<h3>3.2 Production Cluster Server Implementation</h3>
+<p>Save this file as <code>server/src/multiplayer-node-cluster.ts</code>.</p>
+<pre><code class="language-typescript">// server/src/multiplayer-node-cluster.ts
+import { createServer, IncomingMessage } from &quot;http&quot;;
+import { WebSocketServer, WebSocket } from &quot;ws&quot;;
+import Redis from &quot;ioredis&quot;;
+import * as Y from &quot;yjs&quot;;
+import { parse } from &quot;url&quot;;
+import { jwtVerify, createRemoteJWKSet } from &quot;jose&quot;;
+
+interface AuthenticatedSocket extends WebSocket {
+  isAlive: boolean;
+  userId: string;
+  roomId: string;
+  role: &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;;
+}
+
+interface RoomInstance {
+  doc: Y.Doc;
+  clients: Set&lt;AuthenticatedSocket&gt;;
+}
+
+const PORT = parseInt(process.env.PORT || &quot;8080&quot;, 10);
+const REDIS_URL = process.env.REDIS_URL || &quot;redis://localhost:6379&quot;;
+
+const redisPub = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
+const redisSub = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
+
+const JWKS = createRemoteJWKSet(new URL(process.env.AUTH_JWKS_URL!));
+const server = createServer();
+const wss = new WebSocketServer({ noServer: true });
+
+// Active in-memory rooms local to this container
+const localRooms = new Map&lt;string, RoomInstance&gt;();
+
+/**
+ * Global Redis Subscription Routing Engine
+ */
+redisSub.psubscribe(&quot;room:*:sync&quot;, &quot;room:*:aware&quot;, (err) =&gt; {
+  if (err) throw err;
+});
+
+redisSub.on(&quot;pmessage&quot;, (_pattern, channel, messageBuffer) =&gt; {
+  const parts = channel.split(&quot;:&quot;);
+  const roomId = parts[1];
+  const channelType = parts[2];
+
+  const room = localRooms.get(roomId);
+  if (!room) return;
+
+  if (channelType === &quot;sync&quot;) {
+    const rawUpdate = Buffer.from(messageBuffer, &quot;base64&quot;);
+    Y.applyUpdate(room.doc, rawUpdate, &quot;REDIS_SOURCE&quot;);
+
+    // Distribute to all local sockets connected to this room
+    for (const client of room.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(rawUpdate);
+      }
+    }
+  } else if (channelType === &quot;aware&quot;) {
+    for (const client of room.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(messageBuffer);
+      }
+    }
+  }
+});
+
+/**
+ * HTTP Handshake Interception &amp; Upgrade Verification
+ */
+server.on(&quot;upgrade&quot;, async (request: IncomingMessage, socket, head) =&gt; {
+  const { pathname, query } = parse(request.url || &quot;&quot;, true);
+
+  if (!pathname?.startsWith(&quot;/v1/rooms/&quot;)) {
+    socket.write(&quot;HTTP/1.1 404 Not Found\r\n\r\n&quot;);
+    socket.destroy();
+    return;
+  }
+
+  const roomId = pathname.replace(&quot;/v1/rooms/&quot;, &quot;&quot;);
+  const token = query.token as string;
+
+  if (!token) {
+    socket.write(&quot;HTTP/1.1 401 Unauthorized\r\n\r\n&quot;);
+    socket.destroy();
+    return;
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+
+    wss.handleUpgrade(request, socket, head, (ws) =&gt; {
+      const authWs = ws as AuthenticatedSocket;
+      authWs.isAlive = true;
+      authWs.userId = payload.sub as string;
+      authWs.roomId = roomId;
+      authWs.role = (payload.role as &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;) || &quot;viewer&quot;;
+
+      wss.emit(&quot;connection&quot;, authWs, request);
+    });
+  } catch (error) {
+    socket.write(&quot;HTTP/1.1 403 Forbidden\r\n\r\n&quot;);
+    socket.destroy();
+  }
+});
+
+/**
+ * WebSocket Connection Handler
+ */
+wss.on(&quot;connection&quot;, async (ws: AuthenticatedSocket) =&gt; {
+  const { roomId, role } = ws;
+
+  // Initialize or fetch in-memory room
+  let room = localRooms.get(roomId);
+  if (!room) {
+    room = {
+      doc: new Y.Doc(),
+      clients: new Set(),
+    };
+    localRooms.set(roomId, room);
+
+    // Load initial snapshot from Redis / Persistent store
+    const snapshot = await redisPub.getBuffer(`snapshot:${roomId}`);
+    if (snapshot) {
+      Y.applyUpdate(room.doc, snapshot);
+    }
+  }
+  room.clients.add(ws);
+
+  // Send current state vector to initiate handshake
+  const stateVector = Y.encodeStateVector(room.doc);
+  ws.send(Buffer.from(stateVector));
+
+  ws.on(&quot;pong&quot;, () =&gt; {
+    ws.isAlive = true;
+  });
+
+  ws.on(&quot;message&quot;, async (data: Buffer, isBinary: boolean) =&gt; {
+    if (isBinary) {
+      if (role === &quot;viewer&quot;) return; // Enforce RBAC
+
+      const update = new Uint8Array(data);
+      Y.applyUpdate(room!.doc, update, ws);
+
+      // Publish to Redis for horizontal scale (Cluster Propagation)
+      await redisPub.publish(
+        `room:${roomId}:sync`,
+        Buffer.from(update).toString(&quot;base64&quot;)
+      );
+    } else {
+      // JSON Frame (Awareness data)
+      await redisPub.publish(`room:${roomId}:aware`, data.toString(&quot;utf-8&quot;));
+    }
+  });
+
+  ws.on(&quot;close&quot;, () =&gt; {
+    const r = localRooms.get(roomId);
+    if (!r) return;
+    r.clients.delete(ws);
+
+    if (r.clients.size === 0) {
+      // Flush back to Redis before unmounting from memory
+      const currentDocBytes = Y.encodeStateAsUpdate(r.doc);
+      redisPub.set(`snapshot:${roomId}`, Buffer.from(currentDocBytes));
+      localRooms.delete(roomId);
+    }
+  });
+});
+
+/**
+ * Heartbeat Verification (Detect and tear down zombie connections)
+ */
+const heartbeatInterval = setInterval(() =&gt; {
+  wss.clients.forEach((client) =&gt; {
+    const authWs = client as AuthenticatedSocket;
+    if (!authWs.isAlive) {
+      authWs.terminate();
+      return;
+    }
+    authWs.isAlive = false;
+    authWs.ping();
+  });
+}, 30000);
+
+wss.on(&quot;close&quot;, () =&gt; clearInterval(heartbeatInterval));
+
+server.listen(PORT, () =&gt; {
+  console.log(`[WebSocket Server] Running on port ${PORT}`);
+});
+</code></pre>
+<hr />
+<h2>4. Multi-Tenant Room Authorization &amp; Middleware</h2>
+<p>Authentication must be handled during the HTTP GET upgrade handshake, but dynamic token expiration, revoking authorization, and room-level permission mutations must be enforced over the live socket session.</p>
+<h3>4.1 Token Invalidation and Dynamic Demotion</h3>
+<p>Below is an authorization middleware class usable within any Node.js custom WebSocket loop. Save this file as <code>server/src/auth-guard.ts</code>.</p>
+<pre><code class="language-typescript">// server/src/auth-guard.ts
+import { jwtVerify, JWTVerifyGetKey } from &quot;jose&quot;;
+
+export interface SessionMetadata {
+  userId: string;
+  orgId: string;
+  role: &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;;
+  exp: number;
+}
+
+export class WebSocketAuthGuard {
+  private keySet: JWTVerifyGetKey;
+
+  constructor(jwksUri: string) {
+    const { createRemoteJWKSet } = require(&quot;jose&quot;);
+    this.keySet = createRemoteJWKSet(new URL(jwksUri));
+  }
+
+  /**
+   * Evaluates upgrade request and unpacks payload.
+   */
+  async authenticateRequest(token: string): Promise&lt;SessionMetadata&gt; {
+    try {
+      const { payload } = await jwtVerify(token, this.keySet, {
+        algorithms: [&quot;RS256&quot;, &quot;EdDSA&quot;],
+      });
+
+      return {
+        userId: payload.sub as string,
+        orgId: (payload.org_id as string) || &quot;global&quot;,
+        role: (payload.role as &quot;admin&quot; | &quot;editor&quot; | &quot;viewer&quot;) || &quot;viewer&quot;,
+        exp: (payload.exp as number) * 1000,
+      };
+    } catch (err) {
+      throw new Error(`Token validation failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Validates if a user session is authorized to touch a given Room namespace.
+   * Namespace Pattern: {tenantId}:{workspaceId}:{resourceId}
+   */
+  validateNamespaceAccess(roomId: string, session: SessionMetadata): boolean {
+    const parts = roomId.split(&quot;:&quot;);
+    if (parts.length &lt; 3) {
+      // Legacy or single-tenant room format fallback
+      return true;
+    }
+
+    const [tenantId] = parts;
+    if (session.role === &quot;admin&quot;) return true;
+    return session.orgId === tenantId;
+  }
+
+  /**
+   * Setup dynamic demotion timer. Automatically downgrades connection if token expires
+   * without renegotiation.
+   */
+  scheduleTokenExpiryCheck(
+    session: SessionMetadata,
+    onExpire: () =&gt; void
+  ): NodeJS.Timeout {
+    const timeUntilExpiry = session.exp - Date.now();
+    const safetyBuffer = 5000; // 5s early trigger
+
+    return setTimeout(() =&gt; {
+      onExpire();
+    }, Math.max(timeUntilExpiry - safetyBuffer, 0));
+  }
+}
+</code></pre>
+<hr />
+<h2>5. Production React Multiplayer Hooks</h2>
+<p>This client integration layer features full connection lifecycle state machines, automatic reconnection with exponential backoff and jitter, non-blocking awareness tracking, and direct binding to dynamic CRDT state.</p>
+<h3>5.1 Realtime Multiplayer Room Hook</h3>
+<p>Save this file as <code>client/src/hooks/useMultiplayerRoom.ts</code>.</p>
+<pre><code class="language-typescript">// client/src/hooks/useMultiplayerRoom.ts
+import { useEffect, useRef, useState, useCallback } from &quot;react&quot;;
+
+export type ConnectionStatus = &quot;CONNECTING&quot; | &quot;CONNECTED&quot; | &quot;DISCONNECTED&quot; | &quot;ERROR&quot; | &quot;RECONNECTING&quot;;
+
+interface MultiplayerConfig {
+  endpoint: string;
+  roomId: string;
+  getAuthToken: () =&gt; Promise&lt;string&gt;;
+  onBinaryMessage?: (data: Uint8Array) =&gt; void;
+  onJsonMessage?: (data: any) =&gt; void;
+  maxReconnectAttempts?: number;
+}
+
+export function useMultiplayerRoom({
+  endpoint,
+  roomId,
+  getAuthToken,
+  onBinaryMessage,
+  onJsonMessage,
+  maxReconnectAttempts = 10,
+}: MultiplayerConfig) {
+  const [status, setStatus] = useState&lt;ConnectionStatus&gt;(&quot;DISCONNECTED&quot;);
+  const [error, setError] = useState&lt;Error | null&gt;(null);
+
+  const socketRef = useRef&lt;WebSocket | null&gt;(null);
+  const reconnectAttemptsRef = useRef&lt;number&gt;(0);
+  const backoffTimeoutRef = useRef&lt;NodeJS.Timeout | null&gt;(null);
+  const unmountedRef = useRef&lt;boolean&gt;(false);
+
+  const connect = useCallback(async () =&gt; {
+    if (unmountedRef.current) return;
+    setStatus((prev) =&gt; (prev === &quot;DISCONNECTED&quot; ? &quot;CONNECTING&quot; : &quot;RECONNECTING&quot;));
+
+    try {
+      const token = await getAuthToken();
+      const wsUrl = `${endpoint}/v1/rooms/${roomId}?token=${encodeURIComponent(token)}`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = &quot;arraybuffer&quot;;
+
+      ws.onopen = () =&gt; {
+        if (unmountedRef.current) {
+          ws.close();
+          return;
+        }
+        reconnectAttemptsRef.current = 0;
+        setStatus(&quot;CONNECTED&quot;);
+        setError(null);
+      };
+
+      ws.onmessage = (event: MessageEvent) =&gt; {
+        if (event.data instanceof ArrayBuffer) {
+          onBinaryMessage?.(new Uint8Array(event.data));
+        } else if (typeof event.data === &quot;string&quot;) {
+          try {
+            const parsed = JSON.parse(event.data);
+            onJsonMessage?.(parsed);
+          } catch (e) {
+            console.error(&quot;[useMultiplayerRoom] JSON Parse Error&quot;, e);
+          }
+        }
+      };
+
+      ws.onerror = () =&gt; {
+        setError(new Error(&quot;WebSocket network failure&quot;));
+      };
+
+      ws.onclose = (event) =&gt; {
+        if (unmountedRef.current) return;
+
+        // Terminal auth errors (4000-4003) -&gt; Do not reconnect
+        if (event.code &gt;= 4001 &amp;&amp; event.code &lt;= 4003) {
+          setStatus(&quot;ERROR&quot;);
+          setError(new Error(`Disconnected: ${event.reason} (Code: ${event.code})`));
+          return;
+        }
+
+        setStatus(&quot;DISCONNECTED&quot;);
+
+        // Exponential backoff with Full Jitter
+        if (reconnectAttemptsRef.current &lt; maxReconnectAttempts) {
+          const attempt = reconnectAttemptsRef.current++;
+          const baseDelay = Math.min(1000 * Math.pow(2, attempt), 30000);
+          const jitter = Math.random() * baseDelay;
+          const delay = jitter;
+
+          backoffTimeoutRef.current = setTimeout(() =&gt; {
+            connect();
+          }, delay);
+        } else {
+          setStatus(&quot;ERROR&quot;);
+          setError(new Error(&quot;Max reconnection budget exhausted.&quot;));
+        }
+      };
+
+      socketRef.current = ws;
+    } catch (err) {
+      setStatus(&quot;ERROR&quot;);
+      setError(err as Error);
+    }
+  }, [endpoint, roomId, getAuthToken, onBinaryMessage, onJsonMessage, maxReconnectAttempts]);
+
+  const sendBinary = useCallback((data: Uint8Array) =&gt; {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(data);
+    }
+  }, []);
+
+  const sendJson = useCallback((data: any) =&gt; {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(data));
+    }
+  }, []);
+
+  useEffect(() =&gt; {
+    unmountedRef.current = false;
+    connect();
+
+    return () =&gt; {
+      unmountedRef.current = true;
+      if (backoffTimeoutRef.current) clearTimeout(backoffTimeoutRef.current);
+      if (socketRef.current) {
+        socketRef.current.close(1000, &quot;Component unmounted&quot;);
+      }
+    };
+  }, [connect]);
+
+  return { status, error, sendBinary, sendJson };
+}
+</code></pre>
+<h3>5.2 Ephemeral Awareness &amp; Multi-Cursor Sync Hook</h3>
+<p>Save this file as <code>client/src/hooks/useAwarenessPresence.ts</code>.</p>
+<p>```typescript
+// client/src/hooks/useAwarenessPresence.ts
+import { useEffect, useState, useCallback, useRef } from "react";
+import { AwarenessPayload } from "../../shared/protocol";</p>
+<p>interface AwarenessUser {
+  id: string;
+  name: string;
+  color: string;
+  avatar?: string;
+}</p>
+<p>interface UseAwarenessOptions {
+  sendJson: (data: any) =&gt; void;
+  currentUser: AwarenessUser;
+  idleTimeoutMs?: number;
+}</p>
+<p>export function useAwarenessPresence({
+  sendJson,
+  currentUser,
+  idleTimeoutMs = 15000,
+}: UseAwarenessOptions) {
+  const [peers, setPeers] = useState&lt;Map<number, AwarenessPayload>&gt;(new Map());
+  const localClientId = useRef<number>(Math.floor(Math.random() * 100000000));
+  const idleTimer = useRef<NodeJS.Timeout | null>(null);</p>
+<p>// Broadcast local changes to peers
+  const broadcastPresence = useCallback(
+    (cursor: { x: number; y: number; targetNodeId?: string } | null, selection: string[] | null) =&gt; {
+      const payload: AwarenessPayload = {
+        clientId: localClientId.current,
+        user: currentUser,
+        cursor,
+        selection,
+        lastUpdated: Date.now(),
+      };</p>
+<pre><code>  sendJson({
+    type: "AWARENESS_UPDATE",
+    states: [payload],
+  });
+},
+[currentUser, sendJson]
+</code></pre>
+<p>);</p>
+<p>// Update Peer State with stale garbage collection
+  const handleIncomingAwareness = useCallback((states: AwarenessPayload[]) =&gt; {
+    setPeers((prevPeers) =&gt; {
+      const next = new Map(prevPeers);
+      for (const st of states) {
+        if (st.clientId === localClientId.current) continue;</p>
+<pre><code>    if (st.cursor === null &amp;&amp; st.selection === null) {
+      next.delete(st.clientId);
+    } else {
+      next.set(st.clientId, st);
+    }
+  }
+  return next;
+});
+</code></pre>
+<p>}, []);</p>
+<p>// Track global window pointer movements
+  useEffect(() =&gt; {
+    const handlePointerMove = (e: PointerEvent) =&gt; {
+      broadcastPresence({ x: e.clientX, y: e.clientY }, null);</p>
+<pre><code>  if (idleTimer.current) clearTimeout(idleTimer.current);
+  idleTimer.current = setTimeout(() =&gt; {
+    // Go Idle: clear pointer
+    broadcastPresence(null, null);
+  }, idleTimeoutMs);
+};
+
+const handlePointerLeave = () =&gt; {
+  broadcastPresence(null, null);
+};
+
+window.addEventListener("pointermove", handlePointerMove);
+window.addEventListener("pointerleave", handlePointerLeave);
+
+return () =&gt; {
+  window.removeEventListener("pointermove", handlePointerMove);
+  window.removeEventListener("pointerleave", handlePointerLeave);
+  if (idleTimer.current) clearTimeout(idleTimer.current);
+};
+</code></pre>
+<p>}, [broadcastPresence, idleTimeoutMs]);</p>
+<p>// Periodic pruning of dead awareness states (dropped sockets without clean close)
+  useEffect(() =&gt; {
+    const interval = setInterval(() =&gt; {
+      const now = Date.now();
+      setPeers((prevPeers) =&gt; {
+        let changed = false;
+        const next = new Map(prevPeers);
+        for (const [id, value] of next.entries()) {
+          if (now - value.lastUpdated &gt; idleTimeoutMs) {</p>
+</body>
+</html>

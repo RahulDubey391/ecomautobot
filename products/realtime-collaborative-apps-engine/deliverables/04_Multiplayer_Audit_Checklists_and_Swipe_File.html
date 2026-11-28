@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Realtime Collaborative App Engine: WebSockets, CRDTs, PartyKit & Yjs Playbook</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      max-width: 820px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    h1, h2, h3 { color: #0f172a; }
+    h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    blockquote {
+      border-left: 4px solid #6366f1;
+      background: #f8fafc;
+      margin: 16px 0;
+      padding: 12px 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+<h1>Module 4: Master Stress-Testing Rubrics, Network Chaos Audits &amp; Swipe File</h1>
+<p>High-concurrency collaborative engines built on WebSockets, CRDTs (Conflict-free Replicated Data Types like Yjs), and edge state runtimes (such as Cloudflare Workers or PartyKit) fail in fundamentally different ways than traditional request-response architectures. A stateless REST API degrades by slowing down; a distributed real-time CRDT engine degrades through memory-leaking document histories, state vector serialization deadlocks, thundering herd reconnections, and split-brain document states.</p>
+<p>This document serves as your operational blueprint for auditing, hardening, stress-testing, and debugging production-grade collaborative engines.</p>
+<hr />
+<h2>1. Production Scaling &amp; Pre-Flight Architecture Audit Checklist</h2>
+<p>Before releasing any collaborative canvas, rich-text suite, or multiplayer spatial engine to production, every layer of the infrastructure must pass the thresholds defined below.</p>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+| PRE-FLIGHT AUDIT GATES                                                                            |
++--------------------------------+--------------------------------+---------------------------------+
+| 1. DOCUMENT BOUNDARIES         | 2. EDGE WEBSOCKET LIMITS       | 3. PERSISTENCE &amp; COMPACTION     |
+| • Max Doc History: &lt; 50MB      | • Mem/Conn: &lt; 35KB base        | • Snapshot Frequency: 5 min     |
+| • Tombstone Ratio: &lt; 25%       | • Heartbeat: 30s ping/pong     | • Compaction Delta: 100 updates |
+| • Subdoc Splitting: &gt; 500 items| • Max Egress/Client: &lt; 128KB/s | • Storage Write Queue: Backoff  |
++--------------------------------+--------------------------------+---------------------------------+
+</code></pre>
+<h3>1.1 Document Sizing and Memory Limits</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric / Check</th>
+<th style="text-align: left;">Target Threshold</th>
+<th style="text-align: left;">Critical Warning Threshold</th>
+<th style="text-align: left;">Remediation Plan</th>
+<th style="text-align: left;">Verification Command / Script</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Y.Doc In-Memory Footprint</strong></td>
+<td style="text-align: left;"><code>&lt; 15 MB</code> active</td>
+<td style="text-align: left;"><code>&gt; 50 MB</code> per room</td>
+<td style="text-align: left;">Implement dynamic subdocument splitting (<code>Y.Doc</code> nested in <code>Y.Map</code>) or purge non-retained transaction metadata.</td>
+<td style="text-align: left;"><code>node -e "const Y=require('yjs'); const d=new Y.Doc(); console.log(process.memoryUsage().heapUsed);"</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Transaction History Tombstones</strong></td>
+<td style="text-align: left;"><code>&lt; 15%</code> of total item count</td>
+<td style="text-align: left;"><code>&gt; 35%</code> total deleted structures</td>
+<td style="text-align: left;">Enforce document compaction via <code>Y.encodeStateAsUpdate()</code> and re-seed from a flattened snapshot.</td>
+<td style="text-align: left;">Inspect item tree: <code>doc.store.clients.forEach((c) =&gt; c.forEach(item =&gt; total++))</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>State Vector Size</strong></td>
+<td style="text-align: left;"><code>&lt; 2 KB</code></td>
+<td style="text-align: left;"><code>&gt; 8 KB</code> (indicates client ID churn)</td>
+<td style="text-align: left;">Client IDs are leaking. Enforce deterministic client ID pooling or recycle ephemeral peer sessions.</td>
+<td style="text-align: left;"><code>Buffer.byteLength(Y.encodeStateVector(doc))</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Subdocument Count</strong></td>
+<td style="text-align: left;"><code>&lt; 200</code> per root doc</td>
+<td style="text-align: left;"><code>&gt; 1,000</code> loaded simultaneously</td>
+<td style="text-align: left;">Implement lazy loading: load subdocs via <code>subdoc.load()</code> only when their nodes enter the client viewport.</td>
+<td style="text-align: left;"><code>doc.getSubdocs().size</code></td>
+</tr>
+</tbody>
+</table>
+<h3>1.2 WebSocket Gateway &amp; Edge Concurrency</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric / Check</th>
+<th style="text-align: left;">Target Threshold</th>
+<th style="text-align: left;">Critical Warning Threshold</th>
+<th style="text-align: left;">Remediation Plan</th>
+<th style="text-align: left;">Verification Command / Script</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Memory per Idle Connection</strong></td>
+<td style="text-align: left;"><code>&lt; 30 KB</code></td>
+<td style="text-align: left;"><code>&gt; 85 KB</code></td>
+<td style="text-align: left;">Disable per-socket JSON parsers. Use raw ArrayBuffers and shared typed buffers; offload awareness parsing.</td>
+<td style="text-align: left;">Inspect heap snapshot: target <code>WebSocket</code> and <code>SocketProcessor</code> retainers.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Heartbeat Jitter Tolerance</strong></td>
+<td style="text-align: left;">30s interval, 5s timeout</td>
+<td style="text-align: left;">Fixed interval without jitter</td>
+<td style="text-align: left;">Shift heartbeats to client-side detection using dual-interval ping/pong with randomized <code>±10%</code> jitter.</td>
+<td style="text-align: left;">Stress test using <code>k6/ws</code> with drop-packet injection.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Max Room Broadcast Concurrency</strong></td>
+<td style="text-align: left;">50 active broadcasters</td>
+<td style="text-align: left;"><code>&gt; 150</code> active broadcasters</td>
+<td style="text-align: left;">Implement awareness throttling (limit pointer broadcasts to 30Hz) and spatial partitioning (quadtrees).</td>
+<td style="text-align: left;">Run Locust/k6 headless clients broadcasting coordinates at 60Hz.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Connection Handshake Latency</strong></td>
+<td style="text-align: left;"><code>p95 &lt; 80ms</code> (Edge)</td>
+<td style="text-align: left;"><code>p95 &gt; 350ms</code></td>
+<td style="text-align: left;">Route connections to nearest edge point-of-presence (PartyKit / Cloudflare Durable Objects).</td>
+<td style="text-align: left;"><code>curl -w "Connect: %{time_connect} TTFB: %{time_starttransfer}\n" -o /dev/null -s https://[edge-url]</code></td>
+</tr>
+</tbody>
+</table>
+<h3>1.3 Persistence, Snapshots, and Compaction</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric / Check</th>
+<th style="text-align: left;">Target Threshold</th>
+<th style="text-align: left;">Critical Warning Threshold</th>
+<th style="text-align: left;">Remediation Plan</th>
+<th style="text-align: left;">Verification Command / Script</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Compaction Write Latency</strong></td>
+<td style="text-align: left;"><code>p99 &lt; 150ms</code></td>
+<td style="text-align: left;"><code>p99 &gt; 800ms</code></td>
+<td style="text-align: left;">Write snapshots to S3/R2 asynchronously via write-ahead logging (WAL) buffered in a local Durable Object/Redis buffer.</td>
+<td style="text-align: left;">Monitor edge storage write duration via OpenTelemetry spans.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Snapshot Rehydration Time</strong></td>
+<td style="text-align: left;"><code>&lt; 50ms</code> on cold start</td>
+<td style="text-align: left;"><code>&gt; 250ms</code></td>
+<td style="text-align: left;">Store fully compacted updates; never rehydrate through raw sequential transaction loops.</td>
+<td style="text-align: left;"><code>console.time('hydrate'); Y.applyUpdate(doc, snapshot); console.timeEnd('hydrate');</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Uncompacted Update Count</strong></td>
+<td style="text-align: left;"><code>&lt; 100</code> appended rows</td>
+<td style="text-align: left;"><code>&gt; 1,000</code> appended rows</td>
+<td style="text-align: left;">Trigger automatic background consolidation when appending to document update logs in Postgres/DynamoDB.</td>
+<td style="text-align: left;"><code>SELECT room_id, count(*) FROM doc_updates GROUP BY room_id HAVING count(*) &gt; 100;</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>2. Reconnection Backoff &amp; Network Chaos Matrix</h2>
+<p>When edge network partitions occur, naive clients will trigger a <strong>thundering herd problem</strong> by simultaneously reconnecting and blasting large state vectors at the gateway, collapsing the edge nodes.</p>
+<h3>2.1 Reconnection Strategy Matrix</h3>
+<pre><code>Delay (ms)
+  ^
+  |                                     Full Jitter: UniformRandom(0, Min(Cap, Base * 2^attempt))
+Cap|-----------------------------------*--*----*------
+  |                                  *
+  |                           *     *   *
+  |                     *          *
+  |              *           *
+Base|______*_____*_____________________________________&gt; Attempts
+</code></pre>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Strategy</th>
+<th style="text-align: left;">Formula</th>
+<th style="text-align: left;">Pros</th>
+<th style="text-align: left;">Cons</th>
+<th style="text-align: left;">Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Fixed Interval</strong></td>
+<td style="text-align: left;">$t = \text{Base}$</td>
+<td style="text-align: left;">Simple to trace</td>
+<td style="text-align: left;">Thundering herd guaranteed; edge nodes crash on multi-client disconnect.</td>
+<td style="text-align: left;"><strong>FORBIDDEN</strong> in production.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Pure Exponential</strong></td>
+<td style="text-align: left;">$t = \min(\text{Cap}, \text{Base} \times 2^{\text{attempt}})$</td>
+<td style="text-align: left;">Mitigates simple collisions</td>
+<td style="text-align: left;">Creates harmonic synchronization spikes across reconnection pools.</td>
+<td style="text-align: left;">Not recommended.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Full Jitter</strong></td>
+<td style="text-align: left;">$t = \text{random}(0, \min(\text{Cap}, \text{Base} \times 2^{\text{attempt}}))$</td>
+<td style="text-align: left;">Maximally distributes edge load; breaks synchronization locks instantly.</td>
+<td style="text-align: left;">Initial retries might reconnect excessively fast without a small floor.</td>
+<td style="text-align: left;"><strong>STANDARD OPTION</strong> for room-based sync.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Decorrelated Jitter</strong></td>
+<td style="text-align: left;">$t = \min(\text{Cap}, \text{random}(\text{Base}, t_{\text{prev}} \times 3))$</td>
+<td style="text-align: left;">Balances quick recovery with complete entropy; optimal for canvas/presence.</td>
+<td style="text-align: left;">Slightly higher memory retention on client (tracks state variable).</td>
+<td style="text-align: left;"><strong>OPTIMAL CHOICE</strong> for high-frequency multiplayer.</td>
+</tr>
+</tbody>
+</table>
+<h3>2.2 Production Reconnection Engine</h3>
+<p>This drop-in, zero-dependency client implements <strong>Decorrelated Jitter</strong>, offline transaction queuing, document state preservation, and payload compaction during network partitions.</p>
+<pre><code class="language-typescript">// ProductionReconnectingSocket.ts
+export type ConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING';
+
+export interface SocketConfig {
+  url: string;
+  protocols?: string[];
+  baseDelayMs: number;
+  maxDelayMs: number;
+  maxQueueSize: number;
+  heartbeatIntervalMs: number;
+  heartbeatTimeoutMs: number;
+  onOpen?: () =&gt; void;
+  onMessage?: (data: ArrayBuffer) =&gt; void;
+  onStateChange?: (state: ConnectionState) =&gt; void;
+}
+
+export class ProductionReconnectingSocket {
+  private ws: WebSocket | null = null;
+  private state: ConnectionState = 'DISCONNECTED';
+  private attempts = 0;
+  private prevDelay: number;
+  private queue: Uint8Array[] = [];
+  private heartbeatTimer: ReturnType&lt;typeof setInterval&gt; | null = null;
+  private heartbeatWatchdog: ReturnType&lt;typeof setTimeout&gt; | null = null;
+  private intentionallyClosed = false;
+
+  constructor(private readonly config: SocketConfig) {
+    this.prevDelay = config.baseDelayMs;
+  }
+
+  public connect(): void {
+    if (this.state === 'CONNECTED' || this.state === 'CONNECTING') return;
+
+    this.intentionallyClosed = false;
+    this.updateState(this.attempts === 0 ? 'CONNECTING' : 'RECONNECTING');
+
+    try {
+      this.ws = new WebSocket(this.config.url, this.config.protocols);
+      this.ws.binaryType = 'arraybuffer';
+      this.bindSocketEvents();
+    } catch (err) {
+      this.scheduleReconnect();
+    }
+  }
+
+  public send(payload: Uint8Array): void {
+    if (this.state === 'CONNECTED' &amp;&amp; this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(payload);
+    } else {
+      this.enqueuePayload(payload);
+    }
+  }
+
+  public disconnect(): void {
+    this.intentionallyClosed = true;
+    this.clearTimers();
+    if (this.ws) {
+      this.ws.close(1000, 'Normal Closure');
+      this.ws = null;
+    }
+    this.updateState('DISCONNECTED');
+  }
+
+  private bindSocketEvents(): void {
+    if (!this.ws) return;
+
+    this.ws.onopen = () =&gt; {
+      this.updateState('CONNECTED');
+      this.attempts = 0;
+      this.prevDelay = this.config.baseDelayMs;
+      this.startHeartbeat();
+      this.flushQueue();
+      this.config.onOpen?.();
+    };
+
+    this.ws.onmessage = (event: MessageEvent) =&gt; {
+      this.resetHeartbeatWatchdog();
+      if (event.data instanceof ArrayBuffer) {
+        // Intercept internal 1-byte PONG packet (0xFF)
+        const view = new Uint8Array(event.data);
+        if (view.byteLength === 1 &amp;&amp; view[0] === 0xff) {
+          return;
+        }
+        this.config.onMessage?.(event.data);
+      }
+    };
+
+    this.ws.onerror = () =&gt; {
+      // Handled in onclose to avoid duplicate reconnects
+    };
+
+    this.ws.onclose = () =&gt; {
+      this.clearTimers();
+      this.ws = null;
+      if (!this.intentionallyClosed) {
+        this.updateState('RECONNECTING');
+        this.scheduleReconnect();
+      } else {
+        this.updateState('DISCONNECTED');
+      }
+    };
+  }
+
+  private calculateDecorrelatedJitter(): number {
+    // AWS Decorrelated Jitter: Sleep = min(Cap, Random(Base, Sleep * 3))
+    const min = this.config.baseDelayMs;
+    const max = this.prevDelay * 3;
+    const sleep = Math.min(
+      this.config.maxDelayMs,
+      Math.floor(Math.random() * (max - min + 1) + min)
+    );
+    this.prevDelay = sleep;
+    return sleep;
+  }
+
+  private scheduleReconnect(): void {
+    this.attempts++;
+    const delay = this.calculateDecorrelatedJitter();
+    setTimeout(() =&gt; {
+      if (!this.intentionallyClosed) {
+        this.connect();
+      }
+    }, delay);
+  }
+
+  private enqueuePayload(payload: Uint8Array): void {
+    if (this.queue.length &gt;= this.config.maxQueueSize) {
+      // FIFO drop policy for awareness/transient states
+      this.queue.shift();
+    }
+    this.queue.push(payload);
+  }
+
+  private flushQueue(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    while (this.queue.length &gt; 0) {
+      const payload = this.queue.shift();
+      if (payload) this.ws.send(payload);
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.clearTimers();
+    this.heartbeatTimer = setInterval(() =&gt; {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        // Send single-byte internal PING packet (0xFE)
+        this.ws.send(new Uint8Array([0xfe]));
+        this.heartbeatWatchdog = setTimeout(() =&gt; {
+          // Heartbeat failed; socket deadlocked
+          this.ws?.close(4000, 'Heartbeat Timeout');
+        }, this.config.heartbeatTimeoutMs);
+      }
+    }, this.config.heartbeatIntervalMs);
+  }
+
+  private resetHeartbeatWatchdog(): void {
+    if (this.heartbeatWatchdog) {
+      clearTimeout(this.heartbeatWatchdog);
+      this.heartbeatWatchdog = null;
+    }
+  }
+
+  private clearTimers(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.heartbeatWatchdog) clearTimeout(this.heartbeatWatchdog);
+    this.heartbeatTimer = null;
+    this.heartbeatWatchdog = null;
+  }
+
+  private updateState(newState: ConnectionState): void {
+    this.state = newState;
+    this.config.onStateChange?.(newState);
+  }
+
+  public get currentState(): ConnectionState {
+    return this.state;
+  }
+}
+</code></pre>
+<h3>2.3 Network Chaos Scenarios &amp; Injection Recipes</h3>
+<p>Use this matrix during pre-production verification to simulate degraded mobile and enterprise networks.</p>
+<pre><code>+---------------------------------------------------------------------------------------------------+
+| NETWORK CHAOS SIMULATION SUITE                                                                    |
++--------------------------+------------------------------+-----------------------------------------+
+| SCENARIO                 | NETWORK PROFILE              | TARGET VALIDATION METRIC                |
+| High-Speed Degradation   | 250ms Latency, 8% Loss       | Zero state divergence after 30 seconds  |
+| Flappy Subway Transition | Drop every 12s, reconnect 3s | No split-brain; queue drops stale pos   |
+| Asymmetric Splice        | Client TX 100%, RX 0%        | Watchdog timeout forces hard disconnect |
++--------------------------+------------------------------+-----------------------------------------+
+</code></pre>
+<h4>Chaos Injection Commands</h4>
+<h5>Scenario A: Flappy Edge Network (Linux <code>tc</code> / <code>iproute2</code>)</h5>
+<p>Inject 150ms of network latency with 25ms of jitter and a 12% random packet drop on interface <code>eth0</code>:</p>
+<pre><code class="language-bash">sudo tc qdisc add dev eth0 root netem delay 150ms 25ms distribution normal loss 12%
+# Teardown command:
+# sudo tc qdisc del dev eth0 root
+</code></pre>
+<h5>Scenario B: The Zombie Half-Open Socket (Packet Blackhole)</h5>
+<p>Silently discard outgoing server responses without issuing TCP resets (<code>RST</code>), triggering client ping/pong watchdogs:</p>
+<pre><code class="language-bash"># Block incoming WebSocket acknowledgments/traffic from server port 4444
+sudo iptables -A INPUT -p tcp --sport 4444 -j DROP
+# Teardown command:
+# sudo iptables -D INPUT -p tcp --sport 4444 -j DROP
+</code></pre>
+<h5>Scenario C: Split-Brain State Vector Recovery Test</h5>
+<p>Run two discrete headless clients making concurrent mutations while disconnected, reconnect them to an active coordinator, and assert deterministic document convergence:</p>
+<pre><code class="language-typescript">// verifyConvergence.ts
+import * as Y from 'yjs';
+
+export function testConvergence() {
+  const docA = new Y.Doc();
+  const docB = new Y.Doc();
+
+  // Emulate cross-client synchronization setup
+  const mapA = docA.getMap('canvas');
+  const mapB = docB.getMap('canvas');
+
+  // Partition phase: Client A and Client B diverge concurrently
+  mapA.set('shape_1', { x: 100, y: 200, color: 'blue' });
+  mapB.set('shape_1', { x: 150, y: 250, color: 'red' });
+  mapB.set('shape_2', { x: 0, y: 0, color: 'green' });
+
+  // Sync step 1: Send B's changes to A
+  const stateVectorA = Y.encodeStateVector(docA);
+  const diffForA = Y.encodeStateAsUpdate(docB, stateVectorA);
+
+  // Sync step 2: Send A's changes to B
+  const stateVectorB = Y.encodeStateVector(docB);
+  const diffForB = Y.encodeStateAsUpdate(docA, stateVectorB);
+
+  // Merge phase
+  Y.applyUpdate(docA, diffForA);
+  Y.applyUpdate(docB, diffForB);
+
+  // Determinism Verification
+  const jsonA = JSON.stringify(mapA.toJSON());
+  const jsonB = JSON.stringify(mapB.toJSON());
+
+  if (jsonA !== jsonB) {
+    throw new Error(`CRDT Divergence Failure!\nDocA: ${jsonA}\nDocB: ${jsonB}`);
+  }
+
+  console.log('CONVERGENCE_VERIFIED: State hashes match identically across isolated nodes.');
+}
+testConvergence();
+</code></pre>
+<hr />
+<h2>3. Yjs &amp; WebSocket Packet Optimization Cheatsheet</h2>
+<p>Naive implementations stream high-frequency events (mouse moves, canvas drags, selection bounds) as full JSON objects over text frames. Doing this at 60Hz across 30 users will choke the edge gateway's bandwidth and cause client thread contention.</p>
+<h3>3.1 Serialization Payload Comparisons</h3>
+<pre><code>JSON vs. VarUint Wire Overhead (Cursor Frame)
++-------------------------------------------------------+
+| JSON: 142 bytes                                       |
+| {&quot;type&quot;:&quot;cursor&quot;,&quot;userId&quot;:&quot;usr_89f3&quot;,&quot;x&quot;:1042.8421,...|
++-------------------------------------------------------+
+| Lib0 VarUint / Float32 Encoded: 14 bytes              |
+| [0x01, 0x05, 0x89, 0xF3, 0x44, 0x82, 0x5A, ...]      |
++-------------------------------------------------------+
+</code></pre>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Message Type</th>
+<th style="text-align: left;">Raw JSON Payload Size</th>
+<th style="text-align: left;">Optimized Binary Size</th>
+<th style="text-align: left;">Savings</th>
+<th style="text-align: left;">Strategy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Cursor Coordinates</strong></td>
+<td style="text-align: left;">138 bytes</td>
+<td style="text-align: left;">12 bytes</td>
+<td style="text-align: left;"><strong>91.3%</strong></td>
+<td style="text-align: left;">Pack <code>x</code>, <code>y</code> into <code>Int16Array</code> (scaled to canvas view bounds); skip string user IDs in favor of 32-bit mapped client IDs.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Yjs Incremental Transaction</strong></td>
+<td style="text-align: left;">412 bytes (JSON base64)</td>
+<td style="text-align: left;">38 bytes</td>
+<td style="text-align: left;"><strong>90.7%</strong></td>
+<td style="text-align: left;">Direct <code>Uint8Array</code> passthrough using standard Yjs structural run-length encoding.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Heartbeat / Watchdog</strong></td>
+<td style="text-align: left;">22 bytes (<code>{"type":"ping"}</code>)</td>
+<td style="text-align: left;">1 byte</td>
+<td style="text-align: left;"><strong>95.4%</strong></td>
+<td style="text-align: left;">Magic single-byte control frames: <code>0xFE</code> (Ping), <code>0xFF</code> (Pong).</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Awareness Multi-Presence</strong></td>
+<td style="text-align: left;">2,450 bytes (30 peers)</td>
+<td style="text-align: left;">380 bytes</td>
+<td style="text-align: left;"><strong>84.5%</strong></td>
+<td style="text-align: left;">Delta-encode awareness updates; omit stale/unchanged client states.</td>
+</tr>
+</tbody>
+</table>
+<h3>3.2 High-Frequency Awareness Throttling &amp; Variable-Precision Packing</h3>
+<pre><code class="language-typescript">// awarenessPacking.ts
+import * as encoding from 'lib0/encoding';
+import * as decoding from 'lib0/decoding';
+
+export interface CursorState {
+  clientId: number; // 32-bit local client index
+  x: number;        // Canvas relative coordinates (0.0 to 65535.0)
+  y: number;
+  tool: number;     // Bitfield (0-255)
+}
+
+/**
+ * Packs cursor state into exactly 9 bytes:
+ * [0x01: MessageType.Cursor] (1 byte)
+ * [Uint32 ClientId]          (4 bytes)
+ * [Uint16 X Coord]           (2 bytes)
+ * [Uint16 Y Coord]           (2 bytes)
+ */
+export function packCursor(cursor: CursorState): Uint8Array {
+  const encoder = encoding.createEncoder();
+
+  // Magic opcode for cursor frame: 0x01
+  encoding.writeUint8(encoder, 0x01);
+  encoding.writeUint32(encoder, cursor.clientId);
+
+  // Clamp floats to Uint16 space (0 - 65535) for canvas sub-pixel accuracy
+  const clampedX = Math.max(0, Math.min(65535, Math.round(cursor.x)));
+  const clampedY = Math.max(0, Math.min(65535, Math.round(cursor.y)));
+
+  encoding.writeUint16(encoder, clampedX);
+  encoding.writeUint16(encoder, clampedY);
+
+  return encoding.toUint8Array(encoder);
+}
+
+export function unpackCursor(buffer: Uint8Array): CursorState {
+  const decoder = decoding.createDecoder(buffer);
+  const messageType = decoding.readUint8(decoder);
+
+  if (messageType !== 0x01) {
+    throw new Error(`Unexpected message opcode: ${messageType}`);
+  }
+
+  return {
+    clientId: decoding.readUint32(decoder),
+    x: decoding.readUint16(decoder),
+    y: decoding.readUint16(decoder),
+    tool: 0
+  };
+}
+</code></pre>
+<h3>3.3 Dynamic Awareness Engine with Adaptive Rate Throttling</h3>
+<pre><code class="language-typescript">// AdaptiveAwarenessThrottler.ts
+export class AdaptiveAwarenessThrottler {
+  private lastBroadcast = 0;
+  private pendingFrame: CursorState | null = null;
+  private throttleTimer: ReturnType&lt;typeof setTimeout&gt; | null = null;
+
+  // Rate limits based on velocity: Static = 10Hz, Moving = 30Hz, Ultra-Fast = 60Hz
+  private currentInterval = 33; // Default ~30Hz (ms)
+
+  constructor(private readonly broadcastFn: (packed: Uint8Array) =&gt; void) {}
+
+  public pushLocalPosition(cursor: CursorState): void {
+    this.pendingFrame = cursor;
+    const now = performance.now();
+    const elapsed = now - this.lastBroadcast;
+
+    if (elapsed &gt;= this.currentInterval) {
+      this.flush();
+    } else if (!this.throttleTimer) {
+      this.throttleTimer = setTimeout(() =&gt; {
+        this.flush();
+      }, this.currentInterval - elapsed);
+    }
+  }
+
+  public setHighVelocityMode(isHighVelocity: boolean): void {
+    // Dynamic throttling: dial back down during regular movements to protect network edge
+    this.currentInterval = isHighVelocity ? 16 : 33; // 60Hz vs 30Hz
+  }
+
+  private flush(): void {
+    if (this.throttleTimer) {
+      clearTimeout(this.throttleTimer);
+      this.throttleTimer = null;
+    }
+
+    if (this.pendingFrame) {
+      const payload = packCursor(this.pendingFrame);
+      this.broadcastFn(payload);
+      this.lastBroadcast = performance.now();
+      this.pendingFrame = null;
+    }
+  }
+}
+</code></pre>
+<hr />
+<h2>4. Production Runbooks &amp; Triage Playbooks (Swipe File)</h2>
+<hr />
+<h3>Playbook 1: CRDT State Vector Divergence &amp; Phantom Updates</h3>
+<h4>Severity: P1 (Data Corruption / Collaborative Desync)</h4>
+<h4>1. Symptoms &amp; Alert Triggers</h4>
+<ul>
+<li>Clients report seeing different canvas node locations or missing paragraph characters while both sockets report connected (<code>READY_STATE = 1</code>).</li>
+<li>Disconnect/refresh temporarily resolves the issue for one user while breaking it for another.</li>
+<li>Edge logs throw <code>Y.Update decoder error: Unexpected end of array</code> or <code>State vector missing dependency</code>.</li>
+</ul>
+<h4>2. Immediate Mitigation (5-Minute Fix)</h4>
+<p>Force an ephemeral full-state re-synchronization across all active connected peers in the degraded room without dropping their physical WebSocket connections.</p>
+<pre><code class="language-typescript">// Admin Emergency Broadcast via Edge Controller / CLI
+export function emergencyForceRoomResync(room: RoomDurableObject) {
+  // 1. Generate baseline compacted snapshot from canonical storage
+  const canonicalBytes = room.getStorageSnapshot(); 
+
+  // 2. Broadcast hard reset instruction with magic opcode (0xAA)
+  const encoder = encoding.createEncoder();
+  encoding.writeUint8(encoder, 0xaa);
+  encoding.writeVarUint8Array(encoder, canonicalBytes);
+  const resetPacket = encoding.toUint8Array(encoder);
+
+  room.broadcast(resetPacket);
+}
+</code></pre>
+<p>Client handler hook:</p>
+<pre><code class="language-typescript">if (opcode === 0xAA) {
+  const cleanUpdate = decoding.readVarUint8Array(decoder);
+  // Re-instantiate internal Y.Doc completely
+  doc.destroy();
+  doc = new Y.Doc();
+  Y.applyUpdate(doc, cleanUpdate);
+  renderCanvas(doc);
+}
+</code></pre>
+<h4>3. Root Cause Diagnosis &amp; Forensic Steps</h4>
+<ol>
+<li>Capture raw binary updates from the active room using the extraction command:
+   <code>bash
+   npx partykit export-room --room canvas-live-prod-402 --output /tmp/corrupt-room.bin</code></li>
+<li>Analyze structural integrity via the Yjs inspection script:
+   ```javascript
+   // inspectCorruptDoc.js
+   const Y = require('yjs');
+   const fs = require('fs');</li>
+</ol>
+<p>const file = fs.readFileSync('/tmp/corrupt-room.bin');
+   const doc = new Y.Doc();</p>
+<p>try {
+     Y.applyUpdate(doc, file);
+     console.log('Doc successfully parsed. Client IDs in store:');
+     for (const [clientId, items] of doc.store.clients.entries()) {
+       console.log(<code>Client ${clientId}: ${items.length} operations. Deleted items: ${items.filter(i =&gt; i.deleted).length}</code>);
+     }
+   } catch (err) {
+     console.error('CRITICAL: Binary stream corrupted at byte position:', err);
+   }
+   ```
+3. Common cause: A client framework updated document state within an unhandled microtask, mutating state before applying external remote updates, which violates strict linear clock progression.</p>
+<h4>4. Verification &amp; Clean Resolution</h4>
+<ul>
+<li>Ensure transaction listeners are synchronous:
+  <code>typescript
+  // PREVENTS DIVERGENCE: Always wrap client edits in transactions
+  doc.transact(() =&gt; {
+    sharedMap.set('property', value);
+  }, 'local-ui-mutation');</code></li>
+<li>Post-incident verify: Run <code>testConvergence()</code> from Section 2.3 against the snapshot taken from storage.</li>
+</ul>
+<hr />
+<h3>Playbook 2: WebSocket Edge Memory Leak &amp; Event Loop Starvation</h3>
+<h4>Severity: P1 (Service Degradation / Cascading Edge Eviction)</h4>
+<h4>1. Symptoms &amp; Alert Triggers</h4>
+<ul>
+<li>Edge worker memory metrics climb linearly until hitting runtime limits (e.g., 128MB per Durable Object, 512MB on node instances), followed by process restarts.</li>
+<li>Edge heartbeat responses jump from $12\text{ms}$ to $&gt;2,500\text{ms}$.</li>
+<li>WebSocket error metrics report sudden jumps in status codes <code>1006</code> (Abnormal Closure).</li>
+</ul>
+<h4>2. Immediate Mitigation</h4>
+<p>Trigger isolated node eviction or force active rooms to shed their memory caches and offload state to cold storage.</p>
+<pre><code class="language-bash"># Force worker recycling on Cloudflare / PartyKit
+npx partykit rollback --tag active-safe-point
+# Or trigger manual DO re-allocation:
+curl -X POST https://api.partykit.io/v1/rooms/canvas-room-12/evict \
+  -H &quot;Authorization: Bearer $PARTYKIT_ADMIN_TOKEN&quot;
+</code></pre>
+<h4>3. Root Cause Diagnosis &amp; Forensic Steps</h4>
+<p>Capture node profiles under active traffic using dynamic inspector hooks:</p>
+<pre><code class="language-bash"># Attach node-inspect inside live container
+node --inspect=0.0.0.0:9229 dist/server.js
+# Trigger an immediate on-demand heap profile:
+curl -X POST http://localhost:8080/debug/pprof/heap
+</code></pre>
+<p>Look for the three primary memory leak culprits in collaborative systems:
+1. <strong>Unregistered Transaction Listeners:</strong> Adding <code>doc.on('update', ...)</code> inside a UI component without running <code>.off('update')</code> upon unmount.
+2. <strong>Awareness State Accumulation:</strong> Inactive clients never emitting <code>destroy()</code> transactions, leaving zombie peer records inside the <code>awareness.states</code> map.
+3. <strong>Transaction Origin Objects Retaining Closures:</strong> Storing DOM nodes or context handles inside the <code>origin</code> field of <code>doc.transact(..., origin)</code>.</p>
+<pre><code class="language-typescript">// AUDIT TEST: Find retained awareness objects
+console.log('Active awareness size:', awareness.getStates().size);
+// If active connections (e.g. 5) does not match awareness states (e.g. 542),
+// run awareness cleanup:
+awareness.cleanUnusedStates();
+</code></pre>
+<h4>4. Verification &amp; Post-Mortem Hardening</h4>
+<p>Patch the core server runtime to evict awareness state after an explicit idle timeout:</p>
+<pre><code class="language-typescript">// Auto-eviction patch for awareness instances
+const AWARENESS_TIMEOUT_MS = 60_000;
+
+export function monitorZombieAwareness(awareness: any) {
+  setInterval(() =&gt; {
+    const now = Date.now();
+    awareness.getStates().forEach((state: any, clientId: number) =&gt; {
+      if (now - state.lastUpdated &gt; AWARENESS_TIMEOUT_MS) {
+        // Enforce cleanup to avoid unbounded leaks
+        awareness.removeAwarenessStates([clientId], 'timeout-purge');
+      }
+    });
+  }, 15_000);
+}
+</code></pre>
+<hr />
+<h3>Playbook 3: Cold-Start Thundering Herd &amp; Distributed Lock Contention</h3>
+<h4>Severity: P2 (Degraded User Experience / Connection Queue Spikes)</h4>
+<h4>1. Symptoms &amp;</h4>
+</body>
+</html>

@@ -1,0 +1,7 @@
+Real-time state sync shouldn't take months to build.
+
+Get production-ready CRDT, WebSockets & PartyKit blueprints to launch multiplayer SaaS fast ($29):
+
+https://rahuldubey15.gumroad.com/l/realtime-collaborative-apps-engine
+
+#SaaS #TypeScript #IndieHackers
