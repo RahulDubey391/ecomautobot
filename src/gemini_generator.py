@@ -294,6 +294,52 @@ Tag rules (STRICT):
             raise GeminiGeneratorError("Gemini returned non-object JSON for Dev.to post.")
         return parsed
 
+    def generate_x_post(
+        self,
+        blueprint: Dict[str, Any],
+        buy_url: str,
+    ) -> str:
+        """Generate a high-converting <= 270 char X (Twitter) post with hashtags and buy link."""
+        system_instruction = (
+            "You are a top indie-hacker growth copywriter on X (Twitter). "
+            "Write punchy, high-signal posts that hook developers/founders with a concrete problem or takeaway, "
+            "include the buy/download link, and end with 2-3 relevant hashtags. "
+            "STRICT LIMIT: Total post MUST be 270 characters or fewer (including the URL and hashtags)."
+        )
+        price_cents = int(blueprint.get("price_cents", 0) or 0)
+        price_label = "Free ($0+)" if price_cents == 0 else f"${price_cents / 100:.0f}"
+
+        prompt = f"""Write a single X (Twitter) post (MAX 270 characters total) for this digital product:
+
+Product: {blueprint.get('name', '')}
+Summary: {blueprint.get('custom_summary', '')}
+Price: {price_label}
+Link: {buy_url}
+Suggested Hashtags: {json.dumps(blueprint.get('hashtags', [])[:5])}
+
+Requirements:
+- Hook with a specific pain point or concrete benefit in 1 short line.
+- Include the exact link: {buy_url}
+- Include 2-3 high-reach hashtags (e.g. #AI #TypeScript #IndieHackers).
+- MUST be <= 270 characters total. Return ONLY the raw tweet text, no quotes or markdown fences.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="text/plain",
+            temperature=0.7,
+        )
+        tweet = raw.strip().strip('"').strip("'")
+        if buy_url not in tweet:
+            tweet = f"{tweet[:210].rstrip()} {buy_url}"
+        if len(tweet) > 280:
+            # Preserve buy_url at the end if slightly over 280
+            without_url = tweet.replace(buy_url, "").strip()
+            max_prefix = 280 - len(buy_url) - 1
+            tweet = f"{without_url[:max_prefix].rstrip()} {buy_url}"
+        return tweet
+
+
 
     def generate_deliverable_module(
         self,
@@ -377,5 +423,51 @@ Tag rules (STRICT):
         if not isinstance(parsed, dict):
             raise GeminiGeneratorError("Gemini returned non-object JSON for Dev.to post.")
         return parsed
+
+    def generate_x_post(
+        self,
+        blueprint: Dict[str, Any],
+        buy_url: str,
+    ) -> str:
+        """Generate a high-converting <= 270 char X (Twitter) post with hashtags and buy link."""
+        system_instruction = (
+            "You are a top indie-hacker growth copywriter on X (Twitter). "
+            "Write punchy, high-signal posts that hook developers/founders with a concrete problem or takeaway, "
+            "include the buy/download link, and end with 2-3 relevant hashtags. "
+            "STRICT LIMIT: Total post MUST be 270 characters or fewer (including the URL and hashtags)."
+        )
+        price_cents = int(blueprint.get("price_cents", 0) or 0)
+        price_label = "Free ($0+)" if price_cents == 0 else f"${price_cents / 100:.0f}"
+
+        prompt = f"""Write a single X (Twitter) post (MAX 270 characters total) for this digital product:
+
+Product: {blueprint.get('name', '')}
+Summary: {blueprint.get('custom_summary', '')}
+Price: {price_label}
+Link: {buy_url}
+Suggested Hashtags: {json.dumps(blueprint.get('hashtags', [])[:5])}
+
+Requirements:
+- Hook with a specific pain point or concrete benefit in 1 short line.
+- Include the exact link: {buy_url}
+- Include 2-3 high-reach hashtags (e.g. #AI #TypeScript #IndieHackers).
+- MUST be <= 270 characters total. Return ONLY the raw tweet text, no quotes or markdown fences.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="text/plain",
+            temperature=0.7,
+        )
+        tweet = raw.strip().strip('"').strip("'")
+        if buy_url not in tweet:
+            tweet = f"{tweet[:210].rstrip()} {buy_url}"
+        if len(tweet) > 280:
+            # Preserve buy_url at the end if slightly over 280
+            without_url = tweet.replace(buy_url, "").strip()
+            max_prefix = 280 - len(buy_url) - 1
+            tweet = f"{without_url[:max_prefix].rstrip()} {buy_url}"
+        return tweet
+
 
 

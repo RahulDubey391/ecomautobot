@@ -2,13 +2,14 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List
-from .config import PRODUCTS_DIR, get_devto_api_key, get_settings
+from .config import PRODUCTS_DIR, get_devto_api_key, get_settings, get_x_credentials
 from .devto_client import DevToAPIError, DevToClient, sanitize_devto_tags
 from .gemini_generator import GeminiContentGenerator
 from .gumroad_client import GumroadAPIError, GumroadClient
 from .media_generator import MediaGenerator
 from .product_builder import ProductBuilder
 from .trend_scanner import TrendScanner
+from .x_client import XAPIError, XClient
 
 
 def _sanitize_slug(raw_slug: str) -> str:
@@ -150,6 +151,14 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
         except Exception as exc:
             devto_result = {"status": "error", "error": str(exc)}
 
+    # 5. Generate (and optionally publish) X (Twitter) post with buy link
+    x_result: Dict[str, Any] = {"status": "skipped"}
+    if manifest.get("gumroad_short_url") and not manifest.get("x_post_url"):
+        try:
+            x_result = publish_x_post_for_slug(slug=slug, live=live)
+        except Exception as exc:
+            x_result = {"status": "error", "error": str(exc)}
+
     return {
         "status": "published" if manifest["published"] else "draft_synced",
         "slug": slug,
@@ -166,6 +175,7 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
         "hashtags": manifest.get("hashtags", []),
         "publish_warning": publish_warning,
         "devto": devto_result,
+        "x": x_result,
     }
 
 
@@ -239,6 +249,49 @@ def publish_devto_post_for_slug(slug: str, live: bool = True) -> Dict[str, Any]:
         "title": title,
         "tags": tags,
         "devto_md_path": str(devto_md_path),
+    }
+
+
+def publish_x_post_for_slug(slug: str, live: bool = True) -> Dict[str, Any]:
+    """Generate a Gemini-authored X post with buy link & hashtags, save to dist/, and post if X keys are set."""
+    builder = ProductBuilder()
+    prod_dir = builder.get_product_dir(slug)
+    manifest_path = prod_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    buy_url = manifest.get("gumroad_short_url")
+    if not buy_url:
+        raise GumroadAPIError(f"Product '{slug}' has no gumroad_short_url yet. Publish to Gumroad first.")
+
+    gemini = GeminiContentGenerator()
+    tweet_text = gemini.generate_x_post(blueprint=manifest, buy_url=buy_url)
+
+    dist_dir = prod_dir / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    x_post_path = dist_dir / "x_post.txt"
+    x_post_path.write_text(tweet_text + "\n", encoding="utf-8")
+
+    creds = get_x_credentials()
+    if not all(creds.values()) or not live:
+        return {
+            "status": "generated_only",
+            "reason": "X credentials not set or live=False; saved locally to dist/x_post.txt",
+            "x_post_path": str(x_post_path),
+            "text": tweet_text,
+        }
+
+    x_client = XClient()
+    posted = x_client.post_tweet(tweet_text)
+    manifest["x_post_id"] = posted.get("id")
+    manifest["x_post_url"] = posted.get("url")
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return {
+        "status": "published",
+        "x_post_id": posted.get("id"),
+        "x_post_url": posted.get("url"),
+        "text": tweet_text,
+        "x_post_path": str(x_post_path),
     }
 
 

@@ -13,7 +13,6 @@ TRENDS_DIR = BASE_DIR / "data" / "trends"
 
 KEY_ALIASES = {
     "ACCESS TOKEN": "GUMROAD_ACCESS_TOKEN",
-    "ACCESS_TOKEN": "GUMROAD_ACCESS_TOKEN",
     "GUMROAD_TOKEN": "GUMROAD_ACCESS_TOKEN",
     "APPLICATION ID": "GUMROAD_APPLICATION_ID",
     "APPLICATION SECRET": "GUMROAD_APPLICATION_SECRET",
@@ -25,6 +24,10 @@ KEY_ALIASES = {
     "GOOGLE_API_KEY": "GEMINI_API_KEY",
     "DEVTO API KEY": "DEVTO_API_KEY",
     "DEV_TO_API_KEY": "DEVTO_API_KEY",
+    "CONSUMER_KEY": "X_API_KEY",
+    "CONSUMER_KEY_SECRET": "X_API_KEY_SECRET",
+    "ACCESS_TOKEN": "X_ACCESS_TOKEN",
+    "ACCESS_TOKEN_SECRET": "X_ACCESS_TOKEN_SECRET",
 }
 
 
@@ -93,5 +96,15 @@ def get_gemini_model() -> str:
 
 def get_devto_api_key() -> str:
     return os.getenv("DEVTO_API_KEY", "").strip()
+
+
+def get_x_credentials() -> dict:
+    return {
+        "api_key": (os.getenv("X_API_KEY", "") or os.getenv("CONSUMER_KEY", "")).strip(),
+        "api_key_secret": (os.getenv("X_API_KEY_SECRET", "") or os.getenv("CONSUMER_KEY_SECRET", "")).strip(),
+        "access_token": (os.getenv("X_ACCESS_TOKEN", "") or os.getenv("ACCESS_TOKEN", "")).strip(),
+        "access_token_secret": (os.getenv("X_ACCESS_TOKEN_SECRET", "") or os.getenv("ACCESS_TOKEN_SECRET", "")).strip(),
+    }
+
 
 
