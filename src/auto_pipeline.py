@@ -270,10 +270,13 @@ def publish_x_post_for_slug(slug: str, live: bool = True) -> Dict[str, Any]:
     x_post_path.write_text(tweet_text + "\n", encoding="utf-8")
 
     creds = get_x_credentials()
-    if not all(creds.values()) or not live:
+    missing_keys = [k for k, v in creds.items() if not v]
+    if missing_keys or not live:
         return {
             "status": "generated_only",
-            "reason": "X credentials not set or live=False; saved locally to dist/x_post.txt",
+            "reason": (
+                f"Missing X credentials ({', '.join(missing_keys)}) or live=False; saved locally to dist/x_post.txt"
+            ),
             "x_post_path": str(x_post_path),
             "text": tweet_text,
         }
