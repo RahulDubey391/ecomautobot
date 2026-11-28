@@ -1,8 +1,7 @@
-Tired of AI writing broken code?
+Cursor hallucinating broken code? Fix its context.
 
-Steal production-ready system rules & agent workflows for Cursor, Claude Code, and Windsurf ($19).
+Get battle-tested system rules & agent workflows for Cursor, Claude Code, and Windsurf.
 
-Build 10x faster:
+Ship faster for $19:
 https://rahuldubey15.gumroad.com/l/ai-coding-cursor-rules-pack
-
-#AICoding #CursorAI #CursorRules
+#CursorAI #ClaudeCode #AICoding
