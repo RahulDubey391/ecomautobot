@@ -2,8 +2,9 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from .auto_pipeline import publish_product_by_slug, run_autonomous_cycle
+from .auto_pipeline import publish_devto_post_for_slug, publish_product_by_slug, run_autonomous_cycle
 from .config import is_auto_publish_enabled, ENV_PATH
+from .devto_client import DevToAPIError
 from .gemini_generator import GeminiGeneratorError
 from .gumroad_client import GumroadAPIError, GumroadClient
 from .product_builder import ProductBuilder
@@ -90,6 +91,11 @@ def cmd_publish(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_publish_devto(args: argparse.Namespace) -> None:
+    result = publish_devto_post_for_slug(slug=args.slug, live=not args.draft)
+    print(json.dumps(result, indent=2))
+
+
 def cmd_auto_run(args: argparse.Namespace) -> None:
     should_publish = args.live or is_auto_publish_enabled()
     categories = [c.strip() for c in args.categories.split(",") if c.strip()] if args.categories else None
@@ -131,6 +137,10 @@ def main() -> None:
     p_pub.add_argument("--slug", required=True, help="Product slug inside products/")
     p_pub.add_argument("--live", action="store_true", help="Publish live immediately instead of keeping as draft")
 
+    p_devto = sub.add_parser("publish-devto", help="Generate and publish a Dev.to article for a product")
+    p_devto.add_argument("--slug", required=True, help="Product slug inside products/")
+    p_devto.add_argument("--draft", action="store_true", help="Save as draft on Dev.to instead of publishing live")
+
     p_auto = sub.add_parser(
         "auto-run",
         help="Autonomous end-to-end run: scan trends -> Gemini ideate & author -> render cover/thumbnail -> publish",
@@ -157,9 +167,11 @@ def main() -> None:
             cmd_build(args)
         elif args.command == "publish":
             cmd_publish(args)
+        elif args.command == "publish-devto":
+            cmd_publish_devto(args)
         elif args.command == "auto-run":
             cmd_auto_run(args)
-    except (GumroadAPIError, GeminiGeneratorError) as exc:
+    except (GumroadAPIError, GeminiGeneratorError, DevToAPIError) as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, indent=2), file=sys.stderr)
         sys.exit(1)
 

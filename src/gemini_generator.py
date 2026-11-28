@@ -154,8 +154,8 @@ Return a JSON array of {count} product blueprint object(s). Each object MUST str
 [
   {{
     "slug": "url-friendly-kebab-case-slug-max-45-chars",
-    "name": "High-Converting Product Title (Clear, Specific, High Value)",
-    "price_cents": 1900,
+    "name": "Clear, Specific Product Title (Vary naming; avoid repeating 'Vault' or '50+ Blueprints')",
+    "price_cents": 1500,
     "category": "software",
     "custom_summary": "1-sentence punchy value proposition shown directly under the price on Gumroad.",
     "tags": ["short tag 1", "short tag 2", "max 18 chars each", "ai prompts", "automation", "productivity", "saas", "templates", "workflows", "indie hacker"],
@@ -233,6 +233,8 @@ Structure the Markdown sales copy with:
 7. `### Who This Is Built For` — 3 to 4 specific buyer personas and how it saves them 20+ hours.
 8. `---` divider
 9. `### Instant Access & Formats Included` — highlight the Styled HTML Handbook, Raw Markdown Templates, and Complete Release `.zip` Archive.
+10. `---` divider
+11. `### Quick FAQ & 30-Day Money-Back Guarantee` — include a 30-day no-questions-asked refund guarantee, commercial usage rights, and instant download FAQ.
 """
         raw = self._call_gemini(
             prompt=prompt,
@@ -243,6 +245,55 @@ Structure the Markdown sales copy with:
         raw = re.sub(r"^```(?:markdown|md)?\s*", "", raw.strip())
         raw = re.sub(r"\s*```$", "", raw.strip())
         return raw + "\n"
+
+    def generate_devto_post(
+        self,
+        blueprint: Dict[str, Any],
+        buy_url: str,
+        deliverable_snippet: str = "",
+    ) -> Dict[str, Any]:
+        """Generate a high-value educational Dev.to article with popular tags and a buy CTA."""
+        system_instruction = (
+            "You are a senior developer advocate and technical writer on Dev.to. "
+            "Write genuinely useful, educational technical articles that solve a real engineering problem, "
+            "include concrete code/config/workflow examples, and naturally link to the full resource at the end. "
+            "Never write clickbait or spammy ad copy—Dev.to readers reward practical value."
+        )
+        price_cents = int(blueprint.get("price_cents", 0) or 0)
+        price_label = "Free ($0+ Pay What You Want)" if price_cents == 0 else f"${price_cents / 100:.0f}"
+
+        prompt = f"""Write a Dev.to article for this developer resource and return valid JSON.
+
+Product Title: {blueprint.get('name', '')}
+Summary: {blueprint.get('custom_summary', '')}
+Price: {price_label}
+Buy / Download Link: {buy_url}
+Existing Gumroad Tags: {json.dumps(blueprint.get('tags', []))}
+Sample Deliverable Excerpt (use real technical details from this if helpful):
+{deliverable_snippet[:2500]}
+
+Return a single JSON object with these exact keys:
+{{
+  "title": "Practical, developer-focused Dev.to article title (60-90 chars, no emojis, not an ad)",
+  "tags": ["tag1", "tag2", "tag3", "tag4"],
+  "body_markdown": "Complete 500-800 word Markdown article with: (1) Hook & real technical problem, (2) 2-3 actionable patterns/code blocks/checklists readers can use immediately, (3) Natural CTA section at the end linking to {buy_url} ({price_label}) explaining what else is in the full bundle."
+}}
+
+Tag rules (STRICT):
+- Exactly 4 tags.
+- Lowercase alphanumeric ONLY (no spaces, no hyphens, no #). Pick high-reach Dev.to tags like: ai, programming, webdev, typescript, python, productivity, devops, tutorial, opensource, saas, nextjs, automation.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            temperature=0.7,
+        )
+        parsed = self._parse_json_response(raw)
+        if not isinstance(parsed, dict):
+            raise GeminiGeneratorError("Gemini returned non-object JSON for Dev.to post.")
+        return parsed
+
 
     def generate_deliverable_module(
         self,
@@ -278,4 +329,53 @@ Requirements:
         raw = re.sub(r"^```(?:markdown|md)?\s*", "", raw.strip())
         raw = re.sub(r"\s*```$", "", raw.strip())
         return raw + "\n"
+
+    def generate_devto_post(
+        self,
+        blueprint: Dict[str, Any],
+        buy_url: str,
+        deliverable_snippet: str = "",
+    ) -> Dict[str, Any]:
+        """Generate a high-value educational Dev.to article with popular tags and a buy CTA."""
+        system_instruction = (
+            "You are a senior developer advocate and technical writer on Dev.to. "
+            "Write genuinely useful, educational technical articles that solve a real engineering problem, "
+            "include concrete code/config/workflow examples, and naturally link to the full resource at the end. "
+            "Never write clickbait or spammy ad copy—Dev.to readers reward practical value."
+        )
+        price_cents = int(blueprint.get("price_cents", 0) or 0)
+        price_label = "Free ($0+ Pay What You Want)" if price_cents == 0 else f"${price_cents / 100:.0f}"
+
+        prompt = f"""Write a Dev.to article for this developer resource and return valid JSON.
+
+Product Title: {blueprint.get('name', '')}
+Summary: {blueprint.get('custom_summary', '')}
+Price: {price_label}
+Buy / Download Link: {buy_url}
+Existing Gumroad Tags: {json.dumps(blueprint.get('tags', []))}
+Sample Deliverable Excerpt (use real technical details from this if helpful):
+{deliverable_snippet[:2500]}
+
+Return a single JSON object with these exact keys:
+{{
+  "title": "Practical, developer-focused Dev.to article title (60-90 chars, no emojis, not an ad)",
+  "tags": ["tag1", "tag2", "tag3", "tag4"],
+  "body_markdown": "Complete 500-800 word Markdown article with: (1) Hook & real technical problem, (2) 2-3 actionable patterns/code blocks/checklists readers can use immediately, (3) Natural CTA section at the end linking to {buy_url} ({price_label}) explaining what else is in the full bundle."
+}}
+
+Tag rules (STRICT):
+- Exactly 4 tags.
+- Lowercase alphanumeric ONLY (no spaces, no hyphens, no #). Pick high-reach Dev.to tags like: ai, programming, webdev, typescript, python, productivity, devops, tutorial, opensource, saas, nextjs, automation.
+"""
+        raw = self._call_gemini(
+            prompt=prompt,
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            temperature=0.7,
+        )
+        parsed = self._parse_json_response(raw)
+        if not isinstance(parsed, dict):
+            raise GeminiGeneratorError("Gemini returned non-object JSON for Dev.to post.")
+        return parsed
+
 

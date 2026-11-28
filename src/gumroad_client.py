@@ -276,8 +276,20 @@ class GumroadClient:
         return self._request("GET", "/user").get("user", {})
 
     def list_products(self) -> List[Dict[str, Any]]:
-        """Return all products on the authenticated user's Gumroad store."""
-        return self._request("GET", "/products").get("products", [])
+        """Return all products on the authenticated user's Gumroad store (following pagination)."""
+        all_products: List[Dict[str, Any]] = []
+        page_key: Optional[str] = None
+        seen_keys: set[str] = set()
+        while True:
+            params = {"page_key": page_key} if page_key else None
+            payload = self._request("GET", "/products", params=params)
+            all_products.extend(payload.get("products", []))
+            next_key = payload.get("next_page_key")
+            if not next_key or next_key in seen_keys:
+                break
+            seen_keys.add(next_key)
+            page_key = next_key
+        return all_products
 
     def get_product(self, product_id: str) -> Dict[str, Any]:
         """Retrieve details for a specific product ID."""

@@ -6,6 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 WORKSPACE_DIR = BASE_DIR.parent
 ENV_PATH = BASE_DIR / ".env"
 CREDS_TXT_PATH = WORKSPACE_DIR / "CREDS.txt"
+LOCAL_CREDS_TXT_PATH = BASE_DIR / "CREDS.txt"
 CONFIG_PATH = BASE_DIR / "config" / "settings.json"
 PRODUCTS_DIR = BASE_DIR / "products"
 TRENDS_DIR = BASE_DIR / "data" / "trends"
@@ -22,6 +23,8 @@ KEY_ALIASES = {
     "USEREMAIL": "GUMROAD_USER_EMAIL",
     "GEMINI API KEY": "GEMINI_API_KEY",
     "GOOGLE_API_KEY": "GEMINI_API_KEY",
+    "DEVTO API KEY": "DEVTO_API_KEY",
+    "DEV_TO_API_KEY": "DEVTO_API_KEY",
 }
 
 
@@ -45,6 +48,7 @@ def _load_kv_file(path: Path) -> None:
 
 _load_kv_file(ENV_PATH)
 _load_kv_file(CREDS_TXT_PATH)
+_load_kv_file(LOCAL_CREDS_TXT_PATH)
 
 
 def get_settings() -> dict:
@@ -85,4 +89,9 @@ def get_gemini_api_key() -> str:
 
 def get_gemini_model() -> str:
     return os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+
+def get_devto_api_key() -> str:
+    return os.getenv("DEVTO_API_KEY", "").strip()
+
 

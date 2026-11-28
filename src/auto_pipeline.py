@@ -2,7 +2,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List
-from .config import PRODUCTS_DIR, get_settings
+from .config import PRODUCTS_DIR, get_devto_api_key, get_settings
+from .devto_client import DevToAPIError, DevToClient, sanitize_devto_tags
 from .gemini_generator import GeminiContentGenerator
 from .gumroad_client import GumroadAPIError, GumroadClient
 from .media_generator import MediaGenerator
@@ -58,6 +59,7 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
             customizable_price=bool(manifest.get("customizable_price", False)),
             suggested_price_cents=manifest.get("suggested_price_cents"),
             tags=manifest.get("tags", []),
+            category=manifest.get("category"),
             file_urls=file_urls,
         )
         product_id = created.get("id")
@@ -71,6 +73,9 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
             description=description_html,
             custom_summary=manifest.get("custom_summary", ""),
             custom_permalink=manifest.get("custom_permalink"),
+            customizable_price=bool(manifest.get("customizable_price", False)),
+            suggested_price_cents=manifest.get("suggested_price_cents"),
+            category=manifest.get("category"),
             tags=manifest.get("tags", []),
             file_urls=file_urls,
         )
@@ -136,6 +141,15 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
         manifest["published"] = created.get("published", False)
 
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # 4. Generate (and optionally publish) Dev.to marketing article with buy link
+    devto_result: Dict[str, Any] = {"status": "skipped"}
+    if manifest.get("gumroad_short_url") and not manifest.get("devto_url"):
+        try:
+            devto_result = publish_devto_post_for_slug(slug=slug, live=live)
+        except Exception as exc:
+            devto_result = {"status": "error", "error": str(exc)}
+
     return {
         "status": "published" if manifest["published"] else "draft_synced",
         "slug": slug,
@@ -151,6 +165,80 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
         "tags": manifest.get("tags", []),
         "hashtags": manifest.get("hashtags", []),
         "publish_warning": publish_warning,
+        "devto": devto_result,
+    }
+
+
+def publish_devto_post_for_slug(slug: str, live: bool = True) -> Dict[str, Any]:
+    """Generate a Gemini-authored Dev.to post with buy link & tags, save to dist/, and publish if DEVTO_API_KEY is set."""
+    builder = ProductBuilder()
+    prod_dir = builder.get_product_dir(slug)
+    manifest_path = prod_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    buy_url = manifest.get("gumroad_short_url")
+    if not buy_url:
+        raise GumroadAPIError(f"Product '{slug}' has no gumroad_short_url yet. Publish to Gumroad first.")
+
+    # Grab a snippet from the first deliverable for technical depth
+    deliverable_snippet = ""
+    deliv_dir = prod_dir / "deliverables"
+    if deliv_dir.exists():
+        md_files = sorted(deliv_dir.glob("*.md"))
+        if md_files:
+            deliverable_snippet = md_files[0].read_text(encoding="utf-8")[:2500]
+
+    gemini = GeminiContentGenerator()
+    post = gemini.generate_devto_post(
+        blueprint=manifest,
+        buy_url=buy_url,
+        deliverable_snippet=deliverable_snippet,
+    )
+    title = post.get("title") or manifest["name"]
+    tags = sanitize_devto_tags(post.get("tags") or manifest.get("tags") or [])
+    body_markdown = post.get("body_markdown") or ""
+
+    dist_dir = prod_dir / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    devto_md_path = dist_dir / "devto_post.md"
+    devto_json_path = dist_dir / "devto_post.json"
+
+    frontmatter = f"---\ntitle: {title}\npublished: true\ntags: {', '.join(tags)}\n---\n\n"
+    devto_md_path.write_text(frontmatter + body_markdown, encoding="utf-8")
+    devto_json_path.write_text(
+        json.dumps({"title": title, "tags": tags, "body_markdown": body_markdown, "buy_url": buy_url}, indent=2),
+        encoding="utf-8",
+    )
+
+    if not get_devto_api_key():
+        return {
+            "status": "generated_only",
+            "reason": "DEVTO_API_KEY not set; saved locally to dist/devto_post.md",
+            "devto_md_path": str(devto_md_path),
+            "title": title,
+            "tags": tags,
+        }
+
+    devto = DevToClient()
+    article = devto.publish_article(
+        title=title,
+        body_markdown=body_markdown,
+        tags=tags,
+        published=live,
+        main_image=manifest.get("thumbnail_url"),
+    )
+    manifest["devto_article_id"] = article.get("id")
+    manifest["devto_url"] = article.get("url")
+    manifest["devto_tags"] = tags
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return {
+        "status": "published" if live else "draft",
+        "devto_article_id": article.get("id"),
+        "devto_url": article.get("url"),
+        "title": title,
+        "tags": tags,
+        "devto_md_path": str(devto_md_path),
     }
 
 

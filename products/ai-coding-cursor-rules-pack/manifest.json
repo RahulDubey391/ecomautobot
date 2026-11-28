@@ -44,5 +44,13 @@
     "#AIWorkflows"
   ],
   "thumbnail_uploaded": true,
-  "thumbnail_url": "https://public-files.gumroad.com/ap0kto4bjw7kmvhs6qgyhsx0ldjx"
+  "thumbnail_url": "https://public-files.gumroad.com/ap0kto4bjw7kmvhs6qgyhsx0ldjx",
+  "devto_article_id": 5137265,
+  "devto_url": "https://dev.to/rahuldubey391/stop-ai-coding-assistants-from-breaking-your-codebase-with-system-rules-2o2d",
+  "devto_tags": [
+    "ai",
+    "programming",
+    "webdev",
+    "productivity"
+  ]
 }

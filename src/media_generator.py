@@ -198,13 +198,20 @@ class MediaGenerator:
         )
         draw.text((90, 78), badge_text, font=font_badge, fill=(226, 232, 240))
 
-        # Main Title (Left column)
-        font_title = _load_font(50, bold=True)
-        title_lines = _wrap_text(draw, title, font_title, max_width=680)[:3]
+        # Main Title (Left column) - dynamically scale font so long titles never truncate mid-sentence
+        title_size = 50
+        font_title = _load_font(title_size, bold=True)
+        title_lines = _wrap_text(draw, title, font_title, max_width=680)
+        while len(title_lines) > 3 and title_size > 34:
+            title_size -= 4
+            font_title = _load_font(title_size, bold=True)
+            title_lines = _wrap_text(draw, title, font_title, max_width=680)
+        title_lines = title_lines[:3]
+        line_step = title_size + 12
         y_cursor = 140
         for line in title_lines:
             draw.text((72, y_cursor), line, font=font_title, fill=(248, 250, 252))
-            y_cursor += 62
+            y_cursor += line_step
 
         # Subtitle / summary
         font_sub = _load_font(23, bold=False)
