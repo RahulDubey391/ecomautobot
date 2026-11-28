@@ -60,7 +60,6 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
             customizable_price=bool(manifest.get("customizable_price", False)),
             suggested_price_cents=manifest.get("suggested_price_cents"),
             tags=manifest.get("tags", []),
-            category=manifest.get("category"),
             file_urls=file_urls,
         )
         product_id = created.get("id")
@@ -76,7 +75,6 @@ def publish_product_by_slug(slug: str, live: bool = True) -> Dict[str, Any]:
             custom_permalink=manifest.get("custom_permalink"),
             customizable_price=bool(manifest.get("customizable_price", False)),
             suggested_price_cents=manifest.get("suggested_price_cents"),
-            category=manifest.get("category"),
             tags=manifest.get("tags", []),
             file_urls=file_urls,
         )
